@@ -1,0 +1,6 @@
+{
+  "name": "Doğruluk Akademi — Sınav Üretim, Optik Analiz ve Karne Sistemi",
+  "description": "3-12. sınıf, TYT ve AYT deneme sınavı oluşturma, ders kitabı ve internetten soru üretimi, 120 soruluk PDF kapak tasarımı, optik okuma, 5 çeşit karne ve 3 çeşit detaylı analiz platformu.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
