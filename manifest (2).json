@@ -1,0 +1,11 @@
+{
+  "background_color": "#548c98",
+  "dir": "ltr",
+  "display": "standalone",
+  "name": "dogruluk-akademi",
+  "orientation": "any",
+  "scope": "/",
+  "short_name": "dogruluk-akademi",
+  "start_url": "/",
+  "theme_color": "#0d97b7"
+}
