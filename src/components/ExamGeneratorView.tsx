@@ -18,6 +18,8 @@ import {
   Layers,
   SlidersHorizontal,
   FileSpreadsheet,
+  FileText,
+  ListChecks,
 } from 'lucide-react';
 import { GRADE_PROFILES } from '../data/curriculum';
 import {
@@ -29,25 +31,38 @@ import {
   GradeLevelId,
   GradeProfile,
   Institution,
+  PdfUploadStripOptions,
+  PenaltyDivisor,
 } from '../types/academy';
-import { buildAutoExamQuestions } from '../utils/examAnalysis';
+import { buildAutoExamQuestions, selectCuratedQuestions } from '../utils/examAnalysis';
 import {
   buildDynamicMixedQuestions,
   buildQuestionsFromCurriculumOverride,
   extractCurriculumOverrideFromText,
   parseQuestionsSpreadsheet,
 } from '../utils/dynamicQuestionSource';
+import {
+  computeKeptUploadedPdfIndices,
+  extractPrintableTextFromPdfBytes,
+  normalizeIncomingQuestionList,
+  parseExamQuestionsFromRawText,
+} from '../utils/examPdfParser';
 import { filterGradeProfilesByInstitution } from '../utils/institutionCodes';
 import { Cover3DPreview } from './Cover3DPreview';
+import { QuestionVisualPreview } from './QuestionVisualPreview';
 
 interface ExamGeneratorViewProps {
   institution: Institution;
   gradeProfile: GradeProfile;
   onSelectGrade: (gradeId: GradeLevelId) => void;
+  penaltyDivisor?: PenaltyDivisor;
+  onChangePenaltyDivisor?: (divisor: PenaltyDivisor) => void;
   questions: ExamQuestion[];
   cover: CoverConfig;
   uploadedPdfName: string | null;
   uploadedPdfPageCount: number | null;
+  pdfStripOptions: PdfUploadStripOptions;
+  onUpdatePdfStripOptions: (patch: Partial<PdfUploadStripOptions>) => void;
   mebOverride: DynamicCurriculumOverride | null;
   onApplyMebCurriculum: (
     override: DynamicCurriculumOverride,
@@ -63,6 +78,7 @@ interface ExamGeneratorViewProps {
   onDownloadZip: () => Promise<void>;
   onDownloadSourceZip: () => Promise<void>;
   onOpenEditor?: () => void;
+  onOpenOpenEnded?: () => void;
 }
 
 async function fileToBase64(file: File): Promise<string> {
@@ -80,10 +96,14 @@ export function ExamGeneratorView({
   institution,
   gradeProfile,
   onSelectGrade,
+  penaltyDivisor,
+  onChangePenaltyDivisor,
   questions,
   cover,
   uploadedPdfName,
   uploadedPdfPageCount,
+  pdfStripOptions,
+  onUpdatePdfStripOptions,
   mebOverride,
   onApplyMebCurriculum,
   onClearMebCurriculum,
@@ -96,13 +116,24 @@ export function ExamGeneratorView({
   onDownloadZip,
   onDownloadSourceZip,
   onOpenEditor,
+  onOpenOpenEnded,
 }: ExamGeneratorViewProps) {
   const allowedGradeProfiles = filterGradeProfilesByInstitution(GRADE_PROFILES, institution);
   const defaultQuestionTarget = gradeProfile.subjects.reduce((acc, s) => acc + s.questionCount, 0);
 
-  const [aiTab, setAiTab] = useState<'meb-pdf' | 'dynamic-mix' | 'internet' | 'textbook'>('meb-pdf');
+  const [aiTab, setAiTab] = useState<'pdf-processor' | 'meb-pdf' | 'dynamic-mix' | 'internet' | 'textbook'>('pdf-processor');
   const [difficultyMix, setDifficultyMix] = useState<'dengeli' | 'kolay' | 'zor'>('dengeli');
   const [targetCount, setTargetCount] = useState<number>(defaultQuestionTarget);
+  const [subjectScope, setSubjectScope] = useState<string>('Tümü');
+  const [show20Picker, setShow20Picker] = useState<boolean>(false);
+  const [pickedQuestionIds, setPickedQuestionIds] = useState<string[]>([]);
+
+  // PDF Soru İşleyici state
+  const [pdfProcText, setPdfProcText] = useState<string>('');
+  const [pdfProcTargetCount, setPdfProcTargetCount] = useState<number>(20);
+  const [pdfProcFileName, setPdfProcFileName] = useState<string | null>(null);
+  const [pdfProcList, setPdfProcList] = useState<ExamQuestion[]>([]);
+  const [pdfProcSelectedIds, setPdfProcSelectedIds] = useState<string[]>([]);
 
   // MEB Müfredat PDF state
   const [mebSourceTitle, setMebSourceTitle] = useState<string>(
@@ -161,6 +192,7 @@ export function ExamGeneratorView({
   useEffect(() => {
     const total = gradeProfile.subjects.reduce((acc, s) => acc + s.questionCount, 0);
     setTargetCount(total);
+    setSubjectScope('Tümü');
     setMebQuestionCount(total);
     setMebSourceTitle(`MEB ${gradeProfile.shortLabel} Öğretim Programı`);
     setSearchSubject(gradeProfile.subjects[0]?.name ?? 'Türkçe');
@@ -174,14 +206,134 @@ export function ExamGeneratorView({
     });
   }, [gradeProfile]);
 
-  const handleGenerateAuto = () => {
+  const handleGenerateAuto = (forcedCount?: number, forcedSubject?: string) => {
     setErrorMsg(null);
-    const next = buildAutoExamQuestions(gradeProfile.id, difficultyMix, targetCount);
+    const countToUse = forcedCount ?? targetCount;
+    const subjToUse = forcedSubject ?? subjectScope;
+    const next = buildAutoExamQuestions(gradeProfile.id, difficultyMix, countToUse, subjToUse);
     onUpdateQuestions(next);
-    onUpdateCover({ questionCount: next.length });
+    onUpdateCover({
+      questionCount: next.length,
+      examTitle:
+        countToUse === 20
+          ? `${cover.academyName.split(' ')[0]} ${gradeProfile.shortLabel} 20 Soruluk Yazılıya Hazırlık${subjToUse !== 'Tümü' ? ` (${subjToUse})` : ''}`
+          : cover.examTitle,
+    });
     setNotice(
-      `${gradeProfile.label} müfredatına göre ${next.length} soruluk (${gradeProfile.optionCount} şıklı) deneme otomatik oluşturuldu.`
+      `${gradeProfile.label}${subjToUse !== 'Tümü' ? ` · ${subjToUse}` : ''} müfredatına göre ${next.length} soruluk (${gradeProfile.optionCount} şıklı) ${countToUse === 20 ? 'yazılıya hazırlık denemesi' : 'deneme'} oluşturuldu.`
     );
+  };
+
+  const handleProcessExamPdfFile = async (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setBusy('pdf-proc');
+    setErrorMsg(null);
+    try {
+      let textContent = '';
+      let base64 = '';
+      if (file.type.startsWith('text/') || file.name.toLowerCase().endsWith('.txt')) {
+        textContent = (await file.text()).slice(0, 24000);
+        setPdfProcText(textContent.slice(0, 5000));
+      } else {
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        textContent = extractPrintableTextFromPdfBytes(bytes);
+        base64 = await fileToBase64(file);
+      }
+
+      const controller = new AbortController();
+      const tid = window.setTimeout(() => controller.abort(), 7000);
+      try {
+        const resp = await fetch('/api/questions/from-exam-pdf', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          signal: controller.signal,
+          body: JSON.stringify({
+            gradeLabel: gradeProfile.label,
+            optionCount: gradeProfile.optionCount,
+            fileName: file.name,
+            textContent,
+            fileBase64: base64 || undefined,
+            fileMimeType: file.type || 'application/pdf',
+            count: pdfProcTargetCount,
+          }),
+        });
+        if (resp.ok) {
+          const data = await resp.json();
+          if (Array.isArray(data.questions) && data.questions.length > 0) {
+            const norm = normalizeIncomingQuestionList(data.questions, gradeProfile.id, file.name);
+            setPdfProcFileName(file.name);
+            setPdfProcList(norm);
+            setPdfProcSelectedIds(norm.slice(0, pdfProcTargetCount).map((q) => q.id));
+            setNotice(`PDF Soru İşleyici: "${file.name}" içinden ${norm.length} soru ayrıştırıldı.`);
+            return;
+          }
+        }
+      } catch {
+        // Fallback below
+      } finally {
+        window.clearTimeout(tid);
+      }
+
+      const parsed = parseExamQuestionsFromRawText(
+        textContent,
+        gradeProfile,
+        file.name,
+        pdfProcTargetCount
+      );
+      setPdfProcFileName(file.name);
+      setPdfProcList(parsed);
+      setPdfProcSelectedIds(parsed.slice(0, pdfProcTargetCount).map((q) => q.id));
+      setNotice(`PDF Soru İşleyici: "${file.name}" dosyasından ${parsed.length} soru hazırlandı.`);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const handleProcessRawText = () => {
+    if (!pdfProcText.trim()) return;
+    const parsed = parseExamQuestionsFromRawText(
+      pdfProcText,
+      gradeProfile,
+      pdfProcFileName || 'PDF Metin Kaynağı',
+      pdfProcTargetCount
+    );
+    setPdfProcList(parsed);
+    setPdfProcSelectedIds(parsed.slice(0, pdfProcTargetCount).map((q) => q.id));
+    setNotice(`PDF Soru İşleyici: Metinden ${parsed.length} soru ayrıştırıldı.`);
+  };
+
+  const handleApplyProcessedPdfQuestions = (openEditorAfter = false) => {
+    const selected = selectCuratedQuestions(pdfProcList, pdfProcSelectedIds, pdfProcTargetCount);
+    if (selected.length === 0) return;
+    onUpdateQuestions(selected);
+    onUpdateCover({ questionCount: selected.length });
+    setNotice(`PDF Soru İşleyici ile seçilen ${selected.length} soru aktif deneme kitapçığına aktarıldı.`);
+    if (openEditorAfter && onOpenEditor) {
+      onOpenEditor();
+    }
+  };
+
+  const handleApply20QuestionSelection = () => {
+    const basePool =
+      subjectScope === 'Tümü'
+        ? questions
+        : questions.filter((q) => q.subject === subjectScope);
+    const chosen =
+      pickedQuestionIds.length > 0
+        ? selectCuratedQuestions(questions, pickedQuestionIds, 20)
+        : basePool.length >= 20
+          ? basePool.slice(0, 20).map((q, idx) => ({ ...q, number: idx + 1 }))
+          : buildAutoExamQuestions(gradeProfile.id, difficultyMix, 20, subjectScope);
+    onUpdateQuestions(chosen);
+    onUpdateCover({
+      questionCount: chosen.length,
+      examTitle: `${cover.academyName.split(' ')[0]} ${gradeProfile.shortLabel} 20 Soruluk Yazılıya Hazırlık`,
+    });
+    setTargetCount(20);
+    setShow20Picker(false);
+    setNotice(`20 soruluk yazılıya hazırlık seçimi uygulandı (${chosen.length} soru).`);
   };
 
   const handleMebFileSelect = async (e: ChangeEvent<HTMLInputElement>) => {
@@ -546,17 +698,79 @@ export function ExamGeneratorView({
   return (
     <div className="space-y-6">
       {/* Header Banner */}
-      <div className="surface-card rounded-xl p-5 flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h2 className="text-xl font-bold">
-            Deneme Yükleme, Dinamik Soru Kaynağı & Tam Paket ZIP Merkezi
-          </h2>
-          <p className="text-sm mt-0.5" style={{ color: 'var(--text-secondary)' }}>
-            MEB müfredat PDF’i veya seçtiğiniz sınıf düzeyine ({gradeProfile.shortLabel}) uygun şekilde hazır deneme yükleyin ya da dinamik karma deneme oluşturun.
-          </p>
+      <div className="surface-card rounded-xl p-5 space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 className="text-xl font-bold">
+              PDF Soru İşleyici, Deneme Yapma Yöntemleri & Tam Paket ZIP Merkezi
+            </h2>
+            <p className="text-sm mt-0.5" style={{ color: 'var(--text-secondary)' }}>
+              {gradeProfile.shortLabel} düzeyinde hazır PDF’ten soru işleyin, 20 soruluk yazılıya hazırlık denemesi seçin veya 10 soruluk açık uçlu sınav kağıdı analiz edin.
+            </p>
+          </div>
+          <div className="text-xs font-mono-num font-bold" style={{ color: 'var(--accent-primary)' }}>
+            Aktif Havuz: {questions.length} Soru · {gradeProfile.shortLabel} ({gradeProfile.optionCount} Şık)
+          </div>
         </div>
-        <div className="text-xs font-mono-num font-bold" style={{ color: 'var(--accent-primary)' }}>
-          Aktif Havuz: {questions.length} Soru · {gradeProfile.shortLabel} ({gradeProfile.optionCount} Şık)
+
+        {/* Denemeler Yapma Yöntemi Bar */}
+        <div
+          className="pt-3 border-t flex flex-wrap items-center gap-2"
+          style={{ borderColor: 'var(--border-subtle)' }}
+          data-testid="exam-methods-bar"
+        >
+          <span className="text-xs font-bold mr-1" style={{ color: 'var(--text-secondary)' }}>
+            Deneme Yapma Yöntemi:
+          </span>
+          <button
+            type="button"
+            onClick={() => {
+              setAiTab('pdf-processor');
+              document
+                .querySelector('[data-testid="dynamic-source-section"]')
+                ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            }}
+            className="btn-3d-secondary px-3 py-1.5 rounded-lg text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer"
+          >
+            <FileUp className="w-3.5 h-3.5" aria-hidden="true" />
+            <span>1. PDF Soru İşleyici</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setTargetCount(20);
+              setShow20Picker(true);
+              handleGenerateAuto(20, subjectScope);
+            }}
+            data-testid="quick-20-yazili-btn"
+            className="btn-3d-secondary px-3 py-1.5 rounded-lg text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer"
+          >
+            <ListChecks className="w-3.5 h-3.5" aria-hidden="true" />
+            <span>2. 20 Soruluk Yazılıya Hazırlık</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setTargetCount(defaultQuestionTarget);
+              setShow20Picker(false);
+              handleGenerateAuto(defaultQuestionTarget, 'Tümü');
+            }}
+            className="btn-3d-secondary px-3 py-1.5 rounded-lg text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer"
+          >
+            <Wand2 className="w-3.5 h-3.5" aria-hidden="true" />
+            <span>3. Tam Müfredat Denemesi ({defaultQuestionTarget} Soru)</span>
+          </button>
+          {onOpenOpenEnded && (
+            <button
+              type="button"
+              onClick={onOpenOpenEnded}
+              data-testid="quick-10-open-ended-btn"
+              className="btn-3d-secondary px-3 py-1.5 rounded-lg text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer"
+            >
+              <FileText className="w-3.5 h-3.5" aria-hidden="true" />
+              <span>4. 10 Soruluk Açık Uçlu & Kağıt Analizi</span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -610,6 +824,60 @@ export function ExamGeneratorView({
                 className="sr-only"
               />
             </label>
+
+            {/* Yüklenen Deneme Ön/Arka Kapak Temizleme ve Kuruma Özel Arka Kapak Seçenekleri */}
+            <div
+              className="surface-alt rounded-xl p-3.5 space-y-2 text-xs"
+              data-testid="pdf-strip-options-panel"
+            >
+              <div className="font-bold">Dış Kapak Temizleme & Arka Sayfa Ayarları</div>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={pdfStripOptions.stripFrontCover}
+                  onChange={(e) => onUpdatePdfStripOptions({ stripFrontCover: e.target.checked })}
+                  className="rounded accent-blue-600"
+                />
+                <span>İlk Sayfayı (Orijinal Dış Kapağı) Sil — yerine kendi kapağımızı koy</span>
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={pdfStripOptions.stripBackCover}
+                  onChange={(e) => onUpdatePdfStripOptions({ stripBackCover: e.target.checked })}
+                  className="rounded accent-blue-600"
+                />
+                <span>Son Sayfayı (Başka Kuruma Ait Arka Sayfayı) Sil</span>
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={pdfStripOptions.appendBrandedBackPage}
+                  onChange={(e) =>
+                    onUpdatePdfStripOptions({ appendBrandedBackPage: e.target.checked })
+                  }
+                  className="rounded accent-blue-600"
+                />
+                <span>
+                  Kuruma Özel Arka Sayfa Ekle ({cover.academyName})
+                </span>
+              </label>
+
+              {uploadedPdfPageCount !== null && (
+                <div
+                  className="pt-2 border-t text-[11px] font-mono-num font-bold"
+                  style={{ borderColor: 'var(--border-subtle)', color: 'var(--accent-primary)' }}
+                >
+                  {(() => {
+                    const kept = computeKeptUploadedPdfIndices(uploadedPdfPageCount, pdfStripOptions);
+                    const totalOut = 1 + kept.length + (pdfStripOptions.appendBrandedBackPage ? 1 : 0);
+                    return `Çıktı Özeti: 1 Ön Kapak + ${kept.length} İç Sayfa${
+                      pdfStripOptions.appendBrandedBackPage ? ' + 1 Kuruma Özel Arka Kapak' : ''
+                    } = ${totalOut} Sayfa`;
+                  })()}
+                </div>
+              )}
+            </div>
           </div>
 
           <div className="flex flex-wrap items-center gap-2.5">
@@ -651,7 +919,7 @@ export function ExamGeneratorView({
               Kurum yetki kapsamınızdaki sınıf düzeylerinden birini seçin ({institution.name}). 3–8. sınıflar 4 şıklı, lise/YKS 5 şıklı olarak hazırlanır.
             </p>
 
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
               <label className="block text-xs font-semibold">
                 <span style={{ color: 'var(--text-secondary)' }}>Yetkili Sınıf / Sınav</span>
                 <select
@@ -668,12 +936,32 @@ export function ExamGeneratorView({
               </label>
 
               <label className="block text-xs font-semibold">
+                <span style={{ color: 'var(--text-secondary)' }}>Ders Kapsamı</span>
+                <select
+                  value={subjectScope}
+                  onChange={(e) => setSubjectScope(e.target.value)}
+                  aria-label="Deneme Ders Kapsamı"
+                  className="mt-1 w-full rounded-lg px-2.5 py-2 text-xs surface-alt"
+                >
+                  <option value="Tümü">Karma (Tüm Dersler)</option>
+                  {gradeProfile.subjects.map((s) => (
+                    <option key={s.id} value={s.name}>
+                      {s.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label className="block text-xs font-semibold">
                 <span style={{ color: 'var(--text-secondary)' }}>Soru Sayısı</span>
                 <select
                   value={targetCount}
                   onChange={(e) => setTargetCount(Number(e.target.value))}
+                  aria-label="Otomatik Deneme Soru Sayısı"
+                  data-testid="exam-question-count-select"
                   className="mt-1 w-full rounded-lg px-2.5 py-2 text-xs surface-alt"
                 >
+                  <option value={20}>20 Soru (Yazılıya Hazırlık)</option>
                   <option value={defaultQuestionTarget}>
                     {defaultQuestionTarget} Soru ({gradeProfile.shortLabel} Standardı)
                   </option>
@@ -699,17 +987,46 @@ export function ExamGeneratorView({
                   <option value="zor">Derece & Seçici (%20K · %40O · %40Z)</option>
                 </select>
               </label>
+
+              {onChangePenaltyDivisor && (
+                <label className="block text-xs font-semibold sm:col-span-2 lg:col-span-4">
+                  <span style={{ color: 'var(--text-secondary)' }}>
+                    Doğru-Yanlış Götürme Ayarı (3., 4., 5. Sınıf & Tüm Düzeyler)
+                  </span>
+                  <select
+                    data-testid="generator-penalty-select"
+                    value={penaltyDivisor ?? gradeProfile.penaltyDivisor}
+                    onChange={(e) =>
+                      onChangePenaltyDivisor(Number(e.target.value) as PenaltyDivisor)
+                    }
+                    className="mt-1 w-full rounded-lg px-2.5 py-2 text-xs surface-alt font-semibold"
+                  >
+                    <option value={0}>Yanlış Doğruyu Götürmez (Net = Doğru · 3–5. Sınıf Seçeneği)</option>
+                    <option value={3}>3 Yanlış 1 Doğruyu Götürür (Ortaokul / İlkokul / LGS)</option>
+                    <option value={4}>4 Yanlış 1 Doğruyu Götürür (Lise / YKS)</option>
+                  </select>
+                </label>
+              )}
             </div>
           </div>
 
           <div className="flex flex-wrap items-center gap-2.5">
             <button
               type="button"
-              onClick={handleGenerateAuto}
+              onClick={() => handleGenerateAuto()}
               className="btn-3d flex-1 py-2.5 px-4 rounded-xl text-xs font-bold inline-flex items-center justify-center gap-1.5 whitespace-nowrap cursor-pointer"
             >
               <Wand2 className="w-4 h-4 shrink-0" aria-hidden="true" />
               <span>{targetCount} Soruluk Otomatik Deneme Oluştur</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setShow20Picker((v) => !v)}
+              data-testid="select-20-quiz-btn"
+              className="btn-3d-secondary px-3.5 py-2.5 rounded-xl text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
+            >
+              <ListChecks className="w-3.5 h-3.5" aria-hidden="true" />
+              <span>20 Soruluk Soru Seçimi</span>
             </button>
             <button
               type="button"
@@ -722,6 +1039,90 @@ export function ExamGeneratorView({
           </div>
         </section>
       </div>
+
+      {/* 20 SORULUK YAZILIYA HAZIRLIK & SORU SEÇİMİ PANELİ */}
+      {show20Picker && (
+        <section
+          className="surface-card rounded-xl p-5 space-y-4 border-l-4"
+          style={{ borderLeftColor: 'var(--accent-primary)' }}
+          data-testid="quiz-20-selector-panel"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h3 className="text-base font-bold">
+                20 Soruluk Yazılıya Hazırlık & Soru Seçimi ({subjectScope === 'Tümü' ? 'Tüm Dersler' : subjectScope})
+              </h3>
+              <p className="text-xs" style={{ color: 'var(--text-secondary)' }}>
+                Aşağıdaki havuzdan en fazla 20 soru işaretleyin veya otomatik 20 yazılı sorusu oluşturun ({pickedQuestionIds.length}/20 seçili).
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  const filtered =
+                    subjectScope === 'Tümü'
+                      ? questions
+                      : questions.filter((q) => q.subject === subjectScope);
+                  setPickedQuestionIds(filtered.slice(0, 20).map((q) => q.id));
+                }}
+                className="btn-3d-secondary px-3 py-1.5 rounded-lg text-xs font-bold cursor-pointer"
+              >
+                İlk 20 Soruyu Seç
+              </button>
+              <button
+                type="button"
+                onClick={handleApply20QuestionSelection}
+                data-testid="apply-20-quiz-btn"
+                className="btn-3d px-4 py-1.5 rounded-lg text-xs font-bold cursor-pointer"
+              >
+                20 Soruluk Deneme Olarak Uygula
+              </button>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-2 max-h-64 overflow-y-auto pr-1">
+            {(subjectScope === 'Tümü'
+              ? questions
+              : questions.filter((q) => q.subject === subjectScope)
+            )
+              .slice(0, 40)
+              .map((q) => {
+                const checked = pickedQuestionIds.includes(q.id);
+                return (
+                  <label
+                    key={q.id}
+                    className={`surface-alt rounded-lg p-2.5 text-xs flex items-start gap-2 cursor-pointer border ${
+                      checked ? 'border-blue-500' : 'border-transparent'
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={(e) => {
+                        if (e.target.checked) {
+                          if (pickedQuestionIds.length >= 20) return;
+                          setPickedQuestionIds((prev) => [...prev, q.id]);
+                        } else {
+                          setPickedQuestionIds((prev) => prev.filter((id) => id !== q.id));
+                        }
+                      }}
+                      className="mt-0.5 rounded accent-blue-600"
+                    />
+                    <div className="min-w-0">
+                      <div className="font-bold truncate">
+                        S{q.number} · {q.subject}
+                      </div>
+                      <div className="text-[11px] line-clamp-2" style={{ color: 'var(--text-secondary)' }}>
+                        {q.stem}
+                      </div>
+                    </div>
+                  </label>
+                );
+              })}
+          </div>
+        </section>
+      )}
 
       {/* TAM PAKET ZIP MERKEZİ */}
       <section aria-labelledby="full-zip-title" className="surface-card rounded-xl p-5 space-y-4">
@@ -778,18 +1179,29 @@ export function ExamGeneratorView({
         </div>
       </section>
 
-      {/* 3. DİNAMİK SORU KAYNAĞI & MEB MÜFREDAT MERKEZİ */}
+      {/* 3. PDF SORU İŞLEYİCİ, DİNAMİK SORU KAYNAĞI & MEB MÜFREDAT MERKEZİ */}
       <section aria-labelledby="ai-sources-title" data-testid="dynamic-source-section" className="surface-card rounded-xl p-5 space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <h3 id="ai-sources-title" className="text-base font-bold">
-              3. Dinamik Soru Kaynağı & MEB Müfredat Merkezi
+              3. PDF Soru İşleyici & Dinamik Soru Kaynağı Merkezi
             </h3>
             <p className="text-xs mt-0.5" style={{ color: 'var(--text-secondary)' }}>
-              MEB müfredat sayfasından PDF yükleyerek {gradeProfile.shortLabel} aktif müfredatı kurun, çoklu kaynakları harmanlayın veya Excel soru bankası içe aktarın.
+              Hazır PDF’ten soruları ayıklayıp seçin, MEB müfredat PDF’i ile {gradeProfile.shortLabel} havuzu kurun veya çoklu kaynakları harmanlayın.
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => setAiTab('pdf-processor')}
+              data-testid="tab-pdf-processor"
+              className={`px-3 py-2 rounded-lg text-xs font-bold whitespace-nowrap shrink-0 inline-flex items-center gap-1.5 cursor-pointer ${
+                aiTab === 'pdf-processor' ? 'btn-3d' : 'btn-3d-secondary'
+              }`}
+            >
+              <FileUp className="w-3.5 h-3.5" aria-hidden="true" />
+              <span>PDF Soru İşleyici</span>
+            </button>
             <button
               type="button"
               onClick={() => setAiTab('meb-pdf')}
@@ -832,6 +1244,141 @@ export function ExamGeneratorView({
             </button>
           </div>
         </div>
+
+        {/* TAB 0: PDF SORU İŞLEYİCİ */}
+        {aiTab === 'pdf-processor' && (
+          <div className="surface-alt rounded-xl p-4 space-y-4" data-testid="pdf-processor-panel">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <div className="text-sm font-bold">
+                  PDF Soru İşleyici — Soruları Ayıkla, Seç & Denemeye Dönüştür ({gradeProfile.shortLabel})
+                </div>
+                <p className="text-xs" style={{ color: 'var(--text-secondary)' }}>
+                  PDF veya TXT sınav dosyası yükleyin ya da soru metni yapıştırın; işlenen sorulardan istediklerinizi seçip 20 soruluk veya tam deneme olarak aktarın.
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <select
+                  value={pdfProcTargetCount}
+                  onChange={(e) => setPdfProcTargetCount(Number(e.target.value))}
+                  aria-label="PDF işleyici hedef soru sayısı"
+                  className="rounded-lg px-2.5 py-2 text-xs font-bold surface-card"
+                >
+                  <option value={10}>10 Soru</option>
+                  <option value={20}>20 Soru (Yazılıya Hazırlık)</option>
+                  <option value={40}>40 Soru</option>
+                </select>
+                <label className="btn-3d px-4 py-2 rounded-xl text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer">
+                  {busy === 'pdf-proc' ? (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
+                      <span>PDF İşleniyor...</span>
+                    </>
+                  ) : (
+                    <>
+                      <FileUp className="w-3.5 h-3.5" aria-hidden="true" />
+                      <span>PDF / TXT Yükle & İşle</span>
+                    </>
+                  )}
+                  <input
+                    type="file"
+                    accept=".pdf,.txt,application/pdf,text/plain"
+                    onChange={handleProcessExamPdfFile}
+                    className="sr-only"
+                  />
+                </label>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 items-end">
+              <label className="lg:col-span-9 block text-xs font-semibold">
+                <span style={{ color: 'var(--text-secondary)' }}>
+                  Veya PDF’ten Kopyalanan Soruları Buraya Yapıştırın (1. ... A) ... B) ...)
+                </span>
+                <textarea
+                  rows={3}
+                  value={pdfProcText}
+                  onChange={(e) => setPdfProcText(e.target.value)}
+                  placeholder="1. Bir sınıftaki 18 öğrencinin yarısı gözlüklüdür. Gözlüksüz kaç öğrenci vardır? A) 6 B) 9 C) 10 D) 12 Cevap: B"
+                  className="mt-1 w-full rounded-lg p-2.5 text-xs surface-card"
+                />
+              </label>
+              <div className="lg:col-span-3">
+                <button
+                  type="button"
+                  disabled={!pdfProcText.trim()}
+                  onClick={handleProcessRawText}
+                  data-testid="pdf-proc-parse-text-btn"
+                  className="btn-3d-secondary w-full py-2.5 px-3 rounded-xl text-xs font-bold cursor-pointer disabled:opacity-50"
+                >
+                  Metindeki Soruları İşle
+                </button>
+              </div>
+            </div>
+
+            {pdfProcList.length > 0 && (
+              <div className="space-y-3 pt-2 border-t" style={{ borderColor: 'var(--border-subtle)' }}>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-xs font-bold" style={{ color: 'var(--accent-primary)' }}>
+                    İşlenen Sorular ({pdfProcSelectedIds.length} / {pdfProcList.length} seçili)
+                  </span>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => handleApplyProcessedPdfQuestions(false)}
+                      data-testid="apply-processed-pdf-btn"
+                      className="btn-3d px-3.5 py-1.5 rounded-lg text-xs font-bold cursor-pointer"
+                    >
+                      Seçilenleri Aktif Denemeye Aktar
+                    </button>
+                    {onOpenEditor && (
+                      <button
+                        type="button"
+                        onClick={() => handleApplyProcessedPdfQuestions(true)}
+                        className="btn-3d-secondary px-3.5 py-1.5 rounded-lg text-xs font-bold cursor-pointer"
+                      >
+                        Aktar & Editörde Aç
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5 max-h-60 overflow-y-auto pr-1">
+                  {pdfProcList.map((q) => {
+                    const checked = pdfProcSelectedIds.includes(q.id);
+                    return (
+                      <label
+                        key={q.id}
+                        className="surface-card rounded-lg p-3 text-xs flex items-start gap-2 cursor-pointer"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setPdfProcSelectedIds((prev) => [...prev, q.id]);
+                            } else {
+                              setPdfProcSelectedIds((prev) => prev.filter((id) => id !== q.id));
+                            }
+                          }}
+                          className="mt-0.5 rounded accent-blue-600"
+                        />
+                        <div className="min-w-0">
+                          <div className="font-bold">
+                            Soru {q.number} · {q.subject} · Cevap: {q.correctOption}
+                          </div>
+                          <div className="text-[11px] line-clamp-2 mt-0.5" style={{ color: 'var(--text-secondary)' }}>
+                            {q.stem}
+                          </div>
+                        </div>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* TAB 1: MEB Müfredat PDF Yükle & Aktif Müfredat Güncelle */}
         {aiTab === 'meb-pdf' && (
@@ -1389,6 +1936,7 @@ export function ExamGeneratorView({
                   {q.difficulty} · {q.source}
                 </span>
               </div>
+              {q.visual && <QuestionVisualPreview visual={q.visual} compact />}
               <p className="text-sm font-medium leading-relaxed">{q.stem}</p>
               <div className="grid grid-cols-1 gap-1 pt-1">
                 {Object.entries(q.options).map(([k, v]) => (

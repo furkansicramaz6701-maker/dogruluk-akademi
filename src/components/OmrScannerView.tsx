@@ -1,4 +1,4 @@
-import { useState, ChangeEvent } from 'react';
+import { useState, useEffect, ChangeEvent } from 'react';
 import {
   Camera,
   FileKey2,
@@ -7,9 +7,18 @@ import {
   ArrowRight,
   Loader2,
   AlertCircle,
+  FileText,
 } from 'lucide-react';
-import { CoverConfig, ExamAnalysisResult, ExamQuestion, GradeProfile } from '../types/academy';
+import {
+  CoverConfig,
+  ExamAnalysisResult,
+  ExamQuestion,
+  GradeProfile,
+  OpenEndedPaperAnalysis,
+  PenaltyDivisor,
+} from '../types/academy';
 import { generateSampleOmrPair, parseAnswerString } from '../utils/examAnalysis';
+import { OpenEndedPaperPanel } from './OpenEndedPaperPanel';
 import { OpticalFormPreview } from './OpticalFormPreview';
 
 interface OmrScannerViewProps {
@@ -20,17 +29,21 @@ interface OmrScannerViewProps {
   studentName: string;
   studentNumber: string;
   classroom: string;
-  penaltyDivisor: 3 | 4;
+  penaltyDivisor: PenaltyDivisor;
   analysis: ExamAnalysisResult;
   cover: CoverConfig;
   institutionCode8: string;
+  parentPhone?: string;
+  initialMode?: 'omr' | 'open-ended';
+  openEndedAnalysis?: OpenEndedPaperAnalysis | null;
+  onSaveOpenEndedAnalysis?: (result: OpenEndedPaperAnalysis) => void;
   onUpdateOmrState: (patch: {
     studentAnswersRaw?: string;
     answerKeyRaw?: string;
     studentName?: string;
     studentNumber?: string;
     classroom?: string;
-    penaltyDivisor?: 3 | 4;
+    penaltyDivisor?: PenaltyDivisor;
   }) => void;
   onEvaluateNow: () => void;
   onGoToReports: () => void;
@@ -60,14 +73,23 @@ export function OmrScannerView({
   analysis,
   cover,
   institutionCode8,
+  parentPhone,
+  initialMode = 'omr',
+  openEndedAnalysis = null,
+  onSaveOpenEndedAnalysis,
   onUpdateOmrState,
   onEvaluateNow,
   onGoToReports,
   onDownloadOpticalPdf,
 }: OmrScannerViewProps) {
+  const [scannerMode, setScannerMode] = useState<'omr' | 'open-ended'>(initialMode);
   const [loadingMode, setLoadingMode] = useState<'student' | 'key' | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  useEffect(() => {
+    setScannerMode(initialMode);
+  }, [initialMode]);
 
   const expectedCount = questions.length;
   const parsedStudent = parseAnswerString(
@@ -177,6 +199,51 @@ export function OmrScannerView({
 
   return (
     <div className="space-y-6">
+      {/* Mode Switcher: OMR vs 10-Question Open-Ended Paper Analysis */}
+      <div className="surface-card rounded-xl p-3 flex flex-wrap items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setScannerMode('omr')}
+            data-testid="omr-classic-tab"
+            className={`px-3.5 py-2 rounded-xl text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer ${
+              scannerMode === 'omr' ? 'btn-3d' : 'btn-3d-secondary'
+            }`}
+          >
+            <Camera className="w-3.5 h-3.5" aria-hidden="true" />
+            <span>Çoktan Seçmeli Optik Okuma (OMR)</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setScannerMode('open-ended')}
+            data-testid="omr-open-ended-tab"
+            className={`px-3.5 py-2 rounded-xl text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer ${
+              scannerMode === 'open-ended' ? 'btn-3d' : 'btn-3d-secondary'
+            }`}
+          >
+            <FileText className="w-3.5 h-3.5" aria-hidden="true" />
+            <span>10 Soruluk Açık Uçlu Kağıt & Çözüm Analizi</span>
+          </button>
+        </div>
+        <div className="text-[11px] font-mono-num" style={{ color: 'var(--text-secondary)' }}>
+          {gradeProfile.shortLabel} · {studentName || 'Öğrenci Seçilmedi'}
+        </div>
+      </div>
+
+      {scannerMode === 'open-ended' ? (
+        <OpenEndedPaperPanel
+          gradeProfile={gradeProfile}
+          cover={cover}
+          studentName={studentName}
+          studentNumber={studentNumber}
+          classroom={classroom}
+          parentPhone={parentPhone}
+          latestAnalysis={openEndedAnalysis}
+          onSavePaperAnalysis={(res) => onSaveOpenEndedAnalysis?.(res)}
+          onGoToReports={onGoToReports}
+        />
+      ) : (
+        <>
       <div className="surface-card rounded-xl p-5">
         <div className="flex flex-wrap items-center justify-between gap-4 mb-5">
           <div>
@@ -246,16 +313,18 @@ export function OmrScannerView({
             />
           </label>
           <label className="block text-xs font-semibold">
-            <span style={{ color: 'var(--text-secondary)' }}>Net Hesaplama Kuralı</span>
+            <span style={{ color: 'var(--text-secondary)' }}>Net Hesaplama (Doğru-Yanlış)</span>
             <select
+              data-testid="omr-penalty-select"
               value={penaltyDivisor}
               onChange={(e) =>
-                onUpdateOmrState({ penaltyDivisor: Number(e.target.value) as 3 | 4 })
+                onUpdateOmrState({ penaltyDivisor: Number(e.target.value) as PenaltyDivisor })
               }
               className="mt-1 w-full rounded-lg px-3 py-2 text-sm surface-alt focus:outline-2"
             >
-              <option value={4}>4 Yanlış 1 Doğruyu Götürür (Lise / TYT / AYT)</option>
+              <option value={0}>Yanlış Doğruyu Götürmez (Net = Doğru · 3–5. Sınıf)</option>
               <option value={3}>3 Yanlış 1 Doğruyu Götürür (3–8. Sınıf / LGS)</option>
+              <option value={4}>4 Yanlış 1 Doğruyu Götürür (Lise / TYT / AYT)</option>
             </select>
           </label>
         </div>
@@ -447,6 +516,8 @@ export function OmrScannerView({
         totalQuestions={questions.length}
         onDownloadOpticalPdf={onDownloadOpticalPdf}
       />
+        </>
+      )}
     </div>
   );
 }

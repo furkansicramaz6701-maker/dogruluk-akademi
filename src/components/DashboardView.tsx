@@ -35,10 +35,12 @@ import {
   Institution,
   InstitutionPermissions,
   LogoStyleId,
+  PenaltyDivisor,
   RecommendationCategory,
   SmartRecommendation,
   StudentRecord,
 } from '../types/academy';
+import { formatPenaltyRuleLabel } from '../utils/examAnalysis';
 import {
   buildQuestionsFromCurriculumOverride,
   extractCurriculumOverrideFromText,
@@ -52,11 +54,14 @@ import { Cube3DShowcase } from './Cube3DShowcase';
 import { InstitutionAuthPanel } from './InstitutionAuthPanel';
 import { InstitutionStudentManager } from './InstitutionStudentManager';
 import { Logo3D } from './Logo3D';
+import { NetProgressionChart } from './NetProgressionChart';
 import { ThemeSelector } from './ThemeSelector';
 
 interface DashboardViewProps {
   gradeProfile: GradeProfile;
   onSelectGrade: (id: GradeLevelId) => void;
+  penaltyDivisor: PenaltyDivisor;
+  onChangePenaltyDivisor: (divisor: PenaltyDivisor) => void;
   analysis: ExamAnalysisResult;
   hasLiveAnalysis: boolean;
   questionCount: number;
@@ -77,6 +82,11 @@ interface DashboardViewProps {
   onClearMebCurriculum: () => void;
   onSelectInstitution: (inst: Institution) => void;
   onAddInstitution: (inst: Institution) => void;
+  onUpdateInstitution: (
+    institutionId: string,
+    patch: { name: string; city: string; accessPassword?: string }
+  ) => { ok: boolean; reason?: string };
+  onDeleteInstitution: (institutionId: string) => { ok: boolean; reason?: string };
   onBulkAddInstitutions: (items: Institution[]) => void;
   onUpdateInstitutionPermissions: (
     institutionId: string,
@@ -109,6 +119,8 @@ async function fileToBase64(file: File): Promise<string> {
 export function DashboardView({
   gradeProfile,
   onSelectGrade,
+  penaltyDivisor,
+  onChangePenaltyDivisor,
   analysis,
   hasLiveAnalysis,
   questionCount,
@@ -126,6 +138,8 @@ export function DashboardView({
   onClearMebCurriculum,
   onSelectInstitution,
   onAddInstitution,
+  onUpdateInstitution,
+  onDeleteInstitution,
   onBulkAddInstitutions,
   onUpdateInstitutionPermissions,
   onAddStudent,
@@ -307,7 +321,7 @@ export function DashboardView({
             </span>
           </div>
           <div className="mt-1 text-xs truncate" style={{ color: 'var(--text-secondary)' }}>
-            {mebOverride ? `MEB PDF: ${mebOverride.sourceName}` : `${gradeProfile.category} · ${gradeProfile.penaltyDivisor}Y = 1D`}
+            {mebOverride ? `MEB PDF: ${mebOverride.sourceName}` : `${gradeProfile.category} · ${formatPenaltyRuleLabel(penaltyDivisor, true)}`}
           </div>
         </div>
 
@@ -385,6 +399,7 @@ export function DashboardView({
           <Cube3DShowcase
             activeInstitution={activeInstitution}
             gradeProfile={gradeProfile}
+            penaltyDivisor={penaltyDivisor}
             questionCount={questionCount}
             activeLogoId={activeLogoId}
             hasMebOverride={Boolean(mebOverride)}
@@ -426,6 +441,43 @@ export function DashboardView({
                 <span>{mebQuickNotice}</span>
               </div>
             )}
+
+            <div
+              className="surface-alt rounded-xl p-3 flex flex-wrap items-center justify-between gap-2.5"
+              data-testid="dashboard-penalty-selector"
+            >
+              <div className="text-xs">
+                <span className="font-bold">Doğru-Yanlış Götürme Kuralı:</span>{' '}
+                <span style={{ color: 'var(--text-secondary)' }}>
+                  {gradeProfile.id === '3' || gradeProfile.id === '4' || gradeProfile.id === '5'
+                    ? '3–5. sınıf denemelerinde götürmesiz veya 3Y=1D olarak ayarlayabilirsiniz'
+                    : formatPenaltyRuleLabel(penaltyDivisor)}
+                </span>
+              </div>
+              <div className="flex flex-wrap items-center gap-1.5">
+                {([
+                  { value: 0 as PenaltyDivisor, label: 'Götürmesiz (Net = Doğru)' },
+                  { value: 3 as PenaltyDivisor, label: '3Y = 1D' },
+                  { value: 4 as PenaltyDivisor, label: '4Y = 1D' },
+                ]).map((opt) => {
+                  const active = penaltyDivisor === opt.value;
+                  return (
+                    <button
+                      key={opt.value}
+                      type="button"
+                      data-testid={`dashboard-penalty-btn-${opt.value}`}
+                      aria-pressed={active}
+                      onClick={() => onChangePenaltyDivisor(opt.value)}
+                      className={`px-2.5 py-1.5 rounded-lg text-[11px] font-bold cursor-pointer ${
+                        active ? 'btn-3d' : 'btn-3d-secondary'
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
               {activeSubjects.map((s) => (
@@ -490,6 +542,19 @@ export function DashboardView({
         </section>
       </div>
 
+      {/* İnteraktif Net Gelişim Grafiği (Kurum Geneli & Türkiye Geneli) */}
+      <NetProgressionChart
+        gradeProfile={gradeProfile}
+        questionCount={questionCount}
+        penaltyDivisor={penaltyDivisor}
+        activeInstitution={activeInstitution}
+        students={students}
+        hasLiveAnalysis={hasLiveAnalysis}
+        activeStudentName={analysis.studentName}
+        activeStudentNet={analysis.totalNet}
+        activeExamTitle={analysis.examTitle}
+      />
+
       {/* Grade Selector (Filtered cleanly by Kurum Yetki Kapsamı!) */}
       <section aria-labelledby="grade-selector-title" className="surface-card rounded-xl p-5">
         <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
@@ -549,6 +614,8 @@ export function DashboardView({
         cover={cover}
         onSelectInstitution={onSelectInstitution}
         onAddInstitution={onAddInstitution}
+        onUpdateInstitution={onUpdateInstitution}
+        onDeleteInstitution={onDeleteInstitution}
         onBulkAddInstitutions={onBulkAddInstitutions}
         onAddStudent={onAddStudent}
         onBulkAddStudents={onBulkAddStudents}
@@ -563,6 +630,8 @@ export function DashboardView({
         students={students}
         onSelectInstitution={onSelectInstitution}
         onUpdatePermissions={onUpdateInstitutionPermissions}
+        onUpdateInstitution={onUpdateInstitution}
+        onDeleteInstitution={onDeleteInstitution}
       />
 
       {/* 5 Başlık & 3D Logo Seçeneği */}

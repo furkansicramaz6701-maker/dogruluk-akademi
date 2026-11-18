@@ -1,11 +1,13 @@
 import { useState } from 'react';
 import { Box, Pause, Play, RotateCw } from 'lucide-react';
-import { GradeProfile, Institution, LogoStyleId } from '../types/academy';
+import { GradeProfile, Institution, LogoStyleId, PenaltyDivisor } from '../types/academy';
 import { getLogoPreset } from '../data/logos';
+import { formatPenaltyRuleLabel } from '../utils/examAnalysis';
 
 interface Cube3DShowcaseProps {
   activeInstitution: Institution;
   gradeProfile: GradeProfile;
+  penaltyDivisor?: PenaltyDivisor;
   questionCount: number;
   activeLogoId: LogoStyleId;
   hasMebOverride: boolean;
@@ -25,6 +27,7 @@ const FACE_TRANSFORMS: Record<CubeFaceKey, string> = {
 export function Cube3DShowcase({
   activeInstitution,
   gradeProfile,
+  penaltyDivisor,
   questionCount,
   activeLogoId,
   hasMebOverride,
@@ -75,7 +78,7 @@ export function Cube3DShowcase({
       label: 'Kaynak',
       title: 'DİNAMİK KAYNAK',
       value: hasMebOverride ? 'MEB PDF' : 'MEB & Web',
-      sub: `${gradeProfile.penaltyDivisor}Y = 1D Kuralı`,
+      sub: formatPenaltyRuleLabel(penaltyDivisor ?? gradeProfile.penaltyDivisor, true),
       transform: `rotateY(-90deg) translateZ(${half}px)`,
       bg: `linear-gradient(145deg, #b45309, #78350f)`,
     },

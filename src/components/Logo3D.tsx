@@ -1,5 +1,5 @@
 import { useId, useState, MouseEvent } from 'react';
-import { getLogoPreset } from '../data/logos';
+import { buildInstitutionLogoProfile, getLogoPreset } from '../data/logos';
 import { LogoStyleId } from '../types/academy';
 
 interface Logo3DProps {
@@ -7,6 +7,7 @@ interface Logo3DProps {
   interactive?: boolean;
   animated?: boolean;
   variant?: LogoStyleId;
+  institutionName?: string;
 }
 
 export function Logo3D({
@@ -14,9 +15,19 @@ export function Logo3D({
   interactive = true,
   animated = true,
   variant = 'akademi-kalkani',
+  institutionName,
 }: Logo3DProps) {
   const uid = useId().replace(/:/g, '');
-  const preset = getLogoPreset(variant);
+  const basePreset = getLogoPreset(variant);
+  const instProfile = institutionName?.trim()
+    ? buildInstitutionLogoProfile(institutionName)
+    : null;
+  const activeVariant = instProfile ? instProfile.variant : variant;
+  const primaryColor = instProfile ? instProfile.primaryColor : basePreset.primaryColor;
+  const secondaryColor = instProfile ? instProfile.secondaryColor : basePreset.secondaryColor;
+  const goldColor = instProfile ? instProfile.goldColor : basePreset.goldColor;
+  const displayTitle = instProfile ? instProfile.institutionName : basePreset.headerTitle;
+  const monogram = instProfile ? instProfile.initials : 'DA';
   const px = size === 'sm' ? 42 : size === 'lg' ? 76 : 56;
   const depthScale = size === 'sm' ? 0.78 : size === 'lg' ? 1.35 : 1;
 
@@ -44,10 +55,10 @@ export function Logo3D({
 
   const depthLayers = [
     { z: -10, dx: 4.5, dy: 6, bg: 'rgba(2, 6, 23, 0.58)', border: 'rgba(255,255,255,0.05)' },
-    { z: -8, dx: 3.6, dy: 4.8, bg: preset.secondaryColor, border: 'rgba(251, 191, 36, 0.32)' },
-    { z: -6, dx: 2.7, dy: 3.6, bg: preset.secondaryColor, border: 'rgba(255,255,255,0.12)' },
-    { z: -4, dx: 1.8, dy: 2.4, bg: preset.primaryColor, border: 'rgba(255,255,255,0.2)' },
-    { z: -2, dx: 0.9, dy: 1.2, bg: preset.primaryColor, border: 'rgba(251, 191, 36, 0.42)' },
+    { z: -8, dx: 3.6, dy: 4.8, bg: secondaryColor, border: 'rgba(251, 191, 36, 0.32)' },
+    { z: -6, dx: 2.7, dy: 3.6, bg: secondaryColor, border: 'rgba(255,255,255,0.12)' },
+    { z: -4, dx: 1.8, dy: 2.4, bg: primaryColor, border: 'rgba(255,255,255,0.2)' },
+    { z: -2, dx: 0.9, dy: 1.2, bg: primaryColor, border: 'rgba(251, 191, 36, 0.42)' },
   ];
 
   const faceGradId = `daFace-${uid}`;
@@ -70,7 +81,7 @@ export function Logo3D({
           aria-hidden="true"
           className="logo-3d-orbit absolute -inset-1.5 rounded-full pointer-events-none"
           style={{
-            border: `1.5px dashed ${preset.goldColor}`,
+            border: `1.5px dashed ${goldColor}`,
             opacity: hovered ? 0.85 : 0.48,
           }}
         />
@@ -121,7 +132,7 @@ export function Logo3D({
           className="relative w-full h-full rounded-2xl flex items-center justify-center overflow-hidden"
           style={{
             transform: `translateZ(${2 * depthScale}px)`,
-            background: `linear-gradient(145deg, ${preset.primaryColor} 0%, ${preset.secondaryColor} 100%)`,
+            background: `linear-gradient(145deg, ${primaryColor} 0%, ${secondaryColor} 100%)`,
             border: '1.5px solid rgba(255, 255, 255, 0.38)',
             boxShadow: `
               inset 1.5px 1.5px 2px rgba(255, 255, 255, 0.45),
@@ -167,7 +178,7 @@ export function Logo3D({
             className="w-[78%] h-[78%] relative z-10"
             fill="none"
             role="img"
-            aria-label={`${preset.headerTitle} 3D Logo`}
+            aria-label={`${displayTitle} 3D Logo`}
           >
             <defs>
               <linearGradient id={faceGradId} x1="10" y1="6" x2="54" y2="58" gradientUnits="userSpaceOnUse">
@@ -177,7 +188,7 @@ export function Logo3D({
               </linearGradient>
               <linearGradient id={goldGradId} x1="20" y1="8" x2="44" y2="54" gradientUnits="userSpaceOnUse">
                 <stop offset="0%" stopColor="#fef9c3" />
-                <stop offset="45%" stopColor={preset.goldColor} />
+                <stop offset="45%" stopColor={goldColor} />
                 <stop offset="100%" stopColor="#b45309" />
               </linearGradient>
               <linearGradient id={shieldGradId} x1="32" y1="6" x2="32" y2="59" gradientUnits="userSpaceOnUse">
@@ -189,7 +200,7 @@ export function Logo3D({
               </filter>
             </defs>
 
-            {variant === 'zumrut-mesale' && (
+            {activeVariant === 'zumrut-mesale' && (
               <>
                 <polygon
                   points="32,5 54,16 54,48 32,59 10,48 10,16"
@@ -216,7 +227,7 @@ export function Logo3D({
               </>
             )}
 
-            {variant === 'kraliyet-armasi' && (
+            {activeVariant === 'kraliyet-armasi' && (
               <>
                 <polygon
                   points="32,4 58,28 32,60 6,28"
@@ -227,18 +238,17 @@ export function Logo3D({
                 />
                 <polygon points="32,4 58,28 32,60" fill="rgba(2,6,23,0.18)" />
                 <polygon points="32,10 51,28 32,53 13,28" stroke={`url(#${goldGradId})`} strokeWidth="1.3" />
-                {/* Compass / Pen Nib */}
                 <path
                   d="M32 16 L43 34 L32 45 L21 34 Z"
                   fill="#ffffff"
                   filter={`url(#${bookShadowId})`}
                 />
-                <circle cx="32" cy="30" r="3.5" fill={preset.secondaryColor} />
-                <path d="M32 16 V26.5" stroke={preset.secondaryColor} strokeWidth="2" />
+                <circle cx="32" cy="30" r="3.5" fill={secondaryColor} />
+                <path d="M32 16 V26.5" stroke={secondaryColor} strokeWidth="2" />
               </>
             )}
 
-            {variant === 'futuristik-prizma' && (
+            {activeVariant === 'futuristik-prizma' && (
               <>
                 <polygon
                   points="32,6 55,19 55,45 32,58 9,45 9,19"
@@ -247,14 +257,13 @@ export function Logo3D({
                   strokeWidth="2.3"
                   filter={`url(#${bookShadowId})`}
                 />
-                {/* Isometric 3D Cube Inner Faces */}
                 <polygon points="32,16 46,24 32,32 18,24" fill="#ffffff" fillOpacity="0.92" />
                 <polygon points="18,24 32,32 32,48 18,40" fill="#cbd5e1" fillOpacity="0.85" />
                 <polygon points="46,24 32,32 32,48 46,40" fill={`url(#${goldGradId})`} fillOpacity="0.92" />
               </>
             )}
 
-            {variant === 'kurumsal-muhur' && (
+            {activeVariant === 'kurumsal-muhur' && (
               <>
                 <circle
                   cx="32"
@@ -275,7 +284,7 @@ export function Logo3D({
                   fontWeight="800"
                   fontFamily="Plus Jakarta Sans, sans-serif"
                 >
-                  DA
+                  {monogram}
                 </text>
                 <path
                   d="M23 44 L32 48 L41 44"
@@ -286,7 +295,7 @@ export function Logo3D({
               </>
             )}
 
-            {variant === 'akademi-kalkani' && (
+            {activeVariant === 'akademi-kalkani' && (
               <>
                 <path
                   d="M32 5 L55 13.5 V31.5 C55 45.2 45 55.5 32 60 C19 55.5 9 45.2 9 31.5 V13.5 L32 5 Z"
@@ -328,6 +337,33 @@ export function Logo3D({
                   strokeLinejoin="round"
                 />
               </>
+            )}
+
+            {/* Kuruma Özel Monogram Rozeti (Doğruluk Akademi dışındaki kurum logolarında alt köşede belirir) */}
+            {instProfile && activeVariant !== 'kurumsal-muhur' && monogram !== 'DA' && (
+              <g>
+                <rect
+                  x="38"
+                  y="40"
+                  width="22"
+                  height="16"
+                  rx="5"
+                  fill={secondaryColor}
+                  stroke={goldColor}
+                  strokeWidth="1.4"
+                />
+                <text
+                  x="49"
+                  y="51.5"
+                  textAnchor="middle"
+                  fill="#ffffff"
+                  fontSize="9.5"
+                  fontWeight="800"
+                  fontFamily="Plus Jakarta Sans, sans-serif"
+                >
+                  {monogram}
+                </text>
+              </g>
             )}
           </svg>
         </div>

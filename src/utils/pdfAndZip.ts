@@ -10,9 +10,13 @@ import {
   GradeProfile,
   Institution,
   LogoPreset,
+  OpenEndedQuestion,
+  PdfUploadStripOptions,
+  QuestionVisualSpec,
   StudentRecord,
   WeeklyComparisonRow,
 } from '../types/academy';
+import { computeKeptUploadedPdfIndices } from './examPdfParser';
 import { buildWeeklyComparisonWorkbookBlob, defaultClassroomForGrade } from './excelExport';
 
 const A4_W = 1240;
@@ -512,13 +516,333 @@ export async function renderCoverCanvasPng(cover: CoverConfig): Promise<Uint8Arr
   return new Uint8Array(await blob.arrayBuffer());
 }
 
+async function loadCanvasImage(dataUrl: string): Promise<HTMLImageElement | null> {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => resolve(null);
+    img.src = dataUrl;
+  });
+}
+
+async function drawQuestionVisualOnCanvas(
+  ctx: CanvasRenderingContext2D,
+  visual: QuestionVisualSpec,
+  x: number,
+  y: number,
+  maxW: number,
+  maxH: number,
+  preset: LogoPreset
+): Promise<number> {
+  ctx.save();
+  ctx.fillStyle = '#f8fafc';
+  ctx.strokeStyle = '#cbd5e1';
+  ctx.lineWidth = 2;
+  ctx.fillRect(x, y, maxW, maxH);
+  ctx.strokeRect(x, y, maxW, maxH);
+
+  ctx.textAlign = 'left';
+  ctx.fillStyle = preset.secondaryColor;
+  ctx.font = '800 14px "Plus Jakarta Sans", sans-serif';
+  ctx.fillText(visual.title.slice(0, 48), x + 12, y + 22);
+
+  if (visual.type === 'chart') {
+    const bars = (visual.bars && visual.bars.length > 0 ? visual.bars : [
+      { label: 'Pzt', value: 40 },
+      { label: 'Sal', value: 55 },
+      { label: 'Car', value: 35 },
+      { label: 'Per', value: 70 },
+    ]).slice(0, 5);
+    const maxVal = Math.max(10, ...bars.map((b) => Number(b.value) || 0));
+    const baseLineY = y + maxH - 26;
+    const chartTopY = y + 36;
+    const availH = Math.max(30, baseLineY - chartTopY);
+    const slotW = (maxW - 36) / Math.max(1, bars.length);
+    const barW = Math.min(44, slotW * 0.56);
+
+    ctx.strokeStyle = '#94a3b8';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(x + 18, chartTopY);
+    ctx.lineTo(x + 18, baseLineY);
+    ctx.lineTo(x + maxW - 14, baseLineY);
+    ctx.stroke();
+
+    bars.forEach((b, idx) => {
+      const val = Number(b.value) || 0;
+      const bh = Math.max(6, Math.round((val / maxVal) * availH));
+      const bx = x + 22 + idx * slotW + (slotW - barW) / 2;
+      const by = baseLineY - bh;
+      ctx.fillStyle = idx % 2 === 0 ? preset.primaryColor : '#0d9488';
+      ctx.fillRect(bx, by, barW, bh);
+      ctx.fillStyle = '#0f172a';
+      ctx.textAlign = 'center';
+      ctx.font = '700 12px "JetBrains Mono", monospace';
+      ctx.fillText(String(val), bx + barW / 2, by - 4);
+      ctx.font = '600 11.5px "DM Sans", sans-serif';
+      ctx.fillText(b.label.slice(0, 9), bx + barW / 2, y + maxH - 8);
+    });
+  } else if (visual.type === 'table') {
+    const headers = (visual.headers ?? ['Veri', 'Deger']).slice(0, 4);
+    const rows = (visual.rows ?? [['Ornek', '10']]).slice(0, 4);
+    const colW = (maxW - 24) / Math.max(1, headers.length);
+    let ty = y + 34;
+    const rowH = 26;
+
+    ctx.fillStyle = preset.secondaryColor;
+    ctx.fillRect(x + 12, ty, maxW - 24, rowH);
+    ctx.fillStyle = '#ffffff';
+    ctx.font = '700 12.5px "DM Sans", sans-serif';
+    headers.forEach((h, ci) => {
+      ctx.textAlign = 'left';
+      ctx.fillText(h.slice(0, 14), x + 18 + ci * colW, ty + 18);
+    });
+    ty += rowH;
+
+    rows.forEach((r, ri) => {
+      ctx.fillStyle = ri % 2 === 0 ? '#ffffff' : '#eff6ff';
+      ctx.fillRect(x + 12, ty, maxW - 24, rowH);
+      ctx.strokeStyle = '#cbd5e1';
+      ctx.strokeRect(x + 12, ty, maxW - 24, rowH);
+      ctx.fillStyle = '#0f172a';
+      ctx.font = '600 12px "DM Sans", sans-serif';
+      headers.forEach((_, ci) => {
+        ctx.fillText((r[ci] ?? '').slice(0, 14), x + 18 + ci * colW, ty + 17);
+      });
+      ty += rowH;
+    });
+  } else if (visual.type === 'math') {
+    const shape = visual.geometryShape || 'rectangle';
+    // Geometry figure on left
+    ctx.strokeStyle = preset.primaryColor;
+    ctx.fillStyle = 'rgba(29, 78, 216, 0.12)';
+    ctx.lineWidth = 2.5;
+    const gx = x + 18;
+    const gy = y + 40;
+    if (shape === 'triangle') {
+      ctx.beginPath();
+      ctx.moveTo(gx + 10, gy + 72);
+      ctx.lineTo(gx + 10, gy + 8);
+      ctx.lineTo(gx + 102, gy + 72);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+    } else if (shape === 'circle') {
+      ctx.beginPath();
+      ctx.arc(gx + 54, gy + 40, 34, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+    } else if (shape === 'fraction') {
+      for (let i = 0; i < 4; i++) {
+        ctx.fillStyle = i < 3 ? preset.primaryColor : '#ffffff';
+        ctx.fillRect(gx + i * 24, gy + 24, 22, 32);
+        ctx.strokeRect(gx + i * 24, gy + 24, 22, 32);
+      }
+    } else {
+      ctx.fillRect(gx + 6, gy + 14, 96, 52);
+      ctx.strokeRect(gx + 6, gy + 14, 96, 52);
+    }
+
+    const tx = gx + 122;
+    const tw = maxW - 148;
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(tx, gy + 4, tw, 40);
+    ctx.strokeStyle = '#93c5fd';
+    ctx.strokeRect(tx, gy + 4, tw, 40);
+    ctx.fillStyle = '#0f172a';
+    ctx.textAlign = 'left';
+    ctx.font = '700 13px "JetBrains Mono", monospace';
+    ctx.fillText((visual.formula || '').slice(0, 38), tx + 10, gy + 29);
+
+    ctx.fillStyle = '#475569';
+    ctx.font = '500 12px "DM Sans", sans-serif';
+    (visual.steps ?? []).slice(0, 2).forEach((st, idx) => {
+      ctx.fillText(`• ${st.slice(0, 42)}`, tx, gy + 64 + idx * 18);
+    });
+  } else if (visual.type === 'image') {
+    if (visual.imageDataUrl) {
+      const img = await loadCanvasImage(visual.imageDataUrl);
+      if (img) {
+        const availW = maxW - 24;
+        const availH = maxH - 42;
+        const scale = Math.min(availW / img.width, availH / img.height);
+        const dw = img.width * scale;
+        const dh = img.height * scale;
+        ctx.drawImage(img, x + (maxW - dw) / 2, y + 32 + (availH - dh) / 2, dw, dh);
+      }
+    } else {
+      const labels = (visual.sceneLabels ?? ['Sunny', 'Windy', 'Rainy', 'Snowy']).slice(0, 4);
+      const cardW = (maxW - 36) / Math.max(1, labels.length);
+      labels.forEach((lbl, idx) => {
+        const cx = x + 12 + idx * (cardW + 4);
+        const cy = y + 36;
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(cx, cy, cardW, maxH - 50);
+        ctx.strokeStyle = preset.primaryColor;
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(cx, cy, cardW, maxH - 50);
+
+        ctx.beginPath();
+        ctx.arc(cx + cardW / 2, cy + 28, 16, 0, Math.PI * 2);
+        ctx.fillStyle = idx % 2 === 0 ? '#fef08a' : '#bae6fd';
+        ctx.fill();
+        ctx.strokeStyle = preset.secondaryColor;
+        ctx.stroke();
+
+        ctx.fillStyle = '#0f172a';
+        ctx.textAlign = 'center';
+        ctx.font = '700 11.5px "DM Sans", sans-serif';
+        const lines = wrapTextLines(ctx, lbl, cardW - 10).slice(0, 2);
+        lines.forEach((ln, li) => {
+          ctx.fillText(ln, cx + cardW / 2, cy + 62 + li * 15);
+        });
+      });
+    }
+  }
+
+  ctx.restore();
+  return maxH + 12;
+}
+
+export async function renderBrandedBackCoverCanvasPng(
+  cover: CoverConfig
+): Promise<Uint8Array> {
+  const preset = getLogoPreset(cover.logoStyleId);
+  const canvas = document.createElement('canvas');
+  canvas.width = A4_W;
+  canvas.height = A4_H;
+  const ctx = canvas.getContext('2d')!;
+  const instCode = cover.institutionCode8 || '48291045';
+  const showSampleStamp = Boolean(cover.isSampleDemo);
+
+  ctx.fillStyle = '#f8fafc';
+  ctx.fillRect(0, 0, A4_W, A4_H);
+
+  // Outer institutional frame
+  ctx.strokeStyle = preset.secondaryColor;
+  ctx.lineWidth = 8;
+  ctx.strokeRect(42, 42, A4_W - 84, A4_H - 84);
+  ctx.strokeStyle = preset.goldColor;
+  ctx.lineWidth = 3;
+  ctx.strokeRect(56, 56, A4_W - 112, A4_H - 112);
+
+  // Top Header Strip
+  const topGrad = ctx.createLinearGradient(56, 56, A4_W - 56, 220);
+  topGrad.addColorStop(0, preset.secondaryColor);
+  topGrad.addColorStop(1, preset.primaryColor);
+  ctx.fillStyle = topGrad;
+  ctx.fillRect(56, 56, A4_W - 112, 160);
+
+  drawAcademyCrestCanvas(ctx, 148, 136, 48, preset);
+  ctx.textAlign = 'left';
+  ctx.fillStyle = '#ffffff';
+  ctx.font = '800 34px "Plus Jakarta Sans", sans-serif';
+  ctx.fillText(`${cover.academyName.toUpperCase()} — ARKA KAPAK`, 220, 124);
+  ctx.fillStyle = '#fde68a';
+  ctx.font = '700 18px "JetBrains Mono", monospace';
+  ctx.fillText(`KURUM KODU: ${instCode} · KİTAPÇIK ${cover.bookletCode}`, 220, 162);
+
+  // Center Ownership Declaration Card (Belongs strictly to this institution)
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(110, 320, A4_W - 220, 560);
+  ctx.strokeStyle = preset.primaryColor;
+  ctx.lineWidth = 3;
+  ctx.strokeRect(110, 320, A4_W - 220, 560);
+
+  drawAcademyCrestCanvas(ctx, A4_W / 2, 445, 68, preset);
+
+  ctx.textAlign = 'center';
+  ctx.fillStyle = preset.secondaryColor;
+  ctx.font = '800 40px "Plus Jakarta Sans", sans-serif';
+  ctx.fillText(cover.academyName.toUpperCase(), A4_W / 2, 575);
+
+  ctx.fillStyle = '#334155';
+  ctx.font = '700 24px "DM Sans", sans-serif';
+  ctx.fillText(cover.examTitle, A4_W / 2, 625);
+
+  ctx.fillStyle = '#0f172a';
+  ctx.font = '600 20px "DM Sans", sans-serif';
+  const ownershipLines = wrapTextLines(
+    ctx,
+    `Bu deneme sınavı kitapçığı yalnızca ${cover.academyName} (Kurum Kodu: ${instCode}) adına hazırlanmış ve özelleştirilmiştir. Başka kurum, yayınevi veya üçüncü kişiler tarafından izinsiz çoğaltılamaz, dağıtılamaz.`,
+    A4_W - 320
+  );
+  let oy = 690;
+  for (const line of ownershipLines) {
+    ctx.fillText(line, A4_W / 2, oy);
+    oy += 34;
+  }
+
+  // Self-evaluation / Student Note Box
+  ctx.fillStyle = '#f1f5f9';
+  ctx.fillRect(110, 930, A4_W - 220, 340);
+  ctx.strokeStyle = '#cbd5e1';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(110, 930, A4_W - 220, 340);
+  ctx.textAlign = 'left';
+  ctx.fillStyle = preset.secondaryColor;
+  ctx.font = '800 22px "Plus Jakarta Sans", sans-serif';
+  ctx.fillText('SINAV SONRASI KONTROL & OPTİK TESLİM HATIRLATMASI', 148, 980);
+  ctx.fillStyle = '#334155';
+  ctx.font = '500 19px "DM Sans", sans-serif';
+  const checks = [
+    `1. Optik formunuzdaki 8 haneli Kurum Kodu (${instCode}) ve Öğrenci Numaranızı kontrol ediniz.`,
+    `2. Kitapçık türünü (${cover.bookletCode} Kitapçığı) optik kağıda eksiksiz kodlayınız.`,
+    '3. Cevaplarınızı sınav bitiminde gözetmen öğretmene kitapçık ile birlikte teslim ediniz.',
+    '4. Sınav sonuç karneniz ve haftalık gelişim analiziniz veli bilgilendirme sistemiyle paylaşılacaktır.',
+  ];
+  checks.forEach((c, i) => {
+    ctx.fillText(c, 148, 1038 + i * 52);
+  });
+
+  // 3D Furkan Signature + Security Notice
+  draw3DFurkanSignature(ctx, A4_W - 390, 1365, preset.secondaryColor, preset.goldColor);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#0f172a';
+  ctx.font = '800 24px "Plus Jakarta Sans", sans-serif';
+  ctx.fillText(`${cover.signatureName} (Onaylı)`, A4_W - 270, 1485);
+  ctx.fillStyle = '#64748b';
+  ctx.font = '600 18px "DM Sans", sans-serif';
+  ctx.fillText(cover.signatureTitle, A4_W - 270, 1515);
+
+  ctx.textAlign = 'left';
+  ctx.fillStyle = '#9f1239';
+  ctx.font = '800 24px "Plus Jakarta Sans", sans-serif';
+  ctx.fillText(
+    showSampleStamp ? 'ARKA KAPAK · ÖRNEKTİR · ÇOĞALTILAMAZ' : 'RESMİ KURUM ARKA KAPAĞI · ÇOĞALTILAMAZ',
+    110,
+    1435
+  );
+  ctx.fillStyle = '#475569';
+  ctx.font = '600 17px "DM Sans", sans-serif';
+  ctx.fillText(`${cover.academyName} · Kurum Kodu: ${instCode}`, 110, 1472);
+
+  // Bottom Banner
+  ctx.fillStyle = preset.secondaryColor;
+  ctx.fillRect(56, A4_H - 118, A4_W - 112, 62);
+  ctx.fillStyle = '#ffffff';
+  ctx.font = '700 18px "DM Sans", sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText(
+    showSampleStamp ? `${cover.securityNotice} · ÖRNEKTİR` : cover.securityNotice,
+    A4_W / 2,
+    A4_H - 84
+  );
+
+  const blob = await new Promise<Blob>((resolve) =>
+    canvas.toBlob((b) => resolve(b!), 'image/png')
+  );
+  return new Uint8Array(await blob.arrayBuffer());
+}
+
 async function renderQuestionsPagesPng(
   questions: ExamQuestion[],
   cover: CoverConfig
 ): Promise<Uint8Array[]> {
   const preset = getLogoPreset(cover.logoStyleId);
   const pages: Uint8Array[] = [];
-  const perPage = 6;
+  const hasAnyVisual = questions.some((q) => Boolean(q.visual));
+  const perPage = hasAnyVisual ? 4 : 6;
   const totalPages = Math.max(1, Math.ceil(questions.length / perPage));
 
   for (let start = 0; start < questions.length; start += perPage) {
@@ -585,10 +909,13 @@ async function renderQuestionsPagesPng(
     ctx.lineTo(A4_W / 2, isLastPage ? A4_H - 210 : A4_H - 110);
     ctx.stroke();
 
-    const rowSpacing = isLastPage ? 445 : 485;
-    slice.forEach((q, idx) => {
-      const col = idx < 3 ? 0 : 1;
-      const row = idx % 3;
+    const perCol = perPage / 2;
+    const rowSpacing = perPage === 4 ? (isLastPage ? 670 : 720) : isLastPage ? 445 : 485;
+
+    for (let idx = 0; idx < slice.length; idx++) {
+      const q = slice[idx];
+      const col = idx < perCol ? 0 : 1;
+      const row = idx % perCol;
       const x = col === 0 ? 74 : A4_W / 2 + 34;
       let y = 158 + row * rowSpacing;
       const maxW = A4_W / 2 - 112;
@@ -597,14 +924,19 @@ async function renderQuestionsPagesPng(
       ctx.fillStyle = preset.secondaryColor;
       ctx.font = '800 18px "Plus Jakarta Sans", sans-serif';
       ctx.fillText(`${q.number}. [${q.subject} · ${q.difficulty}]`, x, y);
-      y += 28;
+      y += 26;
+
+      if (q.visual) {
+        const usedH = await drawQuestionVisualOnCanvas(ctx, q.visual, x, y, maxW, 172, preset);
+        y += usedH;
+      }
 
       ctx.fillStyle = '#0f172a';
       ctx.font = '500 16.5px "DM Sans", sans-serif';
-      const stemLines = wrapTextLines(ctx, q.stem, maxW).slice(0, 5);
+      const stemLines = wrapTextLines(ctx, q.stem, maxW).slice(0, q.visual ? 4 : 5);
       for (const line of stemLines) {
         ctx.fillText(line, x, y);
-        y += 23;
+        y += 22;
       }
       y += 8;
 
@@ -618,7 +950,7 @@ async function renderQuestionsPagesPng(
         }
         y += 3;
       });
-    });
+    }
 
     // Final Page Special "ÖRNEKTİR / İZİNSİZ ÇOĞALTILAMAZ" Closing Banner + 3D Signature
     if (isLastPage) {
@@ -683,9 +1015,17 @@ async function renderQuestionsPagesPng(
 export async function generateBookletPdf(
   cover: CoverConfig,
   questions: ExamQuestion[],
-  uploadedPdfBytes?: Uint8Array | null
+  uploadedPdfBytes?: Uint8Array | null,
+  stripOptions: PdfUploadStripOptions = {
+    stripFrontCover: true,
+    stripBackCover: true,
+    appendBrandedBackPage: true,
+  }
 ): Promise<Uint8Array> {
   const coverPng = await renderCoverCanvasPng(cover);
+  const backCoverPng = stripOptions.appendBrandedBackPage
+    ? await renderBrandedBackCoverCanvasPng(cover)
+    : null;
 
   if (uploadedPdfBytes && uploadedPdfBytes.byteLength > 0) {
     const loadedPdf = await PDFDocument.load(uploadedPdfBytes);
@@ -696,12 +1036,30 @@ export async function generateBookletPdf(
     const coverPage = outPdf.addPage([595.28, 841.89]);
     coverPage.drawImage(coverImg, { x: 0, y: 0, width: 595.28, height: 841.89 });
 
-    const copiedPages = await outPdf.copyPages(loadedPdf, loadedPdf.getPageIndices());
+    const totalRaw = loadedPdf.getPageCount();
+    const keptIndices = computeKeptUploadedPdfIndices(totalRaw, stripOptions);
+    const copiedPages = await outPdf.copyPages(loadedPdf, keptIndices);
     const totalCopied = copiedPages.length;
     const showSampleStamp = Boolean(cover.isSampleDemo);
+
     copiedPages.forEach((p, idx) => {
       const { width, height } = p.getSize();
       const isLast = idx === totalCopied - 1;
+      // Mask top & bottom margins lightly so external institution/publisher headers don't clash
+      p.drawRectangle({
+        x: 0,
+        y: height - 28,
+        width,
+        height: 28,
+        color: rgb(1, 1, 1),
+      });
+      p.drawRectangle({
+        x: 0,
+        y: 0,
+        width,
+        height: 24,
+        color: rgb(1, 1, 1),
+      });
       // Top Logo Header Strip + Bottom Security Notice on every page
       p.drawText(
         toAsciiSafe(
@@ -711,7 +1069,7 @@ export async function generateBookletPdf(
         ),
         {
           x: 32,
-          y: height - 22,
+          y: height - 19,
           size: 8.5,
           font: helvetica,
           color: rgb(0.08, 0.2, 0.45),
@@ -720,12 +1078,12 @@ export async function generateBookletPdf(
       p.drawText(
         toAsciiSafe(
           isLast
-            ? `${showSampleStamp ? 'SON SAYFA - ORNEKTIR | ' : 'SON SAYFA | '}${cover.signatureName} 3D Imzali | IZINSIZ COGALTILAMAZ | Sayfa ${idx + 1}/${totalCopied}`
+            ? `${showSampleStamp ? 'ICERIK SONU - ORNEKTIR | ' : 'ICERIK SONU | '}${cover.signatureName} 3D Imzali | ${cover.academyName} | Sayfa ${idx + 1}/${totalCopied}`
             : `${cover.academyName} | ${cover.signatureName} Imzali | COGALTILAMAZ | Sayfa ${idx + 1}/${totalCopied}`
         ),
         {
           x: 32,
-          y: 14,
+          y: 9,
           size: 8.5,
           font: helvetica,
           color: rgb(0.62, 0.08, 0.22),
@@ -735,6 +1093,12 @@ export async function generateBookletPdf(
         outPdf.addPage(p);
       }
     });
+
+    if (backCoverPng) {
+      const backImg = await outPdf.embedPng(backCoverPng);
+      const backPage = outPdf.addPage([595.28, 841.89]);
+      backPage.drawImage(backImg, { x: 0, y: 0, width: 595.28, height: 841.89 });
+    }
 
     return outPdf.save();
   }
@@ -749,6 +1113,12 @@ export async function generateBookletPdf(
     const img = await pdfDoc.embedPng(pngBytes);
     const page = pdfDoc.addPage([595.28, 841.89]);
     page.drawImage(img, { x: 0, y: 0, width: 595.28, height: 841.89 });
+  }
+
+  if (backCoverPng) {
+    const backImg = await pdfDoc.embedPng(backCoverPng);
+    const backPage = pdfDoc.addPage([595.28, 841.89]);
+    backPage.drawImage(backImg, { x: 0, y: 0, width: 595.28, height: 841.89 });
   }
 
   return pdfDoc.save();
@@ -1419,7 +1789,10 @@ export async function generateStudentReportCardPdf(
   const preset = getLogoPreset(cover.logoStyleId);
   const instCode = cover.institutionCode8 || '48291045';
   const showSampleStamp = Boolean(cover.isSampleDemo);
-  const penaltyText = `${analysis.penaltyDivisor} Yanlış 1 Doğruyu Götürür`;
+  const penaltyText =
+    analysis.penaltyDivisor === 0
+      ? 'Yanlış Doğruyu Götürmez (Net = Doğru)'
+      : `${analysis.penaltyDivisor} Yanlış 1 Doğruyu Götürür`;
 
   // ---------- SAYFA 1: RENKLİ 3D KARNE, DERS NET TABLOSU, GRAFİK VE HATA ANALİZİ ----------
   const c1 = document.createElement('canvas');
@@ -2158,6 +2531,7 @@ export async function generateCompleteSystemZip(params: {
   questions: ExamQuestion[];
   analysis: ExamAnalysisResult;
   uploadedPdfBytes?: Uint8Array | null;
+  pdfStripOptions?: PdfUploadStripOptions;
   optionCount: 4 | 5;
   gradeProfile?: GradeProfile;
   studentName?: string;
@@ -2169,7 +2543,8 @@ export async function generateCompleteSystemZip(params: {
   const bookletPdf = await generateBookletPdf(
     params.cover,
     params.questions,
-    params.uploadedPdfBytes
+    params.uploadedPdfBytes,
+    params.pdfStripOptions
   );
   const opticalPdf = await generateOpticalSheetPdf(
     params.cover,
@@ -2729,3 +3104,121 @@ export async function generateAchievementBadgePng(params: {
 
   return new Promise<Blob>((resolve) => canvas.toBlob((b) => resolve(b!), 'image/png'));
 }
+
+export async function generateOpenEndedExamPdf(params: {
+  cover: CoverConfig;
+  gradeProfile: GradeProfile;
+  questions: OpenEndedQuestion[];
+  includeSolutionKey?: boolean;
+}): Promise<Uint8Array> {
+  const { cover, gradeProfile, questions, includeSolutionKey = true } = params;
+  const preset = getLogoPreset(cover.logoStyleId);
+  const pdfDoc = await PDFDocument.create();
+
+  const renderPage = async (chunk: OpenEndedQuestion[], pageNum: number, isKeyPage: boolean) => {
+    const canvas = document.createElement('canvas');
+    canvas.width = A4_W;
+    canvas.height = A4_H;
+    const ctx = canvas.getContext('2d')!;
+
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, A4_W, A4_H);
+
+    // Header bar
+    ctx.fillStyle = preset.primaryColor;
+    ctx.fillRect(0, 0, A4_W, 118);
+    drawAcademyCrestCanvas(ctx, 74, 59, 32, preset);
+
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#ffffff';
+    ctx.font = '800 28px "Plus Jakarta Sans", sans-serif';
+    ctx.fillText(
+      `${cover.academyName} — ${gradeProfile.shortLabel} ${isKeyPage ? 'Açık Uçlu Çözüm & Rubrik Anahtarı' : '10 Soruluk Açık Uçlu Yazılı'}`,
+      128,
+      54
+    );
+    ctx.fillStyle = '#dbeafe';
+    ctx.font = '600 17px "DM Sans", sans-serif';
+    ctx.fillText(
+      `Ad Soyad: ........................................   Öğrenci No: ....................   Kurum Kodu: ${cover.institutionCode8 || '--------'}`,
+      128,
+      92
+    );
+
+    let y = 160;
+    chunk.forEach((q) => {
+      ctx.fillStyle = '#f8fafc';
+      ctx.strokeStyle = '#cbd5e1';
+      ctx.lineWidth = 1.5;
+      const boxH = isKeyPage ? 210 : 275;
+      ctx.beginPath();
+      ctx.roundRect(60, y, A4_W - 120, boxH, 12);
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.fillStyle = preset.primaryColor;
+      ctx.font = '800 19px "Plus Jakarta Sans", sans-serif';
+      ctx.fillText(`Soru ${q.number} (${q.subject} · ${q.maxPoints} Puan)`, 84, y + 34);
+
+      ctx.fillStyle = '#0f172a';
+      ctx.font = '500 18px "DM Sans", sans-serif';
+      const stemLines = wrapTextLines(ctx, q.prompt, A4_W - 168).slice(0, 4);
+      stemLines.forEach((line, li) => {
+        ctx.fillText(line, 84, y + 66 + li * 25);
+      });
+
+      if (isKeyPage) {
+        ctx.fillStyle = '#065f46';
+        ctx.font = '700 16px "DM Sans", sans-serif';
+        ctx.fillText('Örnek Çözüm / Puanlama Rubriği:', 84, y + 148);
+        ctx.fillStyle = '#047857';
+        ctx.font = '500 16px "DM Sans", sans-serif';
+        const ansLines = wrapTextLines(ctx, q.modelAnswer, A4_W - 168).slice(0, 2);
+        ansLines.forEach((line, li) => {
+          ctx.fillText(line, 84, y + 174 + li * 22);
+        });
+      } else {
+        ctx.strokeStyle = '#cbd5e1';
+        ctx.lineWidth = 1;
+        for (let lineIdx = 0; lineIdx < 3; lineIdx++) {
+          const ly = y + 175 + lineIdx * 32;
+          ctx.beginPath();
+          ctx.moveTo(84, ly);
+          ctx.lineTo(A4_W - 84, ly);
+          ctx.stroke();
+        }
+      }
+
+      y += boxH + 22;
+    });
+
+    // Footer
+    ctx.fillStyle = '#64748b';
+    ctx.font = '600 15px "DM Sans", sans-serif';
+    ctx.fillText(
+      `${cover.signatureName} (${cover.signatureTitle}) · ${cover.securityNotice} · Sayfa ${pageNum}`,
+      60,
+      A4_H - 42
+    );
+
+    const pngBytes = await new Promise<ArrayBuffer>((resolve) =>
+      canvas.toBlob((blob) => blob!.arrayBuffer().then(resolve), 'image/png')
+    );
+    const img = await pdfDoc.embedPng(pngBytes);
+    const page = pdfDoc.addPage([595.28, 841.89]);
+    page.drawImage(img, { x: 0, y: 0, width: 595.28, height: 841.89 });
+  };
+
+  let pNum = 1;
+  for (let i = 0; i < questions.length; i += 5) {
+    await renderPage(questions.slice(i, i + 5), pNum++, false);
+  }
+  if (includeSolutionKey) {
+    for (let i = 0; i < questions.length; i += 6) {
+      await renderPage(questions.slice(i, i + 6), pNum++, true);
+    }
+  }
+
+  return await pdfDoc.save();
+}
+

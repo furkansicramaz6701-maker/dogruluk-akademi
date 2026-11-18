@@ -18,6 +18,11 @@ import {
   Cloud,
   ChevronDown,
   Layers,
+  MoreVertical,
+  Search,
+  LogOut,
+  ShieldCheck,
+  FileText,
 } from 'lucide-react';
 import { DEFAULT_COVER_REMINDERS, GRADE_PROFILES, getGradeProfile } from './data/curriculum';
 import { getLogoPreset } from './data/logos';
@@ -34,6 +39,9 @@ import {
   Institution,
   InstitutionPermissions,
   LogoStyleId,
+  OpenEndedPaperAnalysis,
+  PdfUploadStripOptions,
+  PenaltyDivisor,
   SmartRecommendation,
   StudentRecord,
   TopicGapMetric,
@@ -41,15 +49,21 @@ import {
 import {
   buildAutoExamQuestions,
   evaluateOmrExam,
+  formatPenaltyRuleLabel,
   generateSampleOmrPair,
   parseAnswerString,
 } from './utils/examAnalysis';
+import { searchWorkspaceEntities } from './utils/globalSearch';
 import {
   DEFAULT_INSTITUTIONS,
+  bulkUpsertInstitutions,
   canInstitutionUseModule,
+  deleteInstitutionSafely,
   filterGradeProfilesByInstitution,
   isGradeAllowedForInstitution,
   normalizeInstitution,
+  updateInstitutionRecord,
+  upsertInstitutionList,
 } from './utils/institutionCodes';
 import {
   buildWeeklyPcStandaloneHtml,
@@ -94,6 +108,7 @@ import { DriveConfirmModal } from './components/DriveConfirmModal';
 import { Logo3D } from './components/Logo3D';
 import { Education3DCascade } from './components/Education3DCascade';
 import { OfflineIndicator, PWAInstallButton } from './components/PWAInstallButton';
+import { InstitutionPortalScreen } from './components/InstitutionPortalScreen';
 
 function readStorageJson<T>(key: string, fallback: T): T {
   try {
@@ -127,10 +142,30 @@ export default function App() {
     }
     return 'dashboard';
   });
+  const [portalOpen, setPortalOpen] = useState<boolean>(() => {
+    try {
+      const autostart = new URLSearchParams(window.location.search).get('autostart');
+      if (autostart === '1') return false;
+      return window.sessionStorage.getItem('da_portal_unlocked_v1') !== '1';
+    } catch {
+      return true;
+    }
+  });
+  const [loginMode, setLoginMode] = useState<'admin' | 'institution'>(() => {
+    try {
+      return window.sessionStorage.getItem('da_login_mode_v1') === 'institution'
+        ? 'institution'
+        : 'admin';
+    } catch {
+      return 'admin';
+    }
+  });
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [themeId, setThemeId] = useState<AcademyThemeId>('klasik-lacivert');
   const [gradeId, setGradeId] = useState<GradeLevelId>('5');
   const [hasLiveAnalysis, setHasLiveAnalysis] = useState<boolean>(false);
+  const [omrInitialMode, setOmrInitialMode] = useState<'omr' | 'open-ended'>('omr');
+  const [openEndedAnalysis, setOpenEndedAnalysis] = useState<OpenEndedPaperAnalysis | null>(null);
   const [mebOverride, setMebOverride] = useState<DynamicCurriculumOverride | null>(null);
 
   const [activeLogoId, setActiveLogoId] = useState<LogoStyleId>(() => {
@@ -186,7 +221,7 @@ export default function App() {
   const [studentName, setStudentName] = useState<string>('');
   const [studentNumber, setStudentNumber] = useState<string>('');
   const [classroom, setClassroom] = useState<string>('5-A');
-  const [penaltyDivisor, setPenaltyDivisor] = useState<3 | 4>(3);
+  const [penaltyDivisor, setPenaltyDivisor] = useState<PenaltyDivisor>(3);
   const [aiCoachSummary, setAiCoachSummary] = useState<string | undefined>(undefined);
 
   const [cover, setCover] = useState<CoverConfig>(() => ({
@@ -210,6 +245,11 @@ export default function App() {
   const [uploadedPdfBytes, setUploadedPdfBytes] = useState<Uint8Array | null>(null);
   const [uploadedPdfName, setUploadedPdfName] = useState<string | null>(null);
   const [uploadedPdfPageCount, setUploadedPdfPageCount] = useState<number | null>(null);
+  const [pdfStripOptions, setPdfStripOptions] = useState<PdfUploadStripOptions>({
+    stripFrontCover: true,
+    stripBackCover: true,
+    appendBrandedBackPage: true,
+  });
 
   const [calendarEvents, setCalendarEvents] = useState<EducationCalendarEvent[]>(() => {
     const saved = readStorageJson<EducationCalendarEvent[]>('da_calendar_events_v1', []);
@@ -225,6 +265,11 @@ export default function App() {
   const [toastMsg, setToastMsg] = useState<string | null>(null);
   const [modulesMenuOpen, setModulesMenuOpen] = useState(false);
   const modulesMenuRef = useRef<HTMLDivElement | null>(null);
+  const [threeDotOpen, setThreeDotOpen] = useState(false);
+  const threeDotRef = useRef<HTMLDivElement | null>(null);
+  const [globalSearchQuery, setGlobalSearchQuery] = useState<string>('');
+  const [searchFocused, setSearchFocused] = useState<boolean>(false);
+  const searchBoxRef = useRef<HTMLDivElement | null>(null);
 
   // Google Drive Auth State (Strictly in-memory token, never localStorage)
   const [driveUser, setDriveUser] = useState<User | null>(null);
@@ -287,6 +332,18 @@ export default function App() {
         !modulesMenuRef.current.contains(e.target as Node)
       ) {
         setModulesMenuOpen(false);
+      }
+      if (
+        threeDotRef.current &&
+        !threeDotRef.current.contains(e.target as Node)
+      ) {
+        setThreeDotOpen(false);
+      }
+      if (
+        searchBoxRef.current &&
+        !searchBoxRef.current.contains(e.target as Node)
+      ) {
+        setSearchFocused(false);
       }
     };
     document.addEventListener('mousedown', handleOutside);
@@ -410,6 +467,7 @@ export default function App() {
     setStudentNumber('');
     setStudentAnswersRaw('');
     setHasLiveAnalysis(false);
+    setOpenEndedAnalysis(null);
     setAiCoachSummary(undefined);
     setClassroom(defaultClassroomForGrade(gradeId));
     ensureGradeAllowedForInst(normalized);
@@ -417,27 +475,104 @@ export default function App() {
   };
 
   const handleAddInstitution = (inst: Institution) => {
-    const normalized = normalizeInstitution(inst);
-    setInstitutions((prev) => [normalized, ...prev]);
-    setActiveInstitutionId(normalized.id);
+    const res = upsertInstitutionList(institutions, inst);
+    setInstitutions(res.institutions);
+    const saved = res.saved;
+    setActiveInstitutionId(saved.id);
+    if (res.wasDuplicate) {
+      setStudents((prev) =>
+        prev.map((s) =>
+          s.institutionId === saved.id
+            ? { ...s, institutionName: saved.name, institutionCode8: saved.code8 }
+            : s
+        )
+      );
+    } else {
+      setCalendarEvents((prev) => [
+        ...buildDefaultCalendarEvents(saved.id, gradeId),
+        ...prev,
+      ]);
+    }
     setStudentName('');
     setStudentNumber('');
     setStudentAnswersRaw('');
     setHasLiveAnalysis(false);
     setAiCoachSummary(undefined);
     setClassroom(defaultClassroomForGrade(gradeId));
-    ensureGradeAllowedForInst(normalized);
-    setCalendarEvents((prev) => [
-      ...buildDefaultCalendarEvents(normalized.id, gradeId),
-      ...prev,
-    ]);
+    ensureGradeAllowedForInst(saved);
     setCover((prev) => ({
       ...prev,
-      academyName: normalized.name,
-      institutionCode8: normalized.code8,
+      academyName: saved.name,
+      institutionCode8: saved.code8,
       isSampleDemo: false,
     }));
-    showToast(`Yeni kurum "${normalized.name}" (${normalized.code8}) eklendi. Öğrenci ve sınav verileri temiz açıldı.`);
+    showToast(
+      res.wasDuplicate
+        ? `"${saved.name}" zaten kayıtlı olduğu için ikinci kurum açılmadı; mevcut kayıt (${saved.code8}) güncellendi.`
+        : `Yeni kurum "${saved.name}" (${saved.code8}) eklendi. Öğrenci ve sınav verileri temiz açıldı.`
+    );
+  };
+
+  const handleUpdateInstitution = (
+    institutionId: string,
+    patch: { name: string; city: string; accessPassword?: string }
+  ): { ok: boolean; reason?: string } => {
+    const res = updateInstitutionRecord(institutions, institutionId, patch);
+    if (!res.ok || !res.updated) {
+      if (res.reason) showToast(res.reason);
+      return { ok: false, reason: res.reason };
+    }
+    const updated = res.updated;
+    setInstitutions(res.institutions);
+    setStudents((prev) =>
+      prev.map((s) =>
+        s.institutionId === updated.id
+          ? { ...s, institutionName: updated.name }
+          : s
+      )
+    );
+    if (updated.id === activeInstitutionId) {
+      setCover((prev) => ({
+        ...prev,
+        academyName: updated.name,
+        institutionCode8: updated.code8,
+      }));
+    }
+    showToast(`Kurum güncellendi: ${updated.name} (${updated.city})`);
+    return { ok: true };
+  };
+
+  const handleDeleteInstitution = (
+    institutionId: string
+  ): { ok: boolean; reason?: string } => {
+    const res = deleteInstitutionSafely(institutions, institutionId, activeInstitutionId);
+    if (!res.ok || !res.nextActiveInstitution) {
+      if (res.reason) showToast(res.reason);
+      return { ok: false, reason: res.reason };
+    }
+    setInstitutions(res.institutions);
+    setStudents((prev) => prev.filter((s) => s.institutionId !== institutionId));
+    setCalendarEvents((prev) => prev.filter((ev) => ev.institutionId !== institutionId));
+
+    const nextActive = res.nextActiveInstitution;
+    if (institutionId === activeInstitutionId) {
+      setActiveInstitutionId(nextActive.id);
+      setStudentName('');
+      setStudentNumber('');
+      setStudentAnswersRaw('');
+      setHasLiveAnalysis(false);
+      setAiCoachSummary(undefined);
+      setClassroom(defaultClassroomForGrade(gradeId));
+      ensureGradeAllowedForInst(nextActive);
+      setCover((prev) => ({
+        ...prev,
+        academyName: nextActive.name,
+        institutionCode8: nextActive.code8,
+        isSampleDemo: false,
+      }));
+    }
+    showToast(`"${res.deletedInstitution?.name}" kurumu ve bağlı verileri sistemden silindi.`);
+    return { ok: true };
   };
 
   const handleUpdateInstitutionPermissions = (
@@ -456,22 +591,26 @@ export default function App() {
 
   const handleBulkAddInstitutions = (items: Institution[]) => {
     if (items.length === 0) return;
-    const normalized = items.map(normalizeInstitution);
-    setInstitutions((prev) => [...normalized, ...prev]);
-    const first = normalized[0];
-    setActiveInstitutionId(first.id);
+    const res = bulkUpsertInstitutions(institutions, items);
+    setInstitutions(res.institutions);
+    const first = res.firstAffected;
+    if (first) {
+      setActiveInstitutionId(first.id);
+      setCover((prev) => ({
+        ...prev,
+        academyName: first.name,
+        institutionCode8: first.code8,
+        isSampleDemo: false,
+      }));
+    }
     setStudentName('');
     setStudentNumber('');
     setStudentAnswersRaw('');
     setHasLiveAnalysis(false);
     setAiCoachSummary(undefined);
-    setCover((prev) => ({
-      ...prev,
-      academyName: first.name,
-      institutionCode8: first.code8,
-      isSampleDemo: false,
-    }));
-    showToast(`${normalized.length} kurum Excel'den başarıyla eklendi!`);
+    showToast(
+      `Excel işlendi: ${res.addedCount} yeni kurum eklendi, ${res.updatedCount} mevcut kurum güncellendi (tekrar oluşmadı).`
+    );
   };
 
   const handleAddStudent = (stu: StudentRecord) => {
@@ -577,6 +716,7 @@ export default function App() {
     setStudentAnswersRaw('');
     setClassroom(defaultClassroomForGrade(gradeId));
     setHasLiveAnalysis(false);
+    setOpenEndedAnalysis(null);
     setAiCoachSummary(undefined);
     setCover((prev) => ({ ...prev, isSampleDemo: false }));
     showToast('Sade çalışma alanına dönüldü; örnek simülasyon verisi temizlendi.');
@@ -630,8 +770,55 @@ export default function App() {
       subtitle: buildGradeAppropriateSubtitle(nextProfile),
       durationMinutes: nextProfile.durationMinutes,
       questionCount: nextQuestions.length,
+      penaltyRuleLabel: formatPenaltyRuleLabel(nextProfile.penaltyDivisor, true),
     }));
     showToast(`${nextProfile.label} profili (${nextQuestions.length} soru) yüklendi.`);
+  };
+
+  const handleChangePenaltyDivisor = (nextDivisor: PenaltyDivisor) => {
+    setPenaltyDivisor(nextDivisor);
+    setCover((prev) => ({
+      ...prev,
+      penaltyRuleLabel: formatPenaltyRuleLabel(nextDivisor, true),
+    }));
+    showToast(`Doğru-Yanlış kuralı güncellendi: ${formatPenaltyRuleLabel(nextDivisor)}`);
+  };
+
+  const unlockPortalWithInstitution = (
+    inst: Institution,
+    mode: 'admin' | 'password' | 'preview'
+  ) => {
+    const nextLoginMode: 'admin' | 'institution' =
+      mode === 'admin' ? 'admin' : 'institution';
+    handleSelectInstitution(inst);
+    setLoginMode(nextLoginMode);
+    setPortalOpen(false);
+    setActiveTab('dashboard');
+    try {
+      window.sessionStorage.setItem('da_portal_unlocked_v1', '1');
+      window.sessionStorage.setItem('da_login_mode_v1', nextLoginMode);
+    } catch {
+      // ignore storage errors
+    }
+    showToast(
+      mode === 'admin'
+        ? `Doğruluk Akademi Yönetici Ana Paneli açıldı (Şifresiz · ${inst.name}).`
+        : mode === 'preview'
+          ? `${inst.name} (${inst.code8}) kuruma özel önizleme alanı açıldı.`
+          : `${inst.name} (${inst.code8}) kuruma özel alana başarıyla giriş yapıldı.`
+    );
+  };
+
+  const handleOpenPortalSwitch = () => {
+    setThreeDotOpen(false);
+    setModulesMenuOpen(false);
+    setMobileMenuOpen(false);
+    setPortalOpen(true);
+    try {
+      window.sessionStorage.removeItem('da_portal_unlocked_v1');
+    } catch {
+      // ignore
+    }
   };
 
   const handleDownloadStudentReportPdf = async () => {
@@ -653,16 +840,23 @@ export default function App() {
   const handleDownloadBookletPdf = async () => {
     setExportBusy(true);
     try {
-      const bytes = await generateBookletPdf(cover, questions, uploadedPdfBytes);
+      const bytes = await generateBookletPdf(
+        cover,
+        questions,
+        uploadedPdfBytes,
+        pdfStripOptions
+      );
       const blob = new Blob([bytes.buffer as ArrayBuffer], { type: 'application/pdf' });
       triggerDownload(
         blob,
         `Dogruluk-Akademi-${cover.bookletCode}-Kitapcik-Furkan-Imzali.pdf`
       );
       showToast(
-        cover.isSampleDemo
-          ? 'Furkan 3D imzalı, her sayfada logolu ve son sayfası ÖRNEKTİR PDF indirildi.'
-          : 'Furkan 3D dijital imzalı ve kurum logolu deneme PDF’i indirildi.'
+        uploadedPdfBytes
+          ? `${cover.academyName} ön/arka kapaklı deneme PDF’i indirildi (dış kapaklar temizlendi).`
+          : cover.isSampleDemo
+            ? 'Furkan 3D imzalı, her sayfada logolu ve arka kapaklı ÖRNEKTİR PDF indirildi.'
+            : 'Furkan 3D dijital imzalı ve kuruma özel ön/arka kapaklı deneme PDF’i indirildi.'
       );
     } finally {
       setExportBusy(false);
@@ -700,6 +894,7 @@ export default function App() {
         questions,
         analysis,
         uploadedPdfBytes,
+        pdfStripOptions,
         optionCount: gradeProfile.optionCount,
         gradeProfile,
         studentName,
@@ -919,7 +1114,17 @@ export default function App() {
     }
   };
 
-  const handleTabNavigation = (tab: ActiveTab) => {
+  const activeStudentParentPhone = useMemo(
+    () =>
+      students.find(
+        (s) =>
+          (studentNumber && s.studentNumber8 === studentNumber) ||
+          (studentName && s.fullName === studentName)
+      )?.parentPhone,
+    [students, studentNumber, studentName]
+  );
+
+  const handleTabNavigation = (tab: ActiveTab, requestedOmrMode?: 'omr' | 'open-ended') => {
     const permMap: Partial<Record<ActiveTab, AppPermissionKey>> = {
       omr: 'omrOkuma',
       generator: 'denemeUretici',
@@ -935,10 +1140,46 @@ export default function App() {
         return;
       }
     }
+    if (tab === 'omr') {
+      setOmrInitialMode(requestedOmrMode ?? 'omr');
+    }
     setActiveTab(tab);
     setMobileMenuOpen(false);
     setModulesMenuOpen(false);
+    setThreeDotOpen(false);
+    setSearchFocused(false);
   };
+
+  const globalSearchResults = useMemo(
+    () =>
+      searchWorkspaceEntities({
+        query: globalSearchQuery,
+        students,
+        institutions,
+        activeInstitutionId: activeInstitution.id,
+      }),
+    [globalSearchQuery, students, institutions, activeInstitution.id]
+  );
+
+  const threeDotQuickItems: Array<{
+    id: string;
+    label: string;
+    sublabel: string;
+    tab: ActiveTab;
+    omrMode?: 'omr' | 'open-ended';
+    icon: typeof LayoutDashboard;
+  }> = [
+    { id: 'td-overview', label: 'Genel Bakış', sublabel: 'Ana kontrol paneli ve 3–5. sınıf ayarı', tab: 'dashboard', icon: LayoutDashboard },
+    { id: 'td-weekly', label: 'Haftalık Liste (KTS)', sublabel: 'Sıralama, ilk 3 rozeti, Pano PDF & Excel', tab: 'weekly', icon: TrendingUp },
+    { id: 'td-omr', label: 'Optik Okuma (OMR)', sublabel: 'Çoktan seçmeli optik cevap analizi', tab: 'omr', omrMode: 'omr', icon: Camera },
+    { id: 'td-open-ended', label: '10 Soruluk Açık Uçlu Kağıt', sublabel: 'Yazılı kağıdı & çözüm analizi', tab: 'omr', omrMode: 'open-ended', icon: FileText },
+    { id: 'td-generator', label: 'Deneme & PDF · Soru İşleyici', sublabel: 'PDF yükle, 20 soruluk yazılı seç, kitapçık al', tab: 'generator', icon: FilePlus2 },
+    { id: 'td-editor', label: 'Deneme Editörü', sublabel: 'Grafik, tablo, matematik ve resimli İngilizce', tab: 'editor', icon: PenSquare },
+    { id: 'td-reports', label: 'Karne & Veli Mesaj Şablonları', sublabel: 'WhatsApp / SMS taslakları ve PDF karne', tab: 'reports', icon: Award },
+    { id: 'td-calendar', label: 'Eğitim Takvimi', sublabel: 'Deneme ve telafi etüt programı', tab: 'calendar', icon: CalendarDays },
+    { id: 'td-poster', label: '3D Afiş & QR', sublabel: 'Kurumsal afiş ve QR kod oluşturucu', tab: 'poster', icon: ImageIcon },
+    { id: 'td-drive', label: 'Yedek, Telefon & PC (PWA Kur)', sublabel: 'Google Drive yedek & uygulama yükleme', tab: 'drive', icon: Cloud },
+  ];
 
   const primaryNavItems: Array<{
     id: ActiveTab;
@@ -967,6 +1208,22 @@ export default function App() {
 
   const allNavItems = [...primaryNavItems, ...moduleNavItems];
   const isModuleTabActive = moduleNavItems.some((m) => m.id === activeTab);
+
+  if (portalOpen) {
+    return (
+      <InstitutionPortalScreen
+        institutions={institutions}
+        activeInstitution={activeInstitution}
+        students={students}
+        activeLogoId={activeLogoId}
+        onEnterInstitution={unlockPortalWithInstitution}
+        onCreateAndEnterInstitution={(createdInst) => {
+          handleAddInstitution(createdInst);
+          unlockPortalWithInstitution(createdInst, 'password');
+        }}
+      />
+    );
+  }
 
   return (
     <div className="min-h-screen flex flex-col lg:flex-row relative">
@@ -1002,16 +1259,22 @@ export default function App() {
         <div className="space-y-6">
           <div className="flex items-center justify-between gap-2">
             <div className="flex items-center gap-3 min-w-0">
-              <Logo3D size="sm" variant={activeLogoId} />
+              <Logo3D
+                size="sm"
+                variant={activeLogoId}
+                institutionName={loginMode === 'institution' ? activeInstitution.name : undefined}
+              />
               <div className="min-w-0">
                 <div className="font-display text-base font-extrabold tracking-tight truncate">
-                  {activeLogoPreset.headerTitle}
+                  {loginMode === 'institution' ? activeInstitution.name : activeLogoPreset.headerTitle}
                 </div>
                 <div
                   className="text-xs mt-0.5 truncate"
                   style={{ color: 'var(--text-sidebar-muted)' }}
                 >
-                  {activeInstitution.name} · {activeInstitution.code8}
+                  {loginMode === 'institution'
+                    ? `Kurum Girişi · Kod: ${activeInstitution.code8}`
+                    : `Yönetici Ana Paneli · ${activeInstitution.name} · ${activeInstitution.code8}`}
                 </div>
               </div>
             </div>
@@ -1100,6 +1363,16 @@ export default function App() {
             >
               <Menu className="w-5 h-5" aria-hidden="true" />
             </button>
+            {loginMode === 'institution' && (
+              <div className="hidden sm:inline-flex shrink-0" data-testid="topbar-institution-logo">
+                <Logo3D
+                  size="sm"
+                  variant={activeLogoId}
+                  institutionName={activeInstitution.name}
+                  animated={false}
+                />
+              </div>
+            )}
             <div className="min-w-0">
               <a
                 href="#top"
@@ -1107,12 +1380,22 @@ export default function App() {
                   e.preventDefault();
                   setActiveTab('dashboard');
                 }}
+                data-testid="topbar-brand-title"
                 className="font-display text-base sm:text-lg font-extrabold tracking-tight whitespace-nowrap truncate block leading-tight"
               >
-                {activeLogoPreset.headerTitle}
+                {loginMode === 'institution' ? activeInstitution.name : activeLogoPreset.headerTitle}
               </a>
               <div className="text-[11px] font-semibold truncate" style={{ color: 'var(--text-secondary)' }}>
-                {activeInstitution.name} · Kod: <span className="font-mono-num">{activeInstitution.code8}</span>
+                {loginMode === 'institution' ? (
+                  <>
+                    Kurum Girişi · Kod: <span className="font-mono-num">{activeInstitution.code8}</span>
+                  </>
+                ) : (
+                  <>
+                    Yönetici Ana Paneli (Şifresiz) · {activeInstitution.name} · Kod:{' '}
+                    <span className="font-mono-num">{activeInstitution.code8}</span>
+                  </>
+                )}
               </div>
             </div>
           </div>
@@ -1179,7 +1462,7 @@ export default function App() {
             </div>
           </nav>
 
-          <div className="shrink-0 flex items-center gap-2">
+          <div className="shrink-0 flex items-center gap-1.5 sm:gap-2">
             <PWAInstallButton
               compact
               academyName={activeInstitution.name}
@@ -1190,20 +1473,98 @@ export default function App() {
               type="button"
               disabled={exportBusy}
               onClick={handleDownloadZip}
-              className="btn-3d px-3 sm:px-4 py-2 rounded-xl text-xs font-bold whitespace-nowrap shrink-0 inline-flex items-center gap-1.5 sm:gap-2 cursor-pointer disabled:opacity-60"
+              className="btn-3d px-2.5 sm:px-4 py-2 rounded-xl text-xs font-bold whitespace-nowrap shrink-0 inline-flex items-center gap-1.5 sm:gap-2 cursor-pointer disabled:opacity-60"
             >
               {exportBusy ? (
                 <>
                   <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
-                  <span>Hazırlanıyor...</span>
+                  <span className="hidden sm:inline">Hazırlanıyor...</span>
                 </>
               ) : (
                 <>
                   <Archive className="w-3.5 h-3.5" aria-hidden="true" />
-                  <span>ZIP Paketi İndir</span>
+                  <span className="sm:hidden">ZIP</span>
+                  <span className="hidden sm:inline">ZIP Paketi İndir</span>
                 </>
               )}
             </button>
+
+            {/* Üç Nokta (⋮) Genel Bakış & Modüller Menüsü (Mobil + Masaüstü) */}
+            <div className="relative" ref={threeDotRef}>
+              <button
+                type="button"
+                aria-label="Genel Bakış ve Modüller Menüsü"
+                aria-expanded={threeDotOpen}
+                aria-haspopup="menu"
+                data-testid="three-dot-menu-btn"
+                onClick={() => setThreeDotOpen((v) => !v)}
+                className="btn-3d-secondary p-2 rounded-xl inline-flex items-center justify-center cursor-pointer"
+                title="Genel Bakış & Tüm Modüller"
+              >
+                <MoreVertical className="w-4 h-4" aria-hidden="true" />
+              </button>
+
+              {threeDotOpen && (
+                <div
+                  role="menu"
+                  data-testid="three-dot-modules-menu"
+                  className="surface-card rounded-2xl p-2 w-72 max-w-[calc(100vw-2rem)] shadow-2xl absolute right-0 mt-2 z-50 space-y-1 border"
+                  style={{ borderColor: 'var(--border-subtle)' }}
+                >
+                  <div
+                    className="px-2.5 py-2 border-b mb-1 flex items-center justify-between gap-2"
+                    style={{ borderColor: 'var(--border-subtle)' }}
+                  >
+                    <div className="min-w-0">
+                      <div className="text-xs font-extrabold truncate">Genel Bakış & Modüller</div>
+                      <div className="text-[11px] truncate" style={{ color: 'var(--text-secondary)' }}>
+                        {activeInstitution.name} · {activeInstitution.code8}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="max-h-80 overflow-y-auto space-y-0.5 pr-0.5">
+                    {threeDotQuickItems.map((item) => {
+                      const Icon = item.icon;
+                      const isCurrent =
+                        activeTab === item.tab &&
+                        (!item.omrMode || omrInitialMode === item.omrMode);
+                      return (
+                        <button
+                          key={item.id}
+                          role="menuitem"
+                          type="button"
+                          data-testid={`three-dot-item-${item.id}`}
+                          onClick={() => handleTabNavigation(item.tab, item.omrMode)}
+                          className={`w-full text-left px-2.5 py-2 rounded-xl text-xs flex items-start gap-2.5 cursor-pointer transition-colors ${
+                            isCurrent ? 'btn-3d' : 'hover:bg-black/5 dark:hover:bg-white/10'
+                          }`}
+                        >
+                          <Icon className="w-4 h-4 shrink-0 mt-0.5" aria-hidden="true" />
+                          <div className="min-w-0">
+                            <div className="font-bold leading-tight truncate">{item.label}</div>
+                            <div className="text-[10px] opacity-80 truncate">{item.sublabel}</div>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  <div className="pt-1 border-t" style={{ borderColor: 'var(--border-subtle)' }}>
+                    <button
+                      role="menuitem"
+                      type="button"
+                      data-testid="three-dot-switch-institution-btn"
+                      onClick={handleOpenPortalSwitch}
+                      className="w-full text-left px-2.5 py-2 rounded-xl text-xs font-bold flex items-center gap-2 text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/30 cursor-pointer"
+                    >
+                      <LogOut className="w-4 h-4 shrink-0" aria-hidden="true" />
+                      <span>Kurum Girişi / Değiştir</span>
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
         </header>
 
@@ -1215,11 +1576,188 @@ export default function App() {
           </div>
         )}
 
-        <main className="flex-1 p-4 sm:p-7 max-w-[1360px] w-full mx-auto">
+        <main className="flex-1 p-4 sm:p-7 max-w-[1360px] w-full mx-auto space-y-5">
+          {/* Ana Ekran Global Arama Çubuğu + Kuruma Özel Alan Barı */}
+          <section
+            aria-label="Ana Arama Çubuğu ve Kuruma Özel Alan"
+            className="surface-card rounded-2xl p-3 sm:p-4 flex flex-col lg:flex-row lg:items-center justify-between gap-3 relative z-20"
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2 min-w-0">
+              <div className="flex items-center gap-2.5 min-w-0">
+                {loginMode === 'institution' ? (
+                  <div className="shrink-0" data-testid="banner-institution-logo">
+                    <Logo3D
+                      size="sm"
+                      variant={activeLogoId}
+                      institutionName={activeInstitution.name}
+                      animated={false}
+                      interactive={false}
+                    />
+                  </div>
+                ) : (
+                  <ShieldCheck className="w-4 h-4 shrink-0" style={{ color: 'var(--chart-3)' }} aria-hidden="true" />
+                )}
+                <div className="min-w-0">
+                  <div className="text-xs font-extrabold truncate" data-testid="private-institution-banner">
+                    {loginMode === 'institution'
+                      ? `Kurum Girişi · ${activeInstitution.name}`
+                      : `Yönetici Ana Paneli (Şifresiz) · Aktif Kurum: ${activeInstitution.name}`}
+                  </div>
+                  <div className="text-[11px] truncate" style={{ color: 'var(--text-secondary)' }}>
+                    Kod: <span className="font-mono-num font-bold">{activeInstitution.code8}</span> ·{' '}
+                    {students.filter((s) => s.institutionId === activeInstitution.id).length} Öğrenci ·{' '}
+                    {formatPenaltyRuleLabel(penaltyDivisor, true)}
+                  </div>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={handleOpenPortalSwitch}
+                data-testid="open-portal-btn"
+                className="btn-3d-secondary px-3 py-2 rounded-xl text-[11px] font-bold inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
+              >
+                <LogOut className="w-3.5 h-3.5" aria-hidden="true" />
+                <span>{loginMode === 'institution' ? 'Kurum / Yönetici Değiştir' : 'Kurum Girişi / Değiştir'}</span>
+              </button>
+            </div>
+
+            {/* Global Arama Çubuğu */}
+            <div className="relative w-full lg:max-w-md" ref={searchBoxRef}>
+              <Search
+                className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none"
+                style={{ color: 'var(--text-secondary)' }}
+                aria-hidden="true"
+              />
+              <input
+                type="text"
+                value={globalSearchQuery}
+                onFocus={() => setSearchFocused(true)}
+                onChange={(e) => {
+                  setGlobalSearchQuery(e.target.value);
+                  setSearchFocused(true);
+                }}
+                data-testid="global-search-input"
+                aria-label="Ana ekranda modül, özellik, öğrenci veya kurum ara"
+                placeholder="Modül, 20 soru, açık uçlu, götürme ayarı veya öğrenci ara..."
+                className="w-full rounded-xl pl-10 pr-8 py-2.5 text-xs sm:text-sm surface-alt focus:outline-2"
+              />
+              {globalSearchQuery && (
+                <button
+                  type="button"
+                  aria-label="Aramayı temizle"
+                  onClick={() => setGlobalSearchQuery('')}
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 rounded-md hover:bg-black/5 cursor-pointer"
+                >
+                  <X className="w-3.5 h-3.5" aria-hidden="true" />
+                </button>
+              )}
+
+              {searchFocused && (
+                <div
+                  data-testid="global-search-results"
+                  className="surface-card rounded-2xl p-2.5 shadow-2xl absolute left-0 right-0 mt-2 z-50 border max-h-80 overflow-y-auto space-y-2"
+                  style={{ borderColor: 'var(--border-subtle)' }}
+                >
+                  {globalSearchResults.modules.length > 0 && (
+                    <div className="space-y-1">
+                      <div className="px-2 text-[10px] font-bold uppercase tracking-wider" style={{ color: 'var(--text-secondary)' }}>
+                        Modüller ve Sayfalar
+                      </div>
+                      {globalSearchResults.modules.map((mod) => (
+                        <button
+                          key={mod.id}
+                          type="button"
+                          data-testid={`search-result-${mod.id}`}
+                          onClick={() => {
+                            if (mod.actionKind === 'open-portal') {
+                              handleOpenPortalSwitch();
+                            } else {
+                              handleTabNavigation(mod.tab, mod.omrMode);
+                            }
+                            setGlobalSearchQuery('');
+                            setSearchFocused(false);
+                          }}
+                          className="w-full text-left px-2.5 py-2 rounded-xl text-xs hover:bg-black/5 dark:hover:bg-white/10 cursor-pointer"
+                        >
+                          <div className="font-bold">{mod.label}</div>
+                          <div className="text-[11px] truncate" style={{ color: 'var(--text-secondary)' }}>
+                            {mod.description}
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+
+                  {globalSearchResults.students.length > 0 && (
+                    <div className="space-y-1 pt-1 border-t" style={{ borderColor: 'var(--border-subtle)' }}>
+                      <div className="px-2 text-[10px] font-bold uppercase tracking-wider" style={{ color: 'var(--text-secondary)' }}>
+                        {activeInstitution.name} Öğrencileri
+                      </div>
+                      {globalSearchResults.students.map((stu) => (
+                        <button
+                          key={stu.id}
+                          type="button"
+                          onClick={() => {
+                            handleSelectStudent(stu);
+                            setActiveTab('dashboard');
+                            setSearchFocused(false);
+                          }}
+                          className="w-full text-left px-2.5 py-2 rounded-xl text-xs hover:bg-black/5 dark:hover:bg-white/10 flex items-center justify-between gap-2 cursor-pointer"
+                        >
+                          <span className="font-bold truncate">
+                            {stu.fullName} · {stu.classroom}
+                          </span>
+                          <span className="font-mono-num text-[11px]" style={{ color: 'var(--accent-primary)' }}>
+                            {stu.studentNumber8}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+
+                  {globalSearchResults.institutions.length > 0 && (
+                    <div className="space-y-1 pt-1 border-t" style={{ borderColor: 'var(--border-subtle)' }}>
+                      <div className="px-2 text-[10px] font-bold uppercase tracking-wider" style={{ color: 'var(--text-secondary)' }}>
+                        Kayıtlı Kurumlar
+                      </div>
+                      {globalSearchResults.institutions.map((inst) => (
+                        <button
+                          key={inst.id}
+                          type="button"
+                          onClick={() => {
+                            handleSelectInstitution(inst);
+                            setSearchFocused(false);
+                          }}
+                          className="w-full text-left px-2.5 py-2 rounded-xl text-xs hover:bg-black/5 dark:hover:bg-white/10 flex items-center justify-between gap-2 cursor-pointer"
+                        >
+                          <span className="font-bold truncate">{inst.name}</span>
+                          <span className="font-mono-num text-[11px]" style={{ color: 'var(--accent-primary)' }}>
+                            {inst.code8}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+
+                  {globalSearchResults.modules.length === 0 &&
+                    globalSearchResults.students.length === 0 &&
+                    globalSearchResults.institutions.length === 0 && (
+                      <div className="px-3 py-4 text-xs text-center" style={{ color: 'var(--text-secondary)' }}>
+                        "{globalSearchQuery}" için eşleşen modül, öğrenci veya kurum bulunamadı.
+                      </div>
+                    )}
+                </div>
+              )}
+            </div>
+          </section>
+
           {activeTab === 'dashboard' && (
             <DashboardView
               gradeProfile={gradeProfile}
               onSelectGrade={handleSelectGrade}
+              penaltyDivisor={penaltyDivisor}
+              onChangePenaltyDivisor={handleChangePenaltyDivisor}
               analysis={analysis}
               hasLiveAnalysis={hasLiveAnalysis}
               questionCount={questions.length}
@@ -1237,6 +1775,8 @@ export default function App() {
               onClearMebCurriculum={handleClearMebCurriculum}
               onSelectInstitution={handleSelectInstitution}
               onAddInstitution={handleAddInstitution}
+              onUpdateInstitution={handleUpdateInstitution}
+              onDeleteInstitution={handleDeleteInstitution}
               onBulkAddInstitutions={handleBulkAddInstitutions}
               onUpdateInstitutionPermissions={handleUpdateInstitutionPermissions}
               onAddStudent={handleAddStudent}
@@ -1266,6 +1806,15 @@ export default function App() {
               analysis={analysis}
               cover={cover}
               institutionCode8={activeInstitution.code8}
+              parentPhone={activeStudentParentPhone}
+              initialMode={omrInitialMode}
+              openEndedAnalysis={openEndedAnalysis}
+              onSaveOpenEndedAnalysis={(res) => {
+                setOpenEndedAnalysis(res);
+                showToast(
+                  `${res.studentName} için 10 soruluk açık uçlu kağıt analiz edildi (${res.totalScore}/${res.maxTotalScore}).`
+                );
+              }}
               onUpdateOmrState={(patch) => {
                 if (patch.studentAnswersRaw !== undefined)
                   setStudentAnswersRaw(patch.studentAnswersRaw);
@@ -1309,10 +1858,16 @@ export default function App() {
               institution={activeInstitution}
               gradeProfile={gradeProfile}
               onSelectGrade={handleSelectGrade}
+              penaltyDivisor={penaltyDivisor}
+              onChangePenaltyDivisor={handleChangePenaltyDivisor}
               questions={questions}
               cover={cover}
               uploadedPdfName={uploadedPdfName}
               uploadedPdfPageCount={uploadedPdfPageCount}
+              pdfStripOptions={pdfStripOptions}
+              onUpdatePdfStripOptions={(patch) =>
+                setPdfStripOptions((prev) => ({ ...prev, ...patch }))
+              }
               mebOverride={mebOverride}
               onApplyMebCurriculum={handleApplyMebCurriculum}
               onClearMebCurriculum={handleClearMebCurriculum}
@@ -1337,12 +1892,15 @@ export default function App() {
               onDownloadZip={handleDownloadZip}
               onDownloadSourceZip={handleDownloadSourceZip}
               onOpenEditor={() => handleTabNavigation('editor')}
+              onOpenOpenEnded={() => handleTabNavigation('omr', 'open-ended')}
             />
           )}
 
           {activeTab === 'editor' && (
             <ExamEditorView
+              institution={activeInstitution}
               gradeProfile={gradeProfile}
+              onSelectGrade={handleSelectGrade}
               questions={questions}
               cover={cover}
               onUpdateQuestions={(next) => {
@@ -1378,6 +1936,8 @@ export default function App() {
               key={activeInstitution.id}
               activeInstitution={activeInstitution}
               gradeProfile={gradeProfile}
+              penaltyDivisor={penaltyDivisor}
+              onChangePenaltyDivisor={handleChangePenaltyDivisor}
               students={students}
               cover={cover}
               driveConnected={Boolean(driveToken)}
@@ -1398,13 +1958,8 @@ export default function App() {
               hasLiveAnalysis={hasLiveAnalysis}
               institutionName={activeInstitution.name}
               institutionCode8={activeInstitution.code8}
-              studentPhone={
-                students.find(
-                  (s) =>
-                    (studentNumber && s.studentNumber8 === studentNumber) ||
-                    (studentName && s.fullName === studentName)
-                )?.parentPhone
-              }
+              studentPhone={activeStudentParentPhone}
+              openEndedAnalysis={openEndedAnalysis}
               onUpdateCoachSummary={(summary) => {
                 setAiCoachSummary(summary);
                 showToast('Gemini AI Eğitim Koçu karnesi güncellendi.');
@@ -1415,7 +1970,8 @@ export default function App() {
                 setActiveTab('calendar');
               }}
               onOpenWeeklyList={() => handleTabNavigation('weekly')}
-              onOpenOmr={() => handleTabNavigation('omr')}
+              onOpenOmr={() => handleTabNavigation('omr', 'omr')}
+              onOpenOpenEndedTab={() => handleTabNavigation('omr', 'open-ended')}
             />
           )}
 
@@ -1440,6 +1996,7 @@ export default function App() {
                   questions,
                   analysis,
                   uploadedPdfBytes,
+                  pdfStripOptions,
                   optionCount: gradeProfile.optionCount,
                   gradeProfile,
                   studentName,

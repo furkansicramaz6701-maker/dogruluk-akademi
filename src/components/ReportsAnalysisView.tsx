@@ -21,13 +21,20 @@ import {
   Smartphone,
   MessageSquare,
   RotateCcw,
+  FileText,
+  SlidersHorizontal,
+  Plus,
+  Trash2,
 } from 'lucide-react';
 import { getLogoPreset } from '../data/logos';
 import {
   CoverConfig,
+  CustomParentMessageTemplate,
   DetailedAnalysisType,
   ExamAnalysisResult,
   GradeProfile,
+  OpenEndedPaperAnalysis,
+  ParentMessageTemplateMode,
   ReportCardType,
   TopicGapMetric,
 } from '../types/academy';
@@ -36,10 +43,15 @@ import {
   generateStudentReportCardPdf,
   triggerDownload,
 } from '../utils/pdfAndZip';
+import { buildOpenEndedParentMessage } from '../utils/openEndedExam';
 import {
+  DEFAULT_CUSTOM_PARENT_TEMPLATES,
+  REPORT_CARD_MESSAGE_TEMPLATES,
+  applyCustomParentTemplate,
   buildReportCardParentMessage,
   buildSmsHref,
   buildWhatsAppHref,
+  resolveReportCardDevelopmentStatus,
   sanitizeExamLabelForGrade,
 } from '../utils/weeklyAnalysis';
 import { DynamicAchievementBadge } from './DynamicAchievementBadge';
@@ -53,11 +65,13 @@ interface ReportsAnalysisViewProps {
   institutionName?: string;
   institutionCode8?: string;
   studentPhone?: string;
+  openEndedAnalysis?: OpenEndedPaperAnalysis | null;
   onUpdateCoachSummary: (summary: string) => void;
   onDownloadZip: () => Promise<void>;
   onScheduleRemedial?: (topicGap: TopicGapMetric) => void;
   onOpenWeeklyList?: () => void;
   onOpenOmr?: () => void;
+  onOpenOpenEndedTab?: () => void;
 }
 
 const REPORT_CARDS: Array<{ id: ReportCardType; label: string; icon: typeof Award }> = [
@@ -78,6 +92,8 @@ const DETAILED_ANALYSES: Array<{
   { id: 'gelisim-projeksiyon', label: '3. Gelişim Trendi & Projeksiyon', icon: TrendingUp },
 ];
 
+const CUSTOM_TPL_STORAGE_KEY = 'da_custom_parent_templates_v1';
+
 export function ReportsAnalysisView({
   analysis,
   cover,
@@ -86,11 +102,13 @@ export function ReportsAnalysisView({
   institutionName,
   institutionCode8,
   studentPhone,
+  openEndedAnalysis = null,
   onUpdateCoachSummary,
   onDownloadZip,
   onScheduleRemedial,
   onOpenWeeklyList,
   onOpenOmr,
+  onOpenOpenEndedTab,
 }: ReportsAnalysisViewProps) {
   const [activeReport, setActiveReport] = useState<ReportCardType>('genel-basari');
   const [activeDetail, setActiveDetail] = useState<DetailedAnalysisType>('kazanim-eksikligi');
@@ -122,32 +140,123 @@ export function ReportsAnalysisView({
     ? Number((analysis.totalNet - prevTrendPoint.net).toFixed(2))
     : 0;
 
+  const developmentStatus = resolveReportCardDevelopmentStatus(analysis);
+
   const [parentPhoneInput, setParentPhoneInput] = useState<string>(studentPhone || '');
-  const [messageShortMode, setMessageShortMode] = useState<boolean>(false);
-  const [parentMessage, setParentMessage] = useState<string>(() =>
-    buildReportCardParentMessage({
+  const [templateMode, setTemplateMode] = useState<ParentMessageTemplateMode>(() =>
+    !hasLiveAnalysis && openEndedAnalysis ? 'open-ended-10' : 'auto'
+  );
+  const [parentMessage, setParentMessage] = useState<string>(() => {
+    if (!hasLiveAnalysis && openEndedAnalysis) {
+      return buildOpenEndedParentMessage({
+        paperAnalysis: openEndedAnalysis,
+        academyName: effectiveInstitutionName,
+        gradeProfile,
+      });
+    }
+    return buildReportCardParentMessage({
       analysis,
       academyName: effectiveInstitutionName,
       gradeProfile,
-      shortMode: false,
-    })
-  );
+      templateMode: 'auto',
+    });
+  });
   const [copiedMessage, setCopiedMessage] = useState<boolean>(false);
+
+  const [showCustomTemplates, setShowCustomTemplates] = useState<boolean>(false);
+  const [customTemplates, setCustomTemplates] = useState<CustomParentMessageTemplate[]>(() => {
+    try {
+      const raw = window.localStorage.getItem(CUSTOM_TPL_STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw) as CustomParentMessageTemplate[];
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+    } catch {
+      // Ignore storage read error
+    }
+    return DEFAULT_CUSTOM_PARENT_TEMPLATES;
+  });
+  const [newTplName, setNewTplName] = useState<string>('');
+  const [newTplCategory, setNewTplCategory] =
+    useState<CustomParentMessageTemplate['category']>('genel');
+  const [newTplBody, setNewTplBody] = useState<string>(
+    DEFAULT_CUSTOM_PARENT_TEMPLATES[0].body
+  );
+  const [customTplStatus, setCustomTplStatus] = useState<string | null>(null);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(CUSTOM_TPL_STORAGE_KEY, JSON.stringify(customTemplates));
+    } catch {
+      // Ignore storage quota error
+    }
+  }, [customTemplates]);
 
   useEffect(() => {
     setParentPhoneInput(studentPhone || '');
   }, [studentPhone, analysis.studentNumber]);
 
   useEffect(() => {
+    if (!hasLiveAnalysis && openEndedAnalysis) {
+      setParentMessage(
+        buildOpenEndedParentMessage({
+          paperAnalysis: openEndedAnalysis,
+          academyName: effectiveInstitutionName,
+          gradeProfile,
+        })
+      );
+      return;
+    }
     setParentMessage(
       buildReportCardParentMessage({
         analysis,
         academyName: effectiveInstitutionName,
         gradeProfile,
-        shortMode: messageShortMode,
+        templateMode,
       })
     );
-  }, [analysis, effectiveInstitutionName, gradeProfile, messageShortMode]);
+  }, [analysis, effectiveInstitutionName, gradeProfile, templateMode, hasLiveAnalysis, openEndedAnalysis]);
+
+  const effectiveAnalysisForTemplate: ExamAnalysisResult =
+    !hasLiveAnalysis && openEndedAnalysis
+      ? {
+          ...analysis,
+          studentName: openEndedAnalysis.studentName || analysis.studentName || 'Öğrenci',
+          studentNumber: openEndedAnalysis.studentNumber || analysis.studentNumber,
+          classroom: openEndedAnalysis.classroom || analysis.classroom,
+          examTitle: openEndedAnalysis.examTitle,
+          estimatedScore: openEndedAnalysis.totalScore,
+          maxScore: openEndedAnalysis.maxTotalScore,
+          totalNet: openEndedAnalysis.totalScore / 10,
+          totalQuestions: openEndedAnalysis.questionGrades.length || 10,
+        }
+      : analysis;
+
+  const handleApplyCustomTemplate = (tpl: CustomParentMessageTemplate) => {
+    const rendered = applyCustomParentTemplate({
+      templateBody: tpl.body,
+      analysis: effectiveAnalysisForTemplate,
+      academyName: effectiveInstitutionName,
+      gradeProfile,
+    });
+    setParentMessage(rendered);
+    setCustomTplStatus(`"${tpl.name}" şablonu mesaja uygulandı.`);
+  };
+
+  const handleSaveCustomTemplate = () => {
+    const name = newTplName.trim() || `Özel Veli Şablonu (${customTemplates.length + 1})`;
+    const body = newTplBody.trim();
+    if (!body) return;
+    const item: CustomParentMessageTemplate = {
+      id: `custom-${Date.now()}`,
+      name,
+      category: newTplCategory,
+      body,
+    };
+    setCustomTemplates((prev) => [item, ...prev]);
+    setNewTplName('');
+    handleApplyCustomTemplate(item);
+  };
 
   const handleCopyParentMessage = async () => {
     try {
@@ -354,7 +463,7 @@ Haftalık Aksiyon Planı:
         </div>
       </div>
 
-      {!hasLiveAnalysis && (
+      {!hasLiveAnalysis && !openEndedAnalysis && (
         <div
           className="surface-card rounded-xl p-6 flex flex-wrap items-center justify-between gap-4 border-l-4"
           style={{ borderLeftColor: 'var(--accent-primary)' }}
@@ -366,25 +475,85 @@ Haftalık Aksiyon Planı:
             </div>
             <p className="text-xs leading-relaxed" style={{ color: 'var(--text-secondary)' }}>
               {analysis.studentName
-                ? `${analysis.studentName} için henüz optik okuma veya sınav değerlendirmesi yapılmadı. Optik Okuma sekmesinden cevap kağıdı okutulduğunda net, puan, 5 çeşit karne ve otomatik veli mesajı burada oluşur.`
-                : `${effectiveInstitutionName} kurumunda henüz deneme değerlendirmesi yapılmadı. Önce Genel Bakış’tan bir öğrenci seçip Optik Okuma sekmesinden değerlendirme başlatabilirsiniz.`}
+                ? `${analysis.studentName} için henüz optik okuma veya açık uçlu kağıt değerlendirmesi yapılmadı. Optik Okuma sekmesinden cevap kağıdı okutulduğunda net, puan, 5 çeşit karne ve otomatik veli mesajı burada oluşur.`
+                : `${effectiveInstitutionName} kurumunda henüz deneme değerlendirmesi yapılmadı. Önce Genel Bakış’tan bir öğrenci seçip Optik Okuma veya 10 Soruluk Açık Uçlu Kağıt Analizini başlatabilirsiniz.`}
             </p>
           </div>
-          {onOpenOmr && (
-            <button
-              type="button"
-              onClick={onOpenOmr}
-              className="btn-3d px-4 py-2.5 rounded-xl text-xs font-bold shrink-0 cursor-pointer"
-            >
-              Optik Okumaya Git
-            </button>
-          )}
+          <div className="flex flex-wrap items-center gap-2">
+            {onOpenOpenEndedTab && (
+              <button
+                type="button"
+                onClick={onOpenOpenEndedTab}
+                className="btn-3d-secondary px-4 py-2.5 rounded-xl text-xs font-bold shrink-0 cursor-pointer"
+              >
+                10 Soruluk Açık Uçlu Kağıt Analizi
+              </button>
+            )}
+            {onOpenOmr && (
+              <button
+                type="button"
+                onClick={onOpenOmr}
+                className="btn-3d px-4 py-2.5 rounded-xl text-xs font-bold shrink-0 cursor-pointer"
+              >
+                Optik Okumaya Git
+              </button>
+            )}
+          </div>
         </div>
       )}
 
-      {!hasLiveAnalysis ? null : (
-      <>
-      {/* OTOMATİK VELİ MESAJ SİSTEMİ (WHATSAPP & SMS) */}
+      {openEndedAnalysis && (
+        <div
+          className="surface-card rounded-xl p-5 flex flex-wrap items-center justify-between gap-4 border-l-4 border-emerald-500"
+          data-testid="reports-open-ended-summary"
+        >
+          <div className="space-y-1 min-w-0 max-w-2xl">
+            <div className="flex flex-wrap items-center gap-2">
+              <FileText className="w-4 h-4 text-emerald-600" aria-hidden="true" />
+              <span className="text-sm font-extrabold">
+                10 Soruluk Açık Uçlu Kağıt Analizi Sonucu
+              </span>
+              <span className="text-xs font-mono-num font-bold px-2 py-0.5 rounded-lg bg-emerald-600 text-white">
+                {openEndedAnalysis.totalScore} / {openEndedAnalysis.maxTotalScore} (%{openEndedAnalysis.successPct})
+              </span>
+              <span className="text-xs font-bold" style={{ color: 'var(--accent-primary)' }}>
+                {openEndedAnalysis.developmentStatus}
+              </span>
+            </div>
+            <p className="text-xs leading-relaxed" style={{ color: 'var(--text-secondary)' }}>
+              {openEndedAnalysis.studentName} ({gradeProfile.shortLabel}) · {openEndedAnalysis.overallFeedback}
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() =>
+                setParentMessage(
+                  buildOpenEndedParentMessage({
+                    paperAnalysis: openEndedAnalysis,
+                    academyName: effectiveInstitutionName,
+                    gradeProfile,
+                  })
+                )
+              }
+              className="btn-3d-secondary px-3 py-2 rounded-xl text-xs font-bold cursor-pointer"
+            >
+              Açık Uçlu Sonucunu Mesaja Çek
+            </button>
+            {onOpenOpenEndedTab && (
+              <button
+                type="button"
+                onClick={onOpenOpenEndedTab}
+                className="btn-3d px-3.5 py-2 rounded-xl text-xs font-bold cursor-pointer"
+              >
+                Kağıt Analiz Detayını Aç
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {(hasLiveAnalysis || Boolean(openEndedAnalysis)) && (
       <section aria-labelledby="karne-veli-mesaj-title" className="surface-card rounded-xl p-5 space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2.5">
@@ -396,32 +565,184 @@ Haftalık Aksiyon Planı:
                 Otomatik Veli Mesaj Sistemi (WhatsApp & SMS)
               </h3>
               <p className="text-xs" style={{ color: 'var(--text-secondary)' }}>
-                {effectiveInstitutionName} · {analysis.studentName} ({gradeProfile.shortLabel}) not ve gelişim özeti tek tıkla veliye gider
+                {effectiveInstitutionName} · {effectiveAnalysisForTemplate.studentName || 'Öğrenci'} ({gradeProfile.shortLabel}) not ve gelişim özeti tek tıkla veliye gider
               </p>
             </div>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Otomatik Veli Mesaj Şablonları">
+            {REPORT_CARD_MESSAGE_TEMPLATES.map((tpl) => {
+              const active = templateMode === tpl.id;
+              return (
+                <button
+                  key={tpl.id}
+                  type="button"
+                  aria-pressed={active}
+                  data-testid={`whatsapp-template-btn-${tpl.id}`}
+                  onClick={() => {
+                    setTemplateMode(tpl.id);
+                    if (tpl.id === 'open-ended-10' && openEndedAnalysis) {
+                      setParentMessage(
+                        buildOpenEndedParentMessage({
+                          paperAnalysis: openEndedAnalysis,
+                          academyName: effectiveInstitutionName,
+                          gradeProfile,
+                        })
+                      );
+                    }
+                  }}
+                  className={`px-2.5 py-1.5 rounded-lg text-xs font-bold cursor-pointer ${
+                    active ? 'btn-3d' : 'btn-3d-secondary'
+                  }`}
+                >
+                  {tpl.label}
+                </button>
+              );
+            })}
             <button
               type="button"
-              onClick={() => setMessageShortMode(false)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold cursor-pointer ${
-                !messageShortMode ? 'btn-3d' : 'btn-3d-secondary'
+              onClick={() => setShowCustomTemplates((v) => !v)}
+              data-testid="custom-parent-template-toggle"
+              className={`px-2.5 py-1.5 rounded-lg text-xs font-bold inline-flex items-center gap-1 cursor-pointer ${
+                showCustomTemplates ? 'btn-3d' : 'btn-3d-secondary'
               }`}
             >
-              Detaylı Gelişim Mesajı
-            </button>
-            <button
-              type="button"
-              onClick={() => setMessageShortMode(true)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold cursor-pointer ${
-                messageShortMode ? 'btn-3d' : 'btn-3d-secondary'
-              }`}
-            >
-              Kısa SMS Özeti
+              <SlidersHorizontal className="w-3.5 h-3.5" aria-hidden="true" />
+              <span>Özel Şablonlar ({customTemplates.length})</span>
             </button>
           </div>
         </div>
+
+        {showCustomTemplates && (
+          <div
+            className="surface-alt rounded-xl p-4 space-y-3 border"
+            style={{ borderColor: 'var(--border-subtle)' }}
+            data-testid="custom-parent-template-panel"
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <div className="text-xs font-extrabold">
+                  Kayıtlı & Özel Veli Mesaj Şablonları
+                </div>
+                <p className="text-[11px]" style={{ color: 'var(--text-secondary)' }}>
+                  Hazır veya kendi kaydettiğiniz şablona tıklayın; öğrenci puanı, sınıf düzeyi ve gelişim durumu otomatik yerleşir.
+                </p>
+              </div>
+              {customTplStatus && (
+                <span className="text-[11px] font-bold text-emerald-700 dark:text-emerald-300">
+                  {customTplStatus}
+                </span>
+              )}
+            </div>
+
+            <div className="flex flex-wrap gap-2">
+              {customTemplates.map((tpl) => (
+                <div
+                  key={tpl.id}
+                  className="surface-card rounded-lg px-2.5 py-1.5 inline-flex items-center gap-2 border"
+                  style={{ borderColor: 'var(--border-subtle)' }}
+                >
+                  <button
+                    type="button"
+                    data-testid={`custom-tpl-apply-${tpl.id}`}
+                    onClick={() => handleApplyCustomTemplate(tpl)}
+                    className="text-xs font-bold hover:underline cursor-pointer"
+                  >
+                    {tpl.name}
+                  </button>
+                  {tpl.id.startsWith('custom-') && (
+                    <button
+                      type="button"
+                      aria-label={`${tpl.name} şablonunu sil`}
+                      onClick={() =>
+                        setCustomTemplates((prev) => prev.filter((item) => item.id !== tpl.id))
+                      }
+                      className="text-rose-600 hover:text-rose-700 cursor-pointer"
+                    >
+                      <Trash2 className="w-3 h-3" aria-hidden="true" />
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 pt-2 border-t" style={{ borderColor: 'var(--border-subtle)' }}>
+              <div className="lg:col-span-4 space-y-2">
+                <label className="block text-[11px] font-bold">
+                  <span style={{ color: 'var(--text-secondary)' }}>Yeni Şablon Adı</span>
+                  <input
+                    type="text"
+                    value={newTplName}
+                    onChange={(e) => setNewTplName(e.target.value)}
+                    placeholder="Örn: 5. Sınıf Matematik Yazılı Tebriği"
+                    data-testid="custom-tpl-name-input"
+                    className="mt-1 w-full rounded-lg px-2.5 py-1.5 text-xs surface-card border"
+                    style={{ borderColor: 'var(--border-subtle)' }}
+                  />
+                </label>
+                <label className="block text-[11px] font-bold">
+                  <span style={{ color: 'var(--text-secondary)' }}>Kategori</span>
+                  <select
+                    value={newTplCategory}
+                    onChange={(e) =>
+                      setNewTplCategory(
+                        e.target.value as CustomParentMessageTemplate['category']
+                      )
+                    }
+                    className="mt-1 w-full rounded-lg px-2.5 py-1.5 text-xs surface-card border"
+                    style={{ borderColor: 'var(--border-subtle)' }}
+                  >
+                    <option value="genel">Genel Bilgilendirme</option>
+                    <option value="yazili-20">20 Soruluk Yazılıya Hazırlık</option>
+                    <option value="acik-uclu-10">10 Soruluk Açık Uçlu Kağıt</option>
+                    <option value="etut">Etüt & Destek Planı</option>
+                  </select>
+                </label>
+                <div className="flex flex-wrap gap-1 pt-1">
+                  {['{ogrenci}', '{sinif}', '{net}', '{puan}', '{durum}', '{eksik}'].map(
+                    (ph) => (
+                      <button
+                        key={ph}
+                        type="button"
+                        onClick={() => setNewTplBody((b) => `${b} ${ph}`)}
+                        className="px-1.5 py-0.5 rounded surface-card text-[10px] font-mono-num font-bold cursor-pointer border"
+                        style={{ borderColor: 'var(--border-subtle)' }}
+                      >
+                        +{ph}
+                      </button>
+                    )
+                  )}
+                </div>
+              </div>
+              <div className="lg:col-span-8 space-y-2">
+                <label className="block text-[11px] font-bold">
+                  <span style={{ color: 'var(--text-secondary)' }}>
+                    Şablon Metni (Değişkenler: {'{ogrenci}'}, {'{kurum}'}, {'{sinif}'}, {'{sinav}'}, {'{net}'}, {'{puan}'}, {'{basari}'}, {'{durum}'}, {'{guclu}'}, {'{eksik}'})
+                  </span>
+                  <textarea
+                    rows={4}
+                    value={newTplBody}
+                    onChange={(e) => setNewTplBody(e.target.value)}
+                    data-testid="custom-tpl-body-input"
+                    className="mt-1 w-full rounded-lg p-2.5 text-xs surface-card border"
+                    style={{ borderColor: 'var(--border-subtle)' }}
+                  />
+                </label>
+                <div className="flex justify-end">
+                  <button
+                    type="button"
+                    onClick={handleSaveCustomTemplate}
+                    data-testid="custom-tpl-save-btn"
+                    className="btn-3d px-3.5 py-1.5 rounded-lg text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <Plus className="w-3.5 h-3.5" aria-hidden="true" />
+                    <span>Şablonu Kaydet ve Mesaja Uygula</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
 
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">
           <div className="lg:col-span-4 space-y-3">
@@ -440,27 +761,46 @@ Haftalık Aksiyon Planı:
 
             <div className="surface-alt rounded-lg p-3 text-[11px] space-y-1" style={{ color: 'var(--text-secondary)' }}>
               <div className="font-bold" style={{ color: 'var(--text-primary)' }}>
-                Mesajda Yer Alan Bilgiler:
+                Mesaja Çekilen Analiz Özeti:
               </div>
               <div>• Kurum: {effectiveInstitutionName}</div>
-              <div>• Öğrenci & Düzey: {analysis.studentName} · {gradeProfile.shortLabel}</div>
-              <div>• Notlar: {analysis.totalNet.toFixed(2)} Net · {analysis.estimatedScore.toFixed(1)} Puan (%{successPct})</div>
-              <div>• Gelişim Analizi: En güçlü & odak ders özeti</div>
+              <div>• Öğrenci & Sınıf: {effectiveAnalysisForTemplate.studentName || 'Öğrenci'} · {gradeProfile.shortLabel}</div>
+              {hasLiveAnalysis ? (
+                <>
+                  <div>• Not: {analysis.totalNet.toFixed(2)} Net · {analysis.estimatedScore.toFixed(1)} Puan (%{successPct})</div>
+                  <div>• Gelişim Durumu: <strong style={{ color: 'var(--accent-primary)' }}>{developmentStatus}</strong></div>
+                </>
+              ) : openEndedAnalysis ? (
+                <>
+                  <div>• Açık Uçlu Not: {openEndedAnalysis.totalScore} / {openEndedAnalysis.maxTotalScore} Puan (%{openEndedAnalysis.successPct})</div>
+                  <div>• Gelişim Durumu: <strong style={{ color: 'var(--accent-primary)' }}>{openEndedAnalysis.developmentStatus}</strong></div>
+                </>
+              ) : null}
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
               <button
                 type="button"
-                onClick={() =>
+                onClick={() => {
+                  if (!hasLiveAnalysis && openEndedAnalysis) {
+                    setParentMessage(
+                      buildOpenEndedParentMessage({
+                        paperAnalysis: openEndedAnalysis,
+                        academyName: effectiveInstitutionName,
+                        gradeProfile,
+                      })
+                    );
+                    return;
+                  }
                   setParentMessage(
                     buildReportCardParentMessage({
                       analysis,
                       academyName: effectiveInstitutionName,
                       gradeProfile,
-                      shortMode: messageShortMode,
+                      templateMode,
                     })
-                  )
-                }
+                  );
+                }}
                 className="btn-3d-secondary px-3 py-2 rounded-lg text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer"
               >
                 <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" />
@@ -497,10 +837,11 @@ Haftalık Aksiyon Planı:
                 href={whatsappHref}
                 target="_blank"
                 rel="noopener noreferrer"
+                data-testid="karne-send-to-parent-btn"
                 className="px-4 py-2 rounded-lg text-xs font-bold inline-flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm transition-colors"
               >
                 <Send className="w-3.5 h-3.5" aria-hidden="true" />
-                <span>WhatsApp Gönder</span>
+                <span>Veliye Gönder (WhatsApp)</span>
               </a>
             </div>
           </div>
@@ -520,6 +861,10 @@ Haftalık Aksiyon Planı:
           </div>
         </div>
       </section>
+      )}
+
+      {!hasLiveAnalysis ? null : (
+      <>
 
       {/* 3 FARKLI DETAYLI ANALİZ KARTI (Ders Bazlı Başarı, Konu Analizi, Zaman Yönetimi) */}
       <section aria-label="3 Farklı Detaylı Analiz Kartı" className="grid grid-cols-1 lg:grid-cols-3 gap-5">

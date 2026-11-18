@@ -1,4 +1,5 @@
-import { ShieldCheck, Lock, Unlock, Users, Layers } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { ShieldCheck, Lock, Unlock, Users, Layers, Pencil, Trash2, AlertCircle } from 'lucide-react';
 import {
   AllowedScopeId,
   AppPermissionKey,
@@ -15,6 +16,11 @@ interface InstitutionAuthPanelProps {
   students: StudentRecord[];
   onSelectInstitution: (inst: Institution) => void;
   onUpdatePermissions: (institutionId: string, permissions: InstitutionPermissions) => void;
+  onUpdateInstitution?: (
+    institutionId: string,
+    patch: { name: string; city: string; accessPassword?: string }
+  ) => { ok: boolean; reason?: string };
+  onDeleteInstitution?: (institutionId: string) => { ok: boolean; reason?: string };
 }
 
 const SCOPE_OPTIONS: Array<{ id: AllowedScopeId; label: string; desc: string }> = [
@@ -48,7 +54,25 @@ export function InstitutionAuthPanel({
   students,
   onSelectInstitution,
   onUpdatePermissions,
+  onUpdateInstitution,
+  onDeleteInstitution,
 }: InstitutionAuthPanelProps) {
+  const [editOpen, setEditOpen] = useState(false);
+  const [editName, setEditName] = useState(activeInstitution.name);
+  const [editCity, setEditCity] = useState(activeInstitution.city);
+  const [editPassword, setEditPassword] = useState(activeInstitution.accessPassword || '123456');
+  const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setEditName(activeInstitution.name);
+    setEditCity(activeInstitution.city);
+    setEditPassword(activeInstitution.accessPassword || '123456');
+    setEditOpen(false);
+    setConfirmDeleteOpen(false);
+    setAuthError(null);
+  }, [activeInstitution.id, activeInstitution.name, activeInstitution.city, activeInstitution.accessPassword]);
+
   const perms: InstitutionPermissions =
     activeInstitution.permissions ?? createDefaultPermissions();
 
@@ -151,8 +175,151 @@ export function InstitutionAuthPanel({
               </>
             )}
           </button>
+
+          {onUpdateInstitution && (
+            <button
+              type="button"
+              onClick={() => {
+                setEditName(activeInstitution.name);
+                setEditCity(activeInstitution.city);
+                setEditOpen((v) => !v);
+                setConfirmDeleteOpen(false);
+                setAuthError(null);
+              }}
+              aria-label="Kurum Adı ve Şehrini Düzenle"
+              className="btn-3d-secondary px-3 py-2 rounded-lg text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer"
+            >
+              <Pencil className="w-3.5 h-3.5" aria-hidden="true" />
+              <span>Düzenle</span>
+            </button>
+          )}
+
+          {onDeleteInstitution && (
+            <button
+              type="button"
+              disabled={institutions.length <= 1}
+              title={
+                institutions.length <= 1
+                  ? 'Son kalan aktif kurum silinemez'
+                  : `${activeInstitution.name} kurumunu sil`
+              }
+              onClick={() => {
+                setConfirmDeleteOpen((v) => !v);
+                setEditOpen(false);
+                setAuthError(null);
+              }}
+              aria-label="Yetkili Kurumu Sil"
+              className="btn-3d-secondary px-3 py-2 rounded-lg text-xs font-bold text-rose-600 inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-45"
+            >
+              <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
+              <span>Sil</span>
+            </button>
+          )}
         </div>
       </div>
+
+      {authError && (
+        <div className="rounded-lg p-3 text-xs font-semibold flex items-center gap-2 bg-rose-50 text-rose-800 border border-rose-200">
+          <AlertCircle className="w-4 h-4 shrink-0" aria-hidden="true" />
+          <span>{authError}</span>
+        </div>
+      )}
+
+      {editOpen && onUpdateInstitution && (
+        <div className="surface-alt rounded-xl p-4 flex flex-wrap items-end gap-3">
+          <label className="flex-1 min-w-[200px] block text-xs font-semibold">
+            <span style={{ color: 'var(--text-secondary)' }}>Kurum Adı</span>
+            <input
+              type="text"
+              value={editName}
+              onChange={(e) => setEditName(e.target.value)}
+              className="mt-1 w-full rounded-lg px-3 py-2 text-xs surface-card"
+            />
+          </label>
+          <label className="w-44 block text-xs font-semibold">
+            <span style={{ color: 'var(--text-secondary)' }}>Şehir</span>
+            <input
+              type="text"
+              value={editCity}
+              onChange={(e) => setEditCity(e.target.value)}
+              className="mt-1 w-full rounded-lg px-3 py-2 text-xs surface-card"
+            />
+          </label>
+          <label className="w-40 block text-xs font-semibold">
+            <span style={{ color: 'var(--text-secondary)' }}>Kurum Şifresi</span>
+            <input
+              type="text"
+              value={editPassword}
+              onChange={(e) => setEditPassword(e.target.value)}
+              className="mt-1 w-full rounded-lg px-3 py-2 text-xs surface-card font-mono-num"
+            />
+          </label>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setEditOpen(false)}
+              className="btn-3d-secondary px-3 py-2 rounded-lg text-xs font-bold cursor-pointer"
+            >
+              İptal
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                const res = onUpdateInstitution(activeInstitution.id, {
+                  name: editName,
+                  city: editCity,
+                  accessPassword: editPassword,
+                });
+                if (!res.ok) {
+                  setAuthError(res.reason || 'Kurum güncellenemedi.');
+                  return;
+                }
+                setEditOpen(false);
+              }}
+              className="btn-3d px-4 py-2 rounded-lg text-xs font-bold cursor-pointer"
+            >
+              Güncelle
+            </button>
+          </div>
+        </div>
+      )}
+
+      {confirmDeleteOpen && onDeleteInstitution && (
+        <div className="rounded-xl p-4 bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-900 flex flex-wrap items-center justify-between gap-3 text-xs">
+          <div>
+            <div className="font-bold text-rose-800 dark:text-rose-200">
+              "{activeInstitution.name}" ({activeInstitution.code8}) kurumunu ve bağlı verileri kalıcı olarak silmek istiyor musunuz?
+            </div>
+            <div className="text-[11px] text-rose-700 dark:text-rose-300 mt-0.5">
+              İki aynı kurum kaydını önlemek veya eski deneme kurumlarını temizlemek için güvenle silebilirsiniz.
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setConfirmDeleteOpen(false)}
+              className="btn-3d-secondary px-3 py-2 rounded-lg text-xs font-bold cursor-pointer"
+            >
+              Vazgeç
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                const res = onDeleteInstitution(activeInstitution.id);
+                if (!res.ok) {
+                  setAuthError(res.reason || 'Kurum silinemedi.');
+                  setConfirmDeleteOpen(false);
+                  return;
+                }
+                setConfirmDeleteOpen(false);
+              }}
+              className="px-4 py-2 rounded-lg text-xs font-bold bg-rose-600 text-white hover:bg-rose-700 cursor-pointer"
+            >
+              Evet, Sil
+            </button>
+          </div>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
         {/* Left: Role, Quota & Status */}

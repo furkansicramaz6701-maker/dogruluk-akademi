@@ -1,10 +1,12 @@
 import { getGradeProfile } from '../data/curriculum';
 import {
+  CustomParentMessageTemplate,
   ExamAnalysisResult,
   GradeLevelId,
   GradeProfile,
   Institution,
   ParentMessageTemplateMode,
+  PenaltyDivisor,
   StudentRecord,
   WeeklyBulkFilterMode,
   WeeklyCohortInsights,
@@ -41,9 +43,10 @@ export function sanitizeExamLabelForGrade(
   if (!gradeProfile || gradeProfile.category === 'Üniversite Hazırlık (YKS)') {
     return raw;
   }
-  // Never expose TYT / AYT / YKS labels for 3rd-12th grade school exams
+  // Never expose TYT / AYT / YKS / Üniversite Hazırlık labels for 3rd-12th grade school exams
   const cleaned = raw
-    .replace(/\b(TYT|AYT|YKS)\b/gi, '')
+    .replace(/\b(TYT|AYT|YKS|AYT-SAY|AYT-EA|AYT-SOZ)\b/gi, '')
+    .replace(/Üniversite Hazırlık(?:\s*\(YKS\))?/gi, '')
     .replace(/\s{2,}/g, ' ')
     .replace(/^[\s\-·:]+|[\s\-·:]+$/g, '')
     .trim();
@@ -197,12 +200,15 @@ export function calculateNetAndScore(
   correct: number,
   wrong: number,
   totalQuestions: number,
-  profile: GradeProfile
+  profile: GradeProfile,
+  penaltyDivisorOverride?: PenaltyDivisor
 ): { net: number; score: number; successPct: number } {
   const safeTotal = Math.max(1, totalQuestions);
   const safeCorrect = Math.max(0, Math.min(safeTotal, correct));
   const safeWrong = Math.max(0, Math.min(safeTotal - safeCorrect, wrong));
-  const net = Number(Math.max(0, safeCorrect - safeWrong / profile.penaltyDivisor).toFixed(2));
+  const divisor = penaltyDivisorOverride ?? profile.penaltyDivisor;
+  const rawNet = divisor === 0 ? safeCorrect : Math.max(0, safeCorrect - safeWrong / divisor);
+  const net = Number(rawNet.toFixed(2));
   const ratio = Math.min(1, Math.max(0, net / safeTotal));
   const score = Number(
     (profile.baseScore + ratio * (profile.maxScore - profile.baseScore)).toFixed(1)
@@ -248,19 +254,22 @@ export function computeWeeklyComparison(params: {
   kts1TotalQuestions: number;
   kts2TotalQuestions: number;
   gradeProfile: GradeProfile;
+  penaltyDivisorOverride?: PenaltyDivisor;
 }): WeeklyComparisonRow[] {
   const rows = params.entries.map((entry) => {
     const k1 = calculateNetAndScore(
       entry.kts1Correct,
       entry.kts1Wrong,
       params.kts1TotalQuestions,
-      params.gradeProfile
+      params.gradeProfile,
+      params.penaltyDivisorOverride
     );
     const k2 = calculateNetAndScore(
       entry.kts2Correct,
       entry.kts2Wrong,
       params.kts2TotalQuestions,
-      params.gradeProfile
+      params.gradeProfile,
+      params.penaltyDivisorOverride
     );
     const netDelta = Number((k2.net - k1.net).toFixed(2));
     const scoreDelta = Number((k2.score - k1.score).toFixed(1));
@@ -450,8 +459,11 @@ export function buildParentMessage(params: {
     return `${academyName}: Sayın Veli, ${row.studentName} (${classTag}) ${safeKts2}: ${row.kts2Net.toFixed(1)} Net / ${row.kts2Score.toFixed(1)} Puan (%${row.successPct}, ${row.rank}. sıra)${medalTag}. Gelişim: ${deltaSign}${row.scoreDelta.toFixed(1)}p.`;
   }
 
-  const effectiveMode: Exclude<ParentMessageTemplateMode, 'auto' | 'short-sms'> =
-    mode !== 'auto'
+  const effectiveMode: Exclude<
+    ParentMessageTemplateMode,
+    'auto' | 'short-sms' | 'written-prep-20' | 'open-ended-10'
+  > =
+    mode === 'top3-celebration' || mode === 'progress-update' || mode === 'study-alert'
       ? mode
       : row.top3Badge
         ? 'top3-celebration'
@@ -481,11 +493,109 @@ export function buildParentMessage(params: {
   return `${headerBlock}\n\n${scoreBlock}\n\nGelişim Analizi: Haftalık fark ${netDeltaSign}${row.netDelta.toFixed(2)} Net (${deltaSign}${row.scoreDelta.toFixed(1)} Puan). "${weakNote}" pekiştirmesiyle bir üst başarı bandına hızla ilerlemektedir. — ${academyName}`;
 }
 
+export const REPORT_CARD_MESSAGE_TEMPLATES: Array<{
+  id: ParentMessageTemplateMode;
+  label: string;
+}> = [
+  { id: 'auto', label: 'Akıllı Otomatik' },
+  { id: 'top3-celebration', label: 'Üstün Başarı Tebriği' },
+  { id: 'progress-update', label: 'Gelişim & Konu Analizi' },
+  { id: 'study-alert', label: 'Etüt & Destek Planı' },
+  { id: 'written-prep-20', label: '20 Soruluk Yazılıya Hazırlık' },
+  { id: 'open-ended-10', label: '10 Soruluk Açık Uçlu Sınav' },
+  { id: 'short-sms', label: 'Kısa SMS Özeti' },
+];
+
+export const DEFAULT_CUSTOM_PARENT_TEMPLATES: CustomParentMessageTemplate[] = [
+  {
+    id: 'tpl-written-20',
+    name: '20 Soruluk Yazılıya Hazırlık Şablonu',
+    category: 'yazili-20',
+    body: `Sayın Velimiz,\nKurum: {kurum}\nÖğrenci: {ogrenci} ({sinif})\nSınav: 20 Soruluk Yazılıya Hazırlık Değerlendirmesi\nGelişim Durumu: {durum}\n\nYazılı Hazırlık Sonucu:\n• Başarı: {net} Net · {puan} Puan (%{basari})\n• Güçlü Alan: {guclu}\n• Destek Konusu: {eksik}\n\nOkul yazılısı öncesi kısa tekrar ile tam başarı hedeflenmektedir. — {kurum}`,
+  },
+  {
+    id: 'tpl-open-10',
+    name: '10 Soruluk Açık Uçlu Kağıt Analizi Şablonu',
+    category: 'acik-uclu-10',
+    body: `Sayın Velimiz,\nKurum: {kurum}\nÖğrenci: {ogrenci} ({sinif})\nSınav: 10 Soruluk Açık Uçlu (Klasik) Kağıt Değerlendirmesi\nGelişim Durumu: {durum}\n\nKağıt Puanı: {puan} / 100 (%{basari})\nOdak Konu: {eksik}\n\nAçık uçlu çözüm basamakları üzerinden birebir geri bildirim verilmiştir. — {kurum}`,
+  },
+  {
+    id: 'tpl-etut-takip',
+    name: 'Haftalık Etüt & Veli Görüşme Daveti',
+    category: 'etut',
+    body: `Sayın Velimiz,\n{ogrenci} ({sinif}) öğrencimizin {sinav} sonucu {net} Net ({puan} Puan · {durum}) olarak gerçekleşmiştir.\n"{eksik}" konusunda hafta içi etüt çalışması planlanmıştır. Uygun olduğunuzda görüşmekten memnuniyet duyarız. — {kurum}`,
+  },
+];
+
+export function applyCustomParentTemplate(params: {
+  templateBody: string;
+  analysis: ExamAnalysisResult;
+  academyName: string;
+  gradeProfile: GradeProfile;
+}): string {
+  const { templateBody, analysis, academyName, gradeProfile } = params;
+  const safeGrade = gradeProfile.shortLabel;
+  const safeClass = normalizeClassroomForGrade(analysis.classroom, gradeProfile);
+  const classTag = safeClass.toLowerCase().includes(safeGrade.toLowerCase())
+    ? safeClass
+    : `${safeGrade} · ${safeClass}`;
+  const safeExam = sanitizeExamLabelForGrade(analysis.examTitle, gradeProfile);
+  const successPct =
+    analysis.totalQuestions > 0
+      ? Math.max(0, Math.round((analysis.totalNet / analysis.totalQuestions) * 100))
+      : 0;
+  const developmentStatus = resolveReportCardDevelopmentStatus(analysis);
+  const sorted = [...analysis.subjectMetrics].sort((a, b) => b.accuracyPct - a.accuracyPct);
+  const strongest = sorted[0]
+    ? sanitizeExamLabelForGrade(sorted[0].subject, gradeProfile)
+    : 'Genel';
+  const weakestTopic = analysis.topicGaps
+    .filter((t) => t.status === 'Kritik Eksik')
+    .slice(0, 2)
+    .map((t) => sanitizeExamLabelForGrade(t.topic, gradeProfile))
+    .join(', ');
+  const weakest =
+    weakestTopic ||
+    (sorted[sorted.length - 1]
+      ? sanitizeExamLabelForGrade(sorted[sorted.length - 1].subject, gradeProfile)
+      : 'Temel tekrar');
+
+  const replaced = templateBody
+    .replace(/\{ogrenci\}/gi, analysis.studentName || 'Öğrenci')
+    .replace(/\{kurum\}/gi, academyName)
+    .replace(/\{sinif\}/gi, classTag)
+    .replace(/\{sinav\}/gi, safeExam)
+    .replace(/\{net\}/gi, analysis.totalNet.toFixed(2))
+    .replace(/\{puan\}/gi, analysis.estimatedScore.toFixed(1))
+    .replace(/\{basari\}/gi, String(successPct))
+    .replace(/\{durum\}/gi, developmentStatus)
+    .replace(/\{guclu\}/gi, strongest)
+    .replace(/\{eksik\}/gi, weakest);
+
+  return sanitizeExamLabelForGrade(replaced, gradeProfile);
+}
+
+export function resolveReportCardDevelopmentStatus(
+  analysis: ExamAnalysisResult
+): WeeklyPerformanceStatus {
+  const successPct =
+    analysis.totalQuestions > 0
+      ? Math.max(0, Math.round((analysis.totalNet / analysis.totalQuestions) * 100))
+      : 0;
+  const prevPoint =
+    analysis.historicalTrend.length >= 2
+      ? analysis.historicalTrend[analysis.historicalTrend.length - 2]
+      : null;
+  const netDelta = prevPoint ? Number((analysis.totalNet - prevPoint.net).toFixed(2)) : 0;
+  return determineWeeklyStatus(successPct, netDelta);
+}
+
 export function buildReportCardParentMessage(params: {
   analysis: ExamAnalysisResult;
   academyName: string;
   gradeProfile: GradeProfile;
   shortMode?: boolean;
+  templateMode?: ParentMessageTemplateMode;
 }): string {
   const { analysis, academyName, gradeProfile, shortMode } = params;
   const safeGrade = gradeProfile.shortLabel;
@@ -507,7 +617,7 @@ export function buildReportCardParentMessage(params: {
   const criticalTopics = analysis.topicGaps
     .filter((t) => t.status === 'Kritik Eksik')
     .slice(0, 2)
-    .map((t) => t.topic);
+    .map((t) => sanitizeExamLabelForGrade(t.topic, gradeProfile));
 
   const prevPoint =
     analysis.historicalTrend.length >= 2
@@ -519,27 +629,84 @@ export function buildReportCardParentMessage(params: {
     : 0;
   const netSign = netDelta >= 0 ? '+' : '';
   const scoreSign = scoreDelta >= 0 ? '+' : '';
+  const developmentStatus = resolveReportCardDevelopmentStatus(analysis);
 
-  if (shortMode) {
-    return `${academyName}: ${analysis.studentName} (${classTag}) ${safeExamTitle} sonucu: ${analysis.totalNet.toFixed(1)} Net, ${analysis.estimatedScore.toFixed(1)} Puan (%${successPct}, Kurum ${analysis.academyRank}.sı). Öncelik: ${weakest?.subject ?? 'Genel tekrar'}.`;
+  const requestedMode: ParentMessageTemplateMode =
+    params.templateMode ?? (shortMode ? 'short-sms' : 'auto');
+
+  if (requestedMode === 'short-sms') {
+    const rankTag = analysis.academyRank <= 3 ? ` (${analysis.academyRank}. Derece!)` : '';
+    return `${academyName}: Sayın Veli, ${analysis.studentName} (${classTag}) ${safeExamTitle}: ${analysis.totalNet.toFixed(1)} Net, ${analysis.estimatedScore.toFixed(1)} Puan (%${successPct} · ${developmentStatus}${rankTag}). Öncelik: ${weakest?.subject ?? 'Genel tekrar'}.`;
   }
 
+  const effectiveMode: Exclude<ParentMessageTemplateMode, 'auto' | 'short-sms'> =
+    requestedMode !== 'auto'
+      ? requestedMode
+      : analysis.academyRank <= 3 || developmentStatus === 'Üstün Başarı'
+        ? 'top3-celebration'
+        : developmentStatus === 'Çalışması Gerekiyor' ||
+            developmentStatus === 'Destek Gerekiyor'
+          ? 'study-alert'
+          : 'progress-update';
+
+  const strongestSafe = strongest
+    ? sanitizeExamLabelForGrade(strongest.subject, gradeProfile)
+    : '';
+  const weakestSafe = weakest
+    ? sanitizeExamLabelForGrade(weakest.subject, gradeProfile)
+    : '';
+
   const subjectLine = strongest
-    ? `• En Güçlü Ders: ${strongest.subject} (%${strongest.accuracyPct} · ${strongest.net.toFixed(1)} Net)`
+    ? `• En Güçlü Ders: ${strongestSafe} (%${strongest.accuracyPct} · ${strongest.net.toFixed(1)} Net)`
     : '';
   const focusSubjectLine =
     weakest && weakest.subject !== strongest?.subject
-      ? `• Gelişim Odağı: ${weakest.subject} (%${weakest.accuracyPct} · ${weakest.net.toFixed(1)} Net)`
+      ? `• Gelişim Odağı: ${weakestSafe} (%${weakest.accuracyPct} · ${weakest.net.toFixed(1)} Net)`
       : '';
   const trendNote = prevPoint
-    ? `Önceki sınava göre ${netSign}${netDelta.toFixed(2)} Net (${scoreSign}${scoreDelta.toFixed(1)} Puan) değişim gösterdi.`
+    ? `Önceki denemeye göre ${netSign}${netDelta.toFixed(2)} Net (${scoreSign}${scoreDelta.toFixed(1)} Puan) değişim gösterdi.`
     : `Sonraki sınav hedefi ${analysis.projectedNet.toFixed(1)} Net (${analysis.projectedScore.toFixed(1)} Puan) olarak öngörülmektedir.`;
   const topicNote =
     criticalTopics.length > 0
       ? ` "${criticalTopics.join(', ')}" konularında kısa tekrar önerilir.`
       : ' Mevcut kazanım hakimiyetini düzenli soru çözümüyle koruyor.';
 
-  return `Sayın Velimiz,\nKurum: ${academyName}\nÖğrenci: ${analysis.studentName} (${classTag})\nSınav: ${safeExamTitle}\n\nNotlar:\n• Sonuç: ${analysis.totalNet.toFixed(2)} Net · ${analysis.estimatedScore.toFixed(1)} Puan (%${successPct} Başarı · Kurum ${analysis.academyRank}. Sıra)\n• Dağılım: ${analysis.totalCorrect} Doğru · ${analysis.totalWrong} Yanlış · ${analysis.totalBlank} Boş\n${subjectLine}${focusSubjectLine ? `\n${focusSubjectLine}` : ''}\n\nGelişim Analizi: ${trendNote}${topicNote}\n\nBilgilerinize sunarız. — ${academyName}`;
+  const headerBlock = `Sayın Velimiz,\nKurum: ${academyName}\nÖğrenci: ${analysis.studentName} (${classTag})\nSınav: ${safeExamTitle}\nGelişim Durumu: ${developmentStatus}`;
+  const scoreBlock = `Notlar:\n• Sonuç: ${analysis.totalNet.toFixed(2)} Net · ${analysis.estimatedScore.toFixed(1)} Puan (%${successPct} Başarı · Kurum ${analysis.academyRank}. Sıra)\n• Dağılım: ${analysis.totalCorrect} Doğru · ${analysis.totalWrong} Yanlış · ${analysis.totalBlank} Boş\n${subjectLine}${focusSubjectLine ? `\n${focusSubjectLine}` : ''}`;
+
+  if (effectiveMode === 'written-prep-20') {
+    const focusTopicsText =
+      criticalTopics.length > 0
+        ? criticalTopics.join(', ')
+        : `${weakestSafe || 'ilgili'} kazanım pekiştirmeleri`;
+    return `${headerBlock}\nDeğerlendirme Türü: 20 Soruluk Yazılıya Hazırlık\n\n${scoreBlock}\n\nYazılı Hazırlık Değerlendirmesi: Okul yazılısı öncesi ${safeGrade} müfredatında %${successPct} hazırbulunuşluk düzeyindedir. Sınav öncesi ${focusTopicsText} başlıklarından kısa tekrar yapılması tam puan hedefini destekleyecektir. — ${academyName}`;
+  }
+
+  if (effectiveMode === 'open-ended-10') {
+    const focusTopicsText =
+      criticalTopics.length > 0
+        ? criticalTopics.join(', ')
+        : `${weakestSafe || 'temel'} çözüm adımları`;
+    return `${headerBlock}\nDeğerlendirme Türü: 10 Soruluk Açık Uçlu (Klasik) Yazılı\n\n${scoreBlock}\n\nAçık Uçlu Kağıt Değerlendirmesi: Öğrencimizin klasik/açık uçlu sorularda yazılı anlatım ve işlem basamağı başarısı %${successPct} olarak ölçülmüştür. ${focusTopicsText} sorularında adım adım çözüm yazma pratiği önerilmektedir. — ${academyName}`;
+  }
+
+  if (effectiveMode === 'top3-celebration') {
+    const honorLine =
+      analysis.academyRank <= 3
+        ? `Kurum genelinde ${analysis.academyRank}. sırada yer alarak üstün başarı göstermiştir.`
+        : `%${successPct} başarı oranıyla derece bandındaki yerini güçlü şekilde korumaktadır.`;
+    return `${headerBlock}\n\n${scoreBlock}\n\nGelişim Analizi: ${honorLine} ${trendNote} Tebrik eder, başarılarının devamını dileriz. — ${academyName}`;
+  }
+
+  if (effectiveMode === 'study-alert') {
+    const focusTopicsText =
+      criticalTopics.length > 0
+        ? criticalTopics.join(', ')
+        : `${weakestSafe || 'temel'} kazanım tekrarları`;
+    return `${headerBlock}\n\n${scoreBlock}\n\nGelişim Analizi: Öğrencimizin "${developmentStatus}" aşamasında hızlı net artışı sağlaması için ${focusTopicsText} başlıklarında haftalık birebir etüt ve 15 dakikalık günlük tekrar planlanması önerilmektedir. Etüt takvimi için görüşmekten memnuniyet duyarız. — ${academyName}`;
+  }
+
+  return `${headerBlock}\n\n${scoreBlock}\n\nGelişim Analizi: ${trendNote}${topicNote}\n\nBilgilerinize sunarız. — ${academyName}`;
 }
 
 export function buildSampleWeeklyCohort(params: {

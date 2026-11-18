@@ -47,7 +47,14 @@ export function PWAInstallButton({
           aria-hidden="true"
           className="w-4 h-4 rounded-md shrink-0 object-cover"
         />
-        <span>{compact ? 'Uygulamayı Kur' : 'Telefona & Masaüstüne Kur'}</span>
+        {compact ? (
+          <>
+            <span className="sm:hidden">Kur</span>
+            <span className="hidden sm:inline">Uygulamayı Kur</span>
+          </>
+        ) : (
+          <span>Telefona &amp; Masaüstüne Kur</span>
+        )}
       </button>
 
       {showGuideModal && (

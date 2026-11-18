@@ -282,6 +282,116 @@ ${textContent ? `\nBelge Metni:\n${String(textContent).slice(0, 24000)}` : ''}`,
     }
   });
 
+  // 2C. Deneme Editörü İçin Deneme PDF Yükleyip Soruları (Grafik/Tablo/İşlem/Resimli İngilizce Dahil) Otomatik Çıkarma
+  app.post('/api/questions/from-exam-pdf', async (req, res) => {
+    try {
+      const ai = getGeminiClient();
+      if (!ai) {
+        res.status(503).json({
+          error: 'GEMINI_API_KEY tanımlı değil; yerel PDF soru ayrıştırıcı kullanılıyor.',
+        });
+        return;
+      }
+
+      const {
+        gradeLabel = '5. Sınıf',
+        optionCount = 4,
+        fileName = 'Deneme.pdf',
+        textContent = '',
+        fileBase64,
+        fileMimeType,
+        count = 10,
+      } = req.body ?? {};
+
+      const safeCount = Math.min(20, Math.max(1, Number(count) || 10));
+      const letters = optionCount === 4 ? ['A', 'B', 'C', 'D'] : ['A', 'B', 'C', 'D', 'E'];
+
+      const parts: Array<{ text?: string; inlineData?: { mimeType: string; data: string } }> = [];
+      if (fileBase64 && fileMimeType) {
+        parts.push({
+          inlineData: {
+            mimeType: String(fileMimeType),
+            data: String(fileBase64),
+          },
+        });
+      }
+
+      parts.push({
+        text: `Bu deneme sınavı PDF/metin belgesini ("${fileName}") incele. Hedef öğrenci düzeyi: "${gradeLabel}".
+Belgedeki soruları (${safeCount} adede kadar) veya belgedeki kazanımlara göre düzenlenebilir çoktan seçmeli (${letters.join(', ')} şıklı) soruları JSON dizisi olarak çıkar.
+Eğer sorularda sütun grafiği, tablolu işlem, matematiksel işlem/şekil veya resimli İngilizce sahnesi varsa "visual" alanını doldur ("type": "chart" | "table" | "math" | "image").
+${textContent ? `\nBelge Metni:\n${String(textContent).slice(0, 24000)}` : ''}`,
+      });
+
+      const response = await Promise.race([
+        ai.models.generateContent({
+          model: 'gemini-4-hydrogen',
+          contents: { parts },
+          config: {
+            responseMimeType: 'application/json',
+            responseSchema: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  subject: { type: Type.STRING },
+                  topic: { type: Type.STRING },
+                  gainCode: { type: Type.STRING },
+                  difficulty: { type: Type.STRING },
+                  stem: { type: Type.STRING },
+                  options: {
+                    type: Type.OBJECT,
+                    properties: Object.fromEntries(letters.map((l) => [l, { type: Type.STRING }])),
+                  },
+                  correctOption: { type: Type.STRING },
+                  explanation: { type: Type.STRING },
+                  visual: {
+                    type: Type.OBJECT,
+                    properties: {
+                      type: { type: Type.STRING },
+                      title: { type: Type.STRING },
+                      caption: { type: Type.STRING },
+                      formula: { type: Type.STRING },
+                      geometryShape: { type: Type.STRING },
+                      scenePresetId: { type: Type.STRING },
+                      sceneLabels: { type: Type.ARRAY, items: { type: Type.STRING } },
+                      headers: { type: Type.ARRAY, items: { type: Type.STRING } },
+                      rows: {
+                        type: Type.ARRAY,
+                        items: { type: Type.ARRAY, items: { type: Type.STRING } },
+                      },
+                      bars: {
+                        type: Type.ARRAY,
+                        items: {
+                          type: Type.OBJECT,
+                          properties: {
+                            label: { type: Type.STRING },
+                            value: { type: Type.NUMBER },
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+                required: ['subject', 'topic', 'difficulty', 'stem', 'options', 'correctOption'],
+              },
+            },
+            thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+          },
+        }),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('PDF analiz zaman aşımı')), 12000)
+        ),
+      ]);
+
+      const questions = JSON.parse((response.text ?? '[]').trim());
+      res.json({ questions });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'PDF soru çıkarma hatası';
+      res.status(504).json({ error: message });
+    }
+  });
+
   // 3. Yüklenen Optik Form veya Cevap Anahtarı Görseli/PDF'ini Okuma (OMR Vision)
   app.post('/api/omr/parse-file', async (req, res) => {
     try {
@@ -336,6 +446,115 @@ ${textContent ? `\nBelge Metni:\n${String(textContent).slice(0, 24000)}` : ''}`,
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Optik okuma hatası';
       res.status(500).json({ error: `Optik/Cevap anahtarı okunamadı: ${message}` });
+    }
+  });
+
+  // 3B. 10 Soruluk Açık Uçlu (Klasik) Öğrenci Kağıdı & Çözüm Anahtarı Analizi
+  app.post('/api/open-ended/analyze-paper', async (req, res) => {
+    try {
+      const ai = getGeminiClient();
+      if (!ai) {
+        res.status(503).json({
+          error: 'GEMINI_API_KEY tanımlı değil; metin tabanlı yerel rubrik değerlendirici kullanılabilir.',
+        });
+        return;
+      }
+
+      const {
+        gradeLabel = '5. Sınıf',
+        studentName = 'Öğrenci',
+        examTitle = '10 Soruluk Açık Uçlu Yazılı',
+        questions = [],
+        solutionFileBase64,
+        solutionFileMimeType,
+        solutionText = '',
+        studentPaperBase64,
+        studentPaperMimeType,
+        studentPaperText = '',
+      } = req.body ?? {};
+
+      const parts: Array<{ text?: string; inlineData?: { mimeType: string; data: string } }> = [];
+      if (solutionFileBase64 && solutionFileMimeType) {
+        parts.push({
+          inlineData: {
+            mimeType: String(solutionFileMimeType),
+            data: String(solutionFileBase64),
+          },
+        });
+      }
+      if (studentPaperBase64 && studentPaperMimeType) {
+        parts.push({
+          inlineData: {
+            mimeType: String(studentPaperMimeType),
+            data: String(studentPaperBase64),
+          },
+        });
+      }
+
+      const rubricSummary = Array.isArray(questions)
+        ? questions
+            .slice(0, 10)
+            .map(
+              (q: { number?: number; subject?: string; maxPoints?: number; prompt?: string; modelAnswer?: string }, idx: number) =>
+                `Soru ${q.number ?? idx + 1} (${q.subject ?? 'Genel'}, ${q.maxPoints ?? 10} Puan):\nSoru: ${q.prompt ?? ''}\nÖrnek Çözüm: ${q.modelAnswer ?? ''}`
+            )
+            .join('\n\n')
+        : '';
+
+      parts.push({
+        text: `Sen Doğruluk Akademi için çalışan kıdemli bir ölçme-değerlendirme öğretmenisin.
+Öğrenci: ${studentName} · Düzey: ${gradeLabel} · Sınav: ${examTitle}.
+Yüklenen öğrenci yazılı kağıdını (görsel/PDF veya metin) aşağıdaki sorular ve örnek çözümler / rubrik ile karşılaştırarak her soru için 0 ile maxPoints arasında puan ver, status ("tam" | "kismi" | "yanlis" | "bos") belirle ve kısa Türkçe geri bildirim yaz.
+
+Sorular ve Örnek Çözümler:
+${rubricSummary}
+
+${solutionText ? `\nEk Çözüm Anahtarı Metni:\n${String(solutionText).slice(0, 8000)}` : ''}
+${studentPaperText ? `\nÖğrenci Kağıdı Metni:\n${String(studentPaperText).slice(0, 12000)}` : ''}`,
+      });
+
+      const response = await Promise.race([
+        ai.models.generateContent({
+          model: 'gemini-4-hydrogen',
+          contents: { parts },
+          config: {
+            responseMimeType: 'application/json',
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                overallFeedback: { type: Type.STRING },
+                questionGrades: {
+                  type: Type.ARRAY,
+                  items: {
+                    type: Type.OBJECT,
+                    properties: {
+                      number: { type: Type.INTEGER },
+                      subject: { type: Type.STRING },
+                      score: { type: Type.NUMBER },
+                      maxPoints: { type: Type.NUMBER },
+                      status: { type: Type.STRING },
+                      studentAnswerSummary: { type: Type.STRING },
+                      feedback: { type: Type.STRING },
+                    },
+                    required: ['number', 'score', 'maxPoints', 'status', 'studentAnswerSummary', 'feedback'],
+                  },
+                },
+              },
+              required: ['overallFeedback', 'questionGrades'],
+            },
+            thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+          },
+        }),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('Açık uçlu kağıt analizi zaman aşımına uğradı')), 15000)
+        ),
+      ]);
+
+      const parsed = JSON.parse((response.text ?? '{}').trim());
+      res.json(parsed);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Açık uçlu kağıt analizi hatası';
+      res.status(504).json({ error: message });
     }
   });
 

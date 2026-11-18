@@ -11,6 +11,9 @@ import {
   FileDown,
   Upload,
   Award,
+  Pencil,
+  Trash2,
+  X,
 } from 'lucide-react';
 import { GRADE_PROFILES, getGradeProfile } from '../data/curriculum';
 import {
@@ -32,6 +35,7 @@ import {
   filterGradeProfilesByInstitution,
   generate8DigitInstitutionCode,
   generate8DigitStudentNumber,
+  normalizeInstitutionKey,
 } from '../utils/institutionCodes';
 import {
   generateInstitutionsListPdf,
@@ -48,6 +52,11 @@ interface InstitutionStudentManagerProps {
   cover: CoverConfig;
   onSelectInstitution: (inst: Institution) => void;
   onAddInstitution: (inst: Institution) => void;
+  onUpdateInstitution: (
+    institutionId: string,
+    patch: { name: string; city: string; accessPassword?: string }
+  ) => { ok: boolean; reason?: string };
+  onDeleteInstitution: (institutionId: string) => { ok: boolean; reason?: string };
   onBulkAddInstitutions: (items: Institution[]) => void;
   onAddStudent: (student: StudentRecord) => void;
   onBulkAddStudents: (items: StudentRecord[]) => void;
@@ -64,6 +73,8 @@ export function InstitutionStudentManager({
   cover,
   onSelectInstitution,
   onAddInstitution,
+  onUpdateInstitution,
+  onDeleteInstitution,
   onBulkAddInstitutions,
   onAddStudent,
   onBulkAddStudents,
@@ -75,9 +86,19 @@ export function InstitutionStudentManager({
   const [loginFeedback, setLoginFeedback] = useState<string | null>(null);
   const [loginError, setLoginError] = useState<string | null>(null);
 
+  // 1b. Inline Edit & 2-step Delete for active institution
+  const [editingInst, setEditingInst] = useState<boolean>(false);
+  const [editInstName, setEditInstName] = useState<string>(activeInstitution.name);
+  const [editInstCity, setEditInstCity] = useState<string>(activeInstitution.city);
+  const [editInstPassword, setEditInstPassword] = useState<string>(
+    activeInstitution.accessPassword || '123456'
+  );
+  const [confirmDeleteInst, setConfirmDeleteInst] = useState<boolean>(false);
+
   // 2. Manual Institution Creation
   const [newInstName, setNewInstName] = useState<string>('');
   const [newInstCity, setNewInstCity] = useState<string>('');
+  const [newInstPassword, setNewInstPassword] = useState<string>('');
 
   // 3. Manual Student Creation with Grade Level + instant live 8-digit preview
   const [studentNameInput, setStudentNameInput] = useState<string>('');
@@ -95,9 +116,14 @@ export function InstitutionStudentManager({
 
   useEffect(() => {
     setSelectedInstId(activeInstitution.id);
+    setEditInstName(activeInstitution.name);
+    setEditInstCity(activeInstitution.city);
+    setEditInstPassword(activeInstitution.accessPassword || '123456');
+    setEditingInst(false);
+    setConfirmDeleteInst(false);
     setStudentFeedback(null);
     setLoginError(null);
-  }, [activeInstitution.id]);
+  }, [activeInstitution.id, activeInstitution.name, activeInstitution.city, activeInstitution.accessPassword]);
 
   useEffect(() => {
     setStudentGradeId(activeGradeId);
@@ -132,13 +158,21 @@ export function InstitutionStudentManager({
     [students]
   );
 
+  const duplicateExistingInst = useMemo(() => {
+    const key = normalizeInstitutionKey(newInstName);
+    if (!key) return null;
+    return institutions.find((i) => normalizeInstitutionKey(i.name) === key) ?? null;
+  }, [newInstName, institutions]);
+
   // Live auto-generated 8-digit Institution Code preview when typing a new institution
   const previewNewInstCode = useMemo(
     () =>
-      newInstName.trim()
-        ? generate8DigitInstitutionCode(newInstName, existingInstCodes)
-        : '--------',
-    [newInstName, existingInstCodes]
+      duplicateExistingInst
+        ? duplicateExistingInst.code8
+        : newInstName.trim()
+          ? generate8DigitInstitutionCode(newInstName, existingInstCodes)
+          : '--------',
+    [newInstName, existingInstCodes, duplicateExistingInst]
   );
 
   // Live auto-generated 8-digit Student Number as soon as name + institution are selected
@@ -175,22 +209,57 @@ export function InstitutionStudentManager({
     e.preventDefault();
     if (!newInstName.trim()) return;
     setLoginError(null);
-    const code8 = generate8DigitInstitutionCode(newInstName, existingInstCodes);
+    const matched = duplicateExistingInst;
+    const code8 = matched
+      ? matched.code8
+      : generate8DigitInstitutionCode(newInstName, existingInstCodes);
     const created: Institution = {
-      id: `inst-${Date.now()}`,
+      id: matched ? matched.id : `inst-${Date.now()}`,
       name: newInstName.trim(),
       code8,
-      city: newInstCity.trim() || 'Türkiye',
-      createdAt: new Date().toLocaleDateString('tr-TR'),
+      city: newInstCity.trim() || matched?.city || 'Türkiye',
+      createdAt: matched?.createdAt || new Date().toLocaleDateString('tr-TR'),
+      accessPassword: newInstPassword.trim() || matched?.accessPassword || '123456',
+      permissions: matched?.permissions,
     };
     onAddInstitution(created);
-    onSelectInstitution(created);
     setSelectedInstId(created.id);
     setNewInstName('');
     setNewInstCity('');
+    setNewInstPassword('');
     setLoginFeedback(
-      `"${created.name}" eklendi! 8 haneli Kurum Kodu: ${created.code8} — Kurum aktif edildi.`
+      matched
+        ? `"${created.name}" zaten kayıtlı olduğu için mevcut kurum (${created.code8}) güncellendi; ikinci kopya oluşturulmadı.`
+        : `"${created.name}" eklendi! 8 haneli Kurum Kodu: ${created.code8} · Şifre: ${created.accessPassword}`
     );
+  };
+
+  const handleSaveEditInstitution = () => {
+    setLoginError(null);
+    const res = onUpdateInstitution(activeInstitution.id, {
+      name: editInstName,
+      city: editInstCity,
+      accessPassword: editInstPassword,
+    });
+    if (!res.ok) {
+      setLoginError(res.reason || 'Kurum güncellenemedi.');
+      return;
+    }
+    setEditingInst(false);
+    setLoginFeedback(`"${editInstName.trim()}" bilgileri ve kurum şifresi güncellendi.`);
+  };
+
+  const handleConfirmDeleteInstitution = () => {
+    setLoginError(null);
+    const deletedName = activeInstitution.name;
+    const res = onDeleteInstitution(activeInstitution.id);
+    if (!res.ok) {
+      setLoginError(res.reason || 'Kurum silinemedi.');
+      setConfirmDeleteInst(false);
+      return;
+    }
+    setConfirmDeleteInst(false);
+    setLoginFeedback(`"${deletedName}" kurumu listeden silindi.`);
   };
 
   const handleStudentGradeChange = (nextGrade: GradeLevelId) => {
@@ -415,6 +484,121 @@ export function InstitutionStudentManager({
                 ))}
               </select>
             </label>
+
+            {/* Aktif Kurum Düzenleme ve Silme Çubuğu */}
+            <div
+              className="pt-2.5 border-t flex flex-wrap items-center gap-2"
+              style={{ borderColor: 'var(--border-subtle)' }}
+            >
+              <button
+                type="button"
+                onClick={() => {
+                  setEditInstName(activeInstitution.name);
+                  setEditInstCity(activeInstitution.city);
+                  setEditingInst((v) => !v);
+                  setConfirmDeleteInst(false);
+                }}
+                className="btn-3d-secondary flex-1 py-1.5 px-2.5 rounded-lg text-[11px] font-bold inline-flex items-center justify-center gap-1.5 cursor-pointer"
+              >
+                <Pencil className="w-3.5 h-3.5" aria-hidden="true" />
+                <span>Kurumu Güncelle</span>
+              </button>
+              <button
+                type="button"
+                disabled={institutions.length <= 1}
+                title={
+                  institutions.length <= 1
+                    ? 'Son aktif kurum silinemez'
+                    : `${activeInstitution.name} kurumunu sil`
+                }
+                onClick={() => {
+                  setConfirmDeleteInst((v) => !v);
+                  setEditingInst(false);
+                }}
+                className="btn-3d-secondary py-1.5 px-3 rounded-lg text-[11px] font-bold text-rose-600 inline-flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-45"
+              >
+                <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
+                <span>Kurumu Sil</span>
+              </button>
+            </div>
+
+            {editingInst && (
+              <div className="surface-card rounded-lg p-3 space-y-2 border" style={{ borderColor: 'var(--border-subtle)' }}>
+                <div className="text-[11px] font-bold">
+                  Aktif Kurumu Düzenle ({activeInstitution.code8})
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                  <input
+                    type="text"
+                    value={editInstName}
+                    onChange={(e) => setEditInstName(e.target.value)}
+                    aria-label="Kurum Adını Güncelle"
+                    placeholder="Kurum Adı"
+                    className="sm:col-span-2 rounded-lg px-2.5 py-1.5 text-xs surface-alt"
+                  />
+                  <input
+                    type="text"
+                    value={editInstCity}
+                    onChange={(e) => setEditInstCity(e.target.value)}
+                    aria-label="Kurum Şehrini Güncelle"
+                    placeholder="Şehir"
+                    className="rounded-lg px-2.5 py-1.5 text-xs surface-alt"
+                  />
+                  <input
+                    type="text"
+                    value={editInstPassword}
+                    onChange={(e) => setEditInstPassword(e.target.value)}
+                    aria-label="Kurum Şifresini Güncelle"
+                    placeholder="Kurum Şifresi"
+                    className="sm:col-span-3 rounded-lg px-2.5 py-1.5 text-xs surface-alt font-mono-num"
+                  />
+                </div>
+                <div className="flex items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setEditingInst(false)}
+                    className="btn-3d-secondary px-2.5 py-1 rounded-md text-[11px] font-bold inline-flex items-center gap-1 cursor-pointer"
+                  >
+                    <X className="w-3 h-3" aria-hidden="true" />
+                    <span>Vazgeç</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleSaveEditInstitution}
+                    className="btn-3d px-3 py-1 rounded-md text-[11px] font-bold cursor-pointer"
+                  >
+                    Kaydet
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {confirmDeleteInst && (
+              <div className="rounded-lg p-3 space-y-2 bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-900 text-xs">
+                <div className="font-bold text-rose-800 dark:text-rose-200">
+                  "{activeInstitution.name}" kurumunu silmek istediğinize emin misiniz?
+                </div>
+                <p className="text-[11px] text-rose-700 dark:text-rose-300">
+                  Kuruma kayıtlı öğrenciler ve takvim etkinlikleri de temizlenir.
+                </p>
+                <div className="flex items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setConfirmDeleteInst(false)}
+                    className="btn-3d-secondary px-2.5 py-1 rounded-md text-[11px] font-bold cursor-pointer"
+                  >
+                    Vazgeç
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleConfirmDeleteInstitution}
+                    className="px-3 py-1 rounded-md text-[11px] font-bold bg-rose-600 text-white hover:bg-rose-700 cursor-pointer"
+                  >
+                    Evet, Sil
+                  </button>
+                </div>
+              </div>
+            )}
           </form>
 
           {/* Manuel Kurum Ekleme + Excel/PDF İndirme & Yükleme */}
@@ -435,6 +619,7 @@ export function InstitutionStudentManager({
                 value={newInstName}
                 onChange={(e) => setNewInstName(e.target.value)}
                 placeholder="Kurum Adı (Örn: Yıldız Akademi)"
+                aria-label="Yeni Kurum Adı"
                 className="sm:col-span-2 rounded-lg px-3 py-2 text-xs surface-card"
               />
               <input
@@ -442,16 +627,33 @@ export function InstitutionStudentManager({
                 value={newInstCity}
                 onChange={(e) => setNewInstCity(e.target.value)}
                 placeholder="Şehir"
+                aria-label="Yeni Kurum Şehri"
                 className="rounded-lg px-3 py-2 text-xs surface-card"
               />
+              <input
+                type="text"
+                value={newInstPassword}
+                onChange={(e) => setNewInstPassword(e.target.value)}
+                placeholder="Kurum Giriş Şifresi (varsayılan: 123456)"
+                aria-label="Yeni Kurum Giriş Şifresi"
+                className="sm:col-span-3 rounded-lg px-3 py-2 text-xs surface-card font-mono-num"
+              />
             </div>
+
+            {duplicateExistingInst && (
+              <div className="rounded-lg px-3 py-2 text-[11px] font-semibold bg-amber-50 dark:bg-amber-950/30 text-amber-800 dark:text-amber-200 border border-amber-200 dark:border-amber-800">
+                "{duplicateExistingInst.name}" ({duplicateExistingInst.code8}) zaten kayıtlı — ikinci kopya açılmaz, mevcut kurum güncellenir.
+              </div>
+            )}
 
             <button
               type="submit"
               disabled={!newInstName.trim()}
               className="btn-3d-secondary w-full py-2 px-3 rounded-lg text-xs font-bold cursor-pointer disabled:opacity-50"
             >
-              Kurumu Ekle & 8 Haneli Kurum Kodu Üret
+              {duplicateExistingInst
+                ? `Mevcut Kurumu Güncelle (${duplicateExistingInst.code8})`
+                : 'Kurumu Ekle & 8 Haneli Kurum Kodu Üret'}
             </button>
 
             <div

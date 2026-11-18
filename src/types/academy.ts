@@ -61,6 +61,8 @@ export interface SubjectSpec {
   topics: string[];
 }
 
+export type PenaltyDivisor = 0 | 3 | 4;
+
 export interface GradeProfile {
   id: GradeLevelId;
   label: string;
@@ -68,7 +70,7 @@ export interface GradeProfile {
   category: 'İlkokul' | 'Ortaokul & LGS' | 'Lise' | 'Üniversite Hazırlık (YKS)';
   examName: string;
   optionCount: 4 | 5;
-  penaltyDivisor: 3 | 4;
+  penaltyDivisor: PenaltyDivisor;
   durationMinutes: number;
   maxScore: number;
   baseScore: number;
@@ -83,6 +85,37 @@ export type QuestionSource =
   | 'Ders Kitabı'
   | 'PDF Kitapçık';
 
+export type QuestionVisualType = 'chart' | 'table' | 'math' | 'image';
+
+export type EnglishScenePresetId =
+  | 'weather'
+  | 'daily-routine'
+  | 'classroom-objects'
+  | 'food-menu'
+  | 'city-directions';
+
+export interface QuestionVisualSpec {
+  type: QuestionVisualType;
+  title: string;
+  caption?: string;
+  bars?: Array<{ label: string; value: number }>;
+  yAxisLabel?: string;
+  headers?: string[];
+  rows?: string[][];
+  formula?: string;
+  steps?: string[];
+  geometryShape?: 'triangle' | 'rectangle' | 'circle' | 'fraction' | 'none';
+  imageDataUrl?: string;
+  scenePresetId?: EnglishScenePresetId;
+  sceneLabels?: string[];
+}
+
+export interface PdfUploadStripOptions {
+  stripFrontCover: boolean;
+  stripBackCover: boolean;
+  appendBrandedBackPage: boolean;
+}
+
 export interface ExamQuestion {
   id: string;
   number: number;
@@ -96,6 +129,7 @@ export interface ExamQuestion {
   explanation: string;
   source: QuestionSource;
   sourceUrl?: string;
+  visual?: QuestionVisualSpec;
 }
 
 export type LogoStyleId =
@@ -147,6 +181,7 @@ export interface Institution {
   code8: string;
   city: string;
   createdAt: string;
+  accessPassword?: string;
   permissions?: InstitutionPermissions;
 }
 
@@ -182,6 +217,7 @@ export interface CoverConfig {
   questionCount: number;
   reminders: string[];
   isSampleDemo?: boolean;
+  penaltyRuleLabel?: string;
 }
 
 export interface QuestionEvaluation {
@@ -244,7 +280,7 @@ export interface ExamAnalysisResult {
   classroom: string;
   examTitle: string;
   gradeId: GradeLevelId;
-  penaltyDivisor: 3 | 4;
+  penaltyDivisor: PenaltyDivisor;
   totalQuestions: number;
   totalCorrect: number;
   totalWrong: number;
@@ -379,7 +415,53 @@ export type ParentMessageTemplateMode =
   | 'top3-celebration'
   | 'progress-update'
   | 'study-alert'
-  | 'short-sms';
+  | 'short-sms'
+  | 'written-prep-20'
+  | 'open-ended-10';
+
+export interface CustomParentMessageTemplate {
+  id: string;
+  name: string;
+  category: 'genel' | 'yazili-20' | 'acik-uclu-10' | 'etut';
+  body: string;
+}
+
+export interface OpenEndedQuestion {
+  id: string;
+  number: number;
+  subject: string;
+  topic: string;
+  maxPoints: number;
+  prompt: string;
+  modelAnswer: string;
+  keywords: string[];
+}
+
+export interface OpenEndedQuestionGrade {
+  number: number;
+  subject: string;
+  score: number;
+  maxPoints: number;
+  status: 'tam' | 'kismi' | 'yanlis' | 'bos';
+  studentAnswerSummary: string;
+  feedback: string;
+}
+
+export interface OpenEndedPaperAnalysis {
+  id: string;
+  studentName: string;
+  studentNumber: string;
+  classroom: string;
+  examTitle: string;
+  gradeId: GradeLevelId;
+  totalScore: number;
+  maxTotalScore: number;
+  successPct: number;
+  developmentStatus: WeeklyPerformanceStatus;
+  overallFeedback: string;
+  questionGrades: OpenEndedQuestionGrade[];
+  evaluatedAt: string;
+}
 
 export type WeeklySortKey = 'rank' | 'kts1' | 'kts2' | 'delta';
 
@@ -434,3 +516,4 @@ export type ActiveTab =
   | 'reports'
   | 'poster'
   | 'drive';
+

@@ -29,6 +29,7 @@ import {
   GradeProfile,
   Institution,
   ParentMessageTemplateMode,
+  PenaltyDivisor,
   StudentRecord,
   WeeklyBulkFilterMode,
   WeeklyComparisonRow,
@@ -72,6 +73,8 @@ const QUESTION_PRESETS: WeeklyQuestionPreset[] = [20, 40, 50, 60, 80, 90, 120];
 interface WeeklyComparisonViewProps {
   activeInstitution: Institution;
   gradeProfile: GradeProfile;
+  penaltyDivisor?: PenaltyDivisor;
+  onChangePenaltyDivisor?: (divisor: PenaltyDivisor) => void;
   students: StudentRecord[];
   cover: CoverConfig;
   driveConnected: boolean;
@@ -84,6 +87,8 @@ interface WeeklyComparisonViewProps {
 export function WeeklyComparisonView({
   activeInstitution,
   gradeProfile,
+  penaltyDivisor,
+  onChangePenaltyDivisor,
   students,
   cover,
   driveConnected,
@@ -180,6 +185,8 @@ export function WeeklyComparisonView({
     onToast(`Haftalık deneme soru sayısı ${count} soru olarak ayarlandı.`);
   };
 
+  const effectivePenaltyDivisor = penaltyDivisor ?? gradeProfile.penaltyDivisor;
+
   const rows: WeeklyComparisonRow[] = useMemo(
     () =>
       computeWeeklyComparison({
@@ -187,8 +194,9 @@ export function WeeklyComparisonView({
         kts1TotalQuestions: kts1Meta.questionCount,
         kts2TotalQuestions: kts2Meta.questionCount,
         gradeProfile,
+        penaltyDivisorOverride: effectivePenaltyDivisor,
       }),
-    [entries, kts1Meta.questionCount, kts2Meta.questionCount, gradeProfile]
+    [entries, kts1Meta.questionCount, kts2Meta.questionCount, gradeProfile, effectivePenaltyDivisor]
   );
 
   const insights = useMemo(() => computeWeeklyCohortInsights(rows), [rows]);
@@ -553,8 +561,24 @@ export function WeeklyComparisonView({
                 color: 'var(--accent-primary)',
               }}
             >
-              {gradeProfile.shortLabel} ({gradeProfile.optionCount} Şık · {gradeProfile.penaltyDivisor}Y = 1D)
+              {gradeProfile.shortLabel} ({gradeProfile.optionCount} Şık ·{' '}
+              {effectivePenaltyDivisor === 0 ? 'Götürmesiz' : `${effectivePenaltyDivisor}Y = 1D`})
             </span>
+            {onChangePenaltyDivisor && (
+              <select
+                aria-label="Haftalık Doğru-Yanlış Götürme Kuralı"
+                data-testid="weekly-penalty-select"
+                value={effectivePenaltyDivisor}
+                onChange={(e) =>
+                  onChangePenaltyDivisor(Number(e.target.value) as PenaltyDivisor)
+                }
+                className="rounded-lg px-2.5 py-1 text-xs font-bold surface-alt"
+              >
+                <option value={0}>Götürmesiz (Net = Doğru · 3–5. Sınıf)</option>
+                <option value={3}>3 Yanlış = 1 Doğru</option>
+                <option value={4}>4 Yanlış = 1 Doğru</option>
+              </select>
+            )}
           </div>
           <p className="text-xs sm:text-sm mt-1" style={{ color: 'var(--text-secondary)' }}>
             20 veya 50 soruluk haftalık denemeler oluşturun; {kts1Meta.name} ve {kts2Meta.name} sonuçlarını karşılaştırıp pano asma PDF, Excel, PC HTML ve Google Drive çıktısı alın.

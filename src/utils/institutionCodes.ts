@@ -85,12 +85,51 @@ export function createDefaultPermissions(
   };
 }
 
+export const DEFAULT_INSTITUTION_PASSWORD = '123456';
+
 export function normalizeInstitution(inst: Institution): Institution {
-  if (inst.permissions) return inst;
   return {
     ...inst,
-    permissions: createDefaultPermissions(),
+    accessPassword: inst.accessPassword?.trim() || DEFAULT_INSTITUTION_PASSWORD,
+    permissions: inst.permissions ?? createDefaultPermissions(),
   };
+}
+
+export function authenticateInstitution(
+  list: Institution[],
+  code8Raw: string,
+  passwordRaw: string
+): { ok: boolean; institution?: Institution; reason?: string } {
+  const cleanCode = code8Raw.replace(/\D/g, '').slice(0, 8);
+  const cleanPass = passwordRaw.trim();
+  if (cleanCode.length !== 8) {
+    return { ok: false, reason: 'Lütfen 8 haneli geçerli bir Kurum Kodu girin.' };
+  }
+  if (!cleanPass) {
+    return { ok: false, reason: 'Lütfen Kurum Şifresini girin (Önizleme için varsayılan: 123456).' };
+  }
+  const found = list.find((item) => item.code8 === cleanCode);
+  if (!found) {
+    return {
+      ok: false,
+      reason: `${cleanCode} koduna kayıtlı bir kurum bulunamadı. Aşağıdan yeni kurum oluşturabilir veya listeden seçebilirsiniz.`,
+    };
+  }
+  const normalized = normalizeInstitution(found);
+  const expected = normalized.accessPassword || DEFAULT_INSTITUTION_PASSWORD;
+  if (cleanPass !== expected) {
+    return {
+      ok: false,
+      reason: `${normalized.name} için girdiğiniz kurum şifresi hatalı. (Önizleme şifresi: ${expected})`,
+    };
+  }
+  if (normalized.permissions?.status === 'Askıda') {
+    return {
+      ok: false,
+      reason: `${normalized.name} kurum lisansı askıda. Kurum Yetki Panelinden aktifleştirebilirsiniz.`,
+    };
+  }
+  return { ok: true, institution: normalized };
 }
 
 export function categoryToScopeId(category: GradeProfile['category']): AllowedScopeId {
@@ -149,6 +188,177 @@ export function isGradeAllowedForInstitution(
   return scopes.includes(categoryToScopeId(target.category));
 }
 
+export function normalizeInstitutionKey(name: string): string {
+  return name.trim().replace(/\s+/g, ' ').toLocaleLowerCase('tr-TR');
+}
+
+export function upsertInstitutionList(
+  list: Institution[],
+  candidate: Institution
+): {
+  institutions: Institution[];
+  saved: Institution;
+  wasDuplicate: boolean;
+} {
+  const normalized = normalizeInstitution(candidate);
+  const candidateNameKey = normalizeInstitutionKey(normalized.name);
+  const existingIdx = list.findIndex(
+    (item) =>
+      item.id === normalized.id ||
+      item.code8 === normalized.code8 ||
+      (candidateNameKey.length > 0 && normalizeInstitutionKey(item.name) === candidateNameKey)
+  );
+
+  if (existingIdx !== -1) {
+    const existing = normalizeInstitution(list[existingIdx]);
+    const merged: Institution = {
+      ...existing,
+      name: normalized.name.trim() || existing.name,
+      city: normalized.city.trim() || existing.city,
+      accessPassword:
+        candidate.accessPassword?.trim() || existing.accessPassword || DEFAULT_INSTITUTION_PASSWORD,
+      permissions: existing.permissions ?? normalized.permissions,
+    };
+    const nextList = list.map((item, idx) => (idx === existingIdx ? merged : item));
+    return {
+      institutions: nextList,
+      saved: merged,
+      wasDuplicate: true,
+    };
+  }
+
+  return {
+    institutions: [normalized, ...list],
+    saved: normalized,
+    wasDuplicate: false,
+  };
+}
+
+export function bulkUpsertInstitutions(
+  list: Institution[],
+  incoming: Institution[]
+): {
+  institutions: Institution[];
+  addedCount: number;
+  updatedCount: number;
+  firstAffected: Institution | null;
+} {
+  let current = [...list];
+  let addedCount = 0;
+  let updatedCount = 0;
+  let firstAffected: Institution | null = null;
+
+  for (const raw of incoming) {
+    const res = upsertInstitutionList(current, raw);
+    current = res.institutions;
+    if (res.wasDuplicate) {
+      updatedCount += 1;
+    } else {
+      addedCount += 1;
+    }
+    if (!firstAffected) {
+      firstAffected = res.saved;
+    }
+  }
+
+  return {
+    institutions: current,
+    addedCount,
+    updatedCount,
+    firstAffected,
+  };
+}
+
+export function updateInstitutionRecord(
+  list: Institution[],
+  institutionId: string,
+  patch: { name?: string; city?: string; accessPassword?: string }
+): {
+  ok: boolean;
+  institutions: Institution[];
+  updated?: Institution;
+  reason?: string;
+} {
+  const target = list.find((i) => i.id === institutionId);
+  if (!target) {
+    return { ok: false, institutions: list, reason: 'Güncellenecek kurum bulunamadı.' };
+  }
+  const nextName = (patch.name ?? target.name).trim();
+  const nextCity = (patch.city ?? target.city).trim() || 'Türkiye';
+  const nextPassword =
+    patch.accessPassword !== undefined
+      ? patch.accessPassword.trim() || target.accessPassword || DEFAULT_INSTITUTION_PASSWORD
+      : target.accessPassword || DEFAULT_INSTITUTION_PASSWORD;
+  if (!nextName) {
+    return { ok: false, institutions: list, reason: 'Kurum adı boş bırakılamaz.' };
+  }
+  const nextKey = normalizeInstitutionKey(nextName);
+  const duplicate = list.find(
+    (other) => other.id !== institutionId && normalizeInstitutionKey(other.name) === nextKey
+  );
+  if (duplicate) {
+    return {
+      ok: false,
+      institutions: list,
+      reason: `"${duplicate.name}" (${duplicate.code8}) adlı kurum zaten kayıtlı. İki aynı kurum oluşturulamaz.`,
+    };
+  }
+
+  const updated: Institution = {
+    ...normalizeInstitution(target),
+    name: nextName,
+    city: nextCity,
+    accessPassword: nextPassword,
+  };
+  return {
+    ok: true,
+    institutions: list.map((item) => (item.id === institutionId ? updated : item)),
+    updated,
+  };
+}
+
+export function deleteInstitutionSafely(
+  list: Institution[],
+  institutionId: string,
+  activeInstitutionId: string
+): {
+  ok: boolean;
+  institutions: Institution[];
+  nextActiveInstitution: Institution | null;
+  deletedInstitution?: Institution;
+  reason?: string;
+} {
+  if (list.length <= 1) {
+    return {
+      ok: false,
+      institutions: list,
+      nextActiveInstitution: list[0] ?? null,
+      reason: 'Sistemde en az bir aktif kurum bulunmalıdır; son kurum silinemez.',
+    };
+  }
+  const target = list.find((i) => i.id === institutionId);
+  if (!target) {
+    return {
+      ok: false,
+      institutions: list,
+      nextActiveInstitution: list.find((i) => i.id === activeInstitutionId) ?? list[0] ?? null,
+      reason: 'Silinecek kurum bulunamadı.',
+    };
+  }
+  const nextList = list.filter((i) => i.id !== institutionId);
+  const nextActive =
+    institutionId === activeInstitutionId
+      ? nextList[0] ?? null
+      : nextList.find((i) => i.id === activeInstitutionId) ?? nextList[0] ?? null;
+
+  return {
+    ok: true,
+    institutions: nextList,
+    nextActiveInstitution: nextActive,
+    deletedInstitution: target,
+  };
+}
+
 export const DEFAULT_INSTITUTIONS: Institution[] = [
   {
     id: 'inst-dogruluk-merkez',
@@ -156,6 +366,7 @@ export const DEFAULT_INSTITUTIONS: Institution[] = [
     code8: generate8DigitInstitutionCode('Doğruluk Akademi Merkez'),
     city: 'İstanbul',
     createdAt: '2026-01-15',
+    accessPassword: DEFAULT_INSTITUTION_PASSWORD,
     permissions: createDefaultPermissions('Kurum Yöneticisi', ['ilkokul', 'ortaokul', 'lise', 'yks']),
   },
   {
@@ -164,6 +375,7 @@ export const DEFAULT_INSTITUTIONS: Institution[] = [
     code8: generate8DigitInstitutionCode('Anadolu İlköğretim & LGS Kurumu'),
     city: 'Ankara',
     createdAt: '2026-02-10',
+    accessPassword: DEFAULT_INSTITUTION_PASSWORD,
     permissions: createDefaultPermissions('Ölçme Uzmanı', ['ilkokul', 'ortaokul']),
   },
   {
@@ -172,6 +384,7 @@ export const DEFAULT_INSTITUTIONS: Institution[] = [
     code8: generate8DigitInstitutionCode('Boğaziçi YKS Hazırlık Akademisi'),
     city: 'İzmir',
     createdAt: '2026-03-04',
+    accessPassword: DEFAULT_INSTITUTION_PASSWORD,
     permissions: createDefaultPermissions('Öğretmen', ['lise', 'yks']),
   },
 ];

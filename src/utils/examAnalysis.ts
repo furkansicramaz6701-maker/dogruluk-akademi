@@ -10,10 +10,18 @@ import {
   ExamQuestion,
   GradeLevelId,
   HistoricalExamPoint,
+  PenaltyDivisor,
   QuestionEvaluation,
   SubjectMetrics,
   TopicGapMetric,
 } from '../types/academy';
+
+export function formatPenaltyRuleLabel(divisor: PenaltyDivisor, compact = false): string {
+  if (divisor === 0) {
+    return compact ? 'Götürmesiz (Net = Doğru)' : 'Yanlış Doğruyu Götürmez (Net = Doğru)';
+  }
+  return compact ? `${divisor}Y = 1D` : `${divisor} Yanlış 1 Doğruyu Götürür`;
+}
 
 const VALID_OPTIONS = ['A', 'B', 'C', 'D', 'E'] as const;
 
@@ -72,10 +80,19 @@ export function parseAnswerString(
 export function buildAutoExamQuestions(
   gradeId: GradeLevelId,
   difficultyMix: 'dengeli' | 'kolay' | 'zor' = 'dengeli',
-  customTotal?: number
+  customTotal?: number,
+  subjectFilter?: string
 ): ExamQuestion[] {
   const profile = getGradeProfile(gradeId);
-  const baseTotal = profile.subjects.reduce((sum, s) => sum + s.questionCount, 0);
+  const matchingSubjects =
+    subjectFilter && subjectFilter !== 'Tümü'
+      ? profile.subjects.filter(
+          (s) => s.name.toLocaleLowerCase('tr-TR') === subjectFilter.toLocaleLowerCase('tr-TR')
+        )
+      : [];
+  const activeSubjects = matchingSubjects.length > 0 ? matchingSubjects : profile.subjects;
+
+  const baseTotal = activeSubjects.reduce((sum, s) => sum + s.questionCount, 0);
   const targetTotal = customTotal && customTotal > 0 ? customTotal : baseTotal;
   const optionKeys = profile.optionCount === 4 ? ['A', 'B', 'C', 'D'] : ['A', 'B', 'C', 'D', 'E'];
 
@@ -89,11 +106,11 @@ export function buildAutoExamQuestions(
   const questions: ExamQuestion[] = [];
   let qNumber = 1;
 
-  profile.subjects.forEach((subj, subjIdx) => {
+  activeSubjects.forEach((subj, subjIdx) => {
     const scaledCount =
-      subjIdx === profile.subjects.length - 1
+      subjIdx === activeSubjects.length - 1
         ? Math.max(1, targetTotal - questions.length)
-        : Math.max(1, Math.round((subj.questionCount / baseTotal) * targetTotal));
+        : Math.max(1, Math.round((subj.questionCount / Math.max(1, baseTotal)) * targetTotal));
 
     for (let i = 0; i < scaledCount && questions.length < targetTotal; i++) {
       const topic = subj.topics[i % subj.topics.length];
@@ -143,6 +160,22 @@ export function buildAutoExamQuestions(
   return questions;
 }
 
+export function selectCuratedQuestions(
+  pool: ExamQuestion[],
+  selectedIds: string[],
+  targetCount = 20
+): ExamQuestion[] {
+  const idSet = new Set(selectedIds);
+  const chosen =
+    idSet.size > 0
+      ? pool.filter((q) => idSet.has(q.id)).slice(0, targetCount)
+      : pool.slice(0, targetCount);
+  return chosen.map((q, idx) => ({
+    ...q,
+    number: idx + 1,
+  }));
+}
+
 export function generateSampleOmrPair(
   questions: ExamQuestion[],
   targetAccuracy = 0.74
@@ -177,7 +210,7 @@ export interface EvaluateOmrInput {
   classroom: string;
   examTitle: string;
   gradeId: GradeLevelId;
-  penaltyDivisor: 3 | 4;
+  penaltyDivisor: PenaltyDivisor;
   studentAnswers: (string | null)[];
   answerKey: (string | null)[];
   questions: ExamQuestion[];
@@ -309,7 +342,10 @@ export function evaluateOmrExam(input: EvaluateOmrInput): ExamAnalysisResult {
   }
 
   const totalNet = Number(
-    Math.max(0, totalCorrect - totalWrong / input.penaltyDivisor).toFixed(2)
+    (input.penaltyDivisor === 0
+      ? totalCorrect
+      : Math.max(0, totalCorrect - totalWrong / input.penaltyDivisor)
+    ).toFixed(2)
   );
   const netRatio = totalQuestions > 0 ? totalNet / totalQuestions : 0;
   const estimatedScore = Number(
@@ -322,7 +358,10 @@ export function evaluateOmrExam(input: EvaluateOmrInput): ExamAnalysisResult {
   const subjectMetrics: SubjectMetrics[] = Array.from(subjectMap.entries()).map(
     ([subject, stat], idx) => {
       const net = Number(
-        Math.max(0, stat.correct - stat.wrong / input.penaltyDivisor).toFixed(2)
+        (input.penaltyDivisor === 0
+          ? stat.correct
+          : Math.max(0, stat.correct - stat.wrong / input.penaltyDivisor)
+        ).toFixed(2)
       );
       const accuracyPct = stat.total > 0 ? Math.round((stat.correct / stat.total) * 100) : 0;
       const classAvgNet = Number((stat.total * (0.56 + (idx % 3) * 0.04)).toFixed(2));

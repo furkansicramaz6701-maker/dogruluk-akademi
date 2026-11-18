@@ -195,9 +195,28 @@ test('dynamic achievement tier, WhatsApp URL normalization, and Karne parent mes
   assert.ok(karneMsg.includes('Doğruluk Akademi Merkez'));
   assert.ok(karneMsg.includes('Alihan Sarı'));
   assert.ok(karneMsg.includes('5. Sınıf'));
+  assert.ok(karneMsg.includes('Gelişim Durumu:'));
   assert.ok(karneMsg.includes('Gelişim Analizi:'));
   assert.equal(karneMsg.includes('TYT'), false);
   assert.equal(karneMsg.includes('AYT'), false);
+
+  const studyTemplate = buildReportCardParentMessage({
+    analysis,
+    academyName: 'Doğruluk Akademi Merkez',
+    gradeProfile: g5,
+    templateMode: 'study-alert',
+  });
+  assert.ok(studyTemplate.includes('etüt'));
+  assert.equal(studyTemplate.includes('TYT'), false);
+
+  const shortSmsTemplate = buildReportCardParentMessage({
+    analysis,
+    academyName: 'Doğruluk Akademi Merkez',
+    gradeProfile: g5,
+    templateMode: 'short-sms',
+  });
+  assert.ok(shortSmsTemplate.includes('5. Sınıf'));
+  assert.equal(shortSmsTemplate.includes('TYT'), false);
 });
 
 test('normalizeClassroomForGrade rewrites stale 12-A Sayısal to 5-A when 5. Sınıf is selected', () => {
