@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   Award,
   BarChart3,
@@ -15,9 +15,11 @@ import {
   ArrowUpDown,
   Grid3X3,
   CalendarPlus,
+  CalendarClock,
   Copy,
   Check,
   Send,
+  Share2,
   Smartphone,
   MessageSquare,
   RotateCcw,
@@ -31,6 +33,7 @@ import {
   CoverConfig,
   CustomParentMessageTemplate,
   DetailedAnalysisType,
+  EducationCalendarEvent,
   ExamAnalysisResult,
   GradeProfile,
   OpenEndedPaperAnalysis,
@@ -40,6 +43,7 @@ import {
 } from '../types/academy';
 import {
   buildStandaloneHtmlReport,
+  generateParentInformationReportPdf,
   generateStudentReportCardPdf,
   triggerDownload,
 } from '../utils/pdfAndZip';
@@ -51,11 +55,16 @@ import {
   buildReportCardParentMessage,
   buildSmsHref,
   buildWhatsAppHref,
+  extractPrioritizedTopicGaps,
+  findNextStudyEventForStudent,
+  formatSubjectNetsLine,
   resolveReportCardDevelopmentStatus,
   sanitizeExamLabelForGrade,
 } from '../utils/weeklyAnalysis';
 import { DynamicAchievementBadge } from './DynamicAchievementBadge';
 import { FurkanDigitalSignature } from './FurkanDigitalSignature';
+import { KarneTrendSparkline } from './KarneTrendSparkline';
+import { ReportsAnalysisChart } from './ReportsAnalysisChart';
 
 interface ReportsAnalysisViewProps {
   analysis: ExamAnalysisResult;
@@ -64,7 +73,9 @@ interface ReportsAnalysisViewProps {
   hasLiveAnalysis?: boolean;
   institutionName?: string;
   institutionCode8?: string;
+  activeInstitutionId?: string;
   studentPhone?: string;
+  calendarEvents?: EducationCalendarEvent[];
   openEndedAnalysis?: OpenEndedPaperAnalysis | null;
   onUpdateCoachSummary: (summary: string) => void;
   onDownloadZip: () => Promise<void>;
@@ -101,7 +112,9 @@ export function ReportsAnalysisView({
   hasLiveAnalysis = true,
   institutionName,
   institutionCode8,
+  activeInstitutionId,
   studentPhone,
+  calendarEvents = [],
   openEndedAnalysis = null,
   onUpdateCoachSummary,
   onDownloadZip,
@@ -120,6 +133,8 @@ export function ReportsAnalysisView({
   const [coachLoading, setCoachLoading] = useState(false);
   const [coachError, setCoachError] = useState<string | null>(null);
   const [pdfDownloading, setPdfDownloading] = useState(false);
+  const [parentPdfDownloading, setParentPdfDownloading] = useState(false);
+  const [parentPdfNotice, setParentPdfNotice] = useState<string | null>(null);
 
   const effectiveInstitutionName = institutionName || cover.academyName;
   const effectiveCode8 = institutionCode8 || cover.institutionCode8;
@@ -142,6 +157,52 @@ export function ReportsAnalysisView({
 
   const developmentStatus = resolveReportCardDevelopmentStatus(analysis);
 
+  const effectiveAnalysisForTemplate: ExamAnalysisResult = useMemo(
+    () =>
+      !hasLiveAnalysis && openEndedAnalysis
+        ? {
+            ...analysis,
+            studentName: openEndedAnalysis.studentName || analysis.studentName || 'Öğrenci',
+            studentNumber: openEndedAnalysis.studentNumber || analysis.studentNumber,
+            classroom: openEndedAnalysis.classroom || analysis.classroom,
+            examTitle: openEndedAnalysis.examTitle,
+            estimatedScore: openEndedAnalysis.totalScore,
+            maxScore: openEndedAnalysis.maxTotalScore,
+            totalNet: openEndedAnalysis.totalScore / 10,
+            totalQuestions: openEndedAnalysis.questionGrades.length || 10,
+          }
+        : analysis,
+    [hasLiveAnalysis, openEndedAnalysis, analysis]
+  );
+
+  const nextStudyEvent = useMemo(
+    () =>
+      findNextStudyEventForStudent({
+        events: calendarEvents,
+        institutionId: activeInstitutionId,
+        gradeId: gradeProfile.id,
+        studentName: effectiveAnalysisForTemplate.studentName,
+        classroom: effectiveAnalysisForTemplate.classroom,
+      }),
+    [
+      calendarEvents,
+      activeInstitutionId,
+      gradeProfile.id,
+      effectiveAnalysisForTemplate.studentName,
+      effectiveAnalysisForTemplate.classroom,
+    ]
+  );
+
+  const topicGapsSummaryList = useMemo(
+    () => extractPrioritizedTopicGaps(analysis, gradeProfile, 3),
+    [analysis, gradeProfile]
+  );
+
+  const subjectNetsSummary = useMemo(
+    () => formatSubjectNetsLine(analysis, gradeProfile),
+    [analysis, gradeProfile]
+  );
+
   const [parentPhoneInput, setParentPhoneInput] = useState<string>(studentPhone || '');
   const [templateMode, setTemplateMode] = useState<ParentMessageTemplateMode>(() =>
     !hasLiveAnalysis && openEndedAnalysis ? 'open-ended-10' : 'auto'
@@ -159,6 +220,7 @@ export function ReportsAnalysisView({
       academyName: effectiveInstitutionName,
       gradeProfile,
       templateMode: 'auto',
+      nextStudyEvent,
     });
   });
   const [copiedMessage, setCopiedMessage] = useState<boolean>(false);
@@ -213,24 +275,18 @@ export function ReportsAnalysisView({
         academyName: effectiveInstitutionName,
         gradeProfile,
         templateMode,
+        nextStudyEvent,
       })
     );
-  }, [analysis, effectiveInstitutionName, gradeProfile, templateMode, hasLiveAnalysis, openEndedAnalysis]);
-
-  const effectiveAnalysisForTemplate: ExamAnalysisResult =
-    !hasLiveAnalysis && openEndedAnalysis
-      ? {
-          ...analysis,
-          studentName: openEndedAnalysis.studentName || analysis.studentName || 'Öğrenci',
-          studentNumber: openEndedAnalysis.studentNumber || analysis.studentNumber,
-          classroom: openEndedAnalysis.classroom || analysis.classroom,
-          examTitle: openEndedAnalysis.examTitle,
-          estimatedScore: openEndedAnalysis.totalScore,
-          maxScore: openEndedAnalysis.maxTotalScore,
-          totalNet: openEndedAnalysis.totalScore / 10,
-          totalQuestions: openEndedAnalysis.questionGrades.length || 10,
-        }
-      : analysis;
+  }, [
+    analysis,
+    effectiveInstitutionName,
+    gradeProfile,
+    templateMode,
+    hasLiveAnalysis,
+    openEndedAnalysis,
+    nextStudyEvent,
+  ]);
 
   const handleApplyCustomTemplate = (tpl: CustomParentMessageTemplate) => {
     const rendered = applyCustomParentTemplate({
@@ -238,6 +294,7 @@ export function ReportsAnalysisView({
       analysis: effectiveAnalysisForTemplate,
       academyName: effectiveInstitutionName,
       gradeProfile,
+      nextStudyEvent,
     });
     setParentMessage(rendered);
     setCustomTplStatus(`"${tpl.name}" şablonu mesaja uygulandı.`);
@@ -309,6 +366,35 @@ export function ReportsAnalysisView({
       triggerDownload(blob, `Karne-Analizi-${safeName || 'ogrenci'}-${analysis.studentNumber}.pdf`);
     } finally {
       setPdfDownloading(false);
+    }
+  };
+
+  const handleDownloadParentReportPdf = async () => {
+    setParentPdfDownloading(true);
+    setParentPdfNotice(null);
+    try {
+      const { bytes, filename } = await generateParentInformationReportPdf({
+        analysis,
+        cover,
+        gradeProfile,
+        hasLiveAnalysis,
+        institutionName: effectiveInstitutionName,
+        institutionCode8: effectiveCode8,
+        openEndedAnalysis,
+        nextStudyEvent,
+        parentMessage,
+      });
+      const blob = new Blob([bytes.buffer as ArrayBuffer], { type: 'application/pdf' });
+      triggerDownload(blob, filename);
+      setParentPdfNotice(`${filename} indirildi.`);
+    } catch (err) {
+      setParentPdfNotice(
+        err instanceof Error
+          ? `Veli Bilgilendirme Raporu oluşturulamadı: ${err.message}`
+          : 'Veli Bilgilendirme Raporu oluşturulamadı.'
+      );
+    } finally {
+      setParentPdfDownloading(false);
     }
   };
 
@@ -412,13 +498,33 @@ Haftalık Aksiyon Planı:
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2.5">
+          <button
+            type="button"
+            disabled={parentPdfDownloading}
+            onClick={handleDownloadParentReportPdf}
+            data-testid="reports-parent-pdf-download-btn"
+            title="Öğrencinin sınav sonuçlarını, ders başarılarını, konu eksiklerini, gelişim çizelgesini ve etüt planını kapsamlı PDF olarak indir"
+            className="px-4 py-2 rounded-xl text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm transition-colors disabled:opacity-60"
+          >
+            {parentPdfDownloading ? (
+              <>
+                <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />
+                <span>Rapor Hazırlanıyor...</span>
+              </>
+            ) : (
+              <>
+                <FileDown className="w-4 h-4" aria-hidden="true" />
+                <span>Veli Bilgilendirme Raporu</span>
+              </>
+            )}
+          </button>
           {hasLiveAnalysis && (
             <>
               <button
                 type="button"
                 disabled={pdfDownloading}
                 onClick={handleDownloadPdfReport}
-                className="btn-3d px-4 py-2 rounded-xl text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-60"
+                className="btn-3d px-4 py-2 rounded-xl text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-60"
               >
                 {pdfDownloading ? (
                   <>
@@ -435,7 +541,7 @@ Haftalık Aksiyon Planı:
               <button
                 type="button"
                 onClick={handleDownloadHtmlReport}
-                className="btn-3d-secondary px-3.5 py-2 rounded-xl text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer"
+                className="btn-3d-secondary px-3.5 py-2 rounded-xl text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
               >
                 <FileDown className="w-4 h-4" aria-hidden="true" />
                 <span>Karneleri HTML İndir</span>
@@ -443,7 +549,7 @@ Haftalık Aksiyon Planı:
               <button
                 type="button"
                 onClick={onDownloadZip}
-                className="btn-3d-secondary px-4 py-2 rounded-xl text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer"
+                className="btn-3d-secondary px-4 py-2 rounded-xl text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
               >
                 <Archive className="w-4 h-4" aria-hidden="true" />
                 <span>Tam ZIP Paketi İndir</span>
@@ -454,7 +560,7 @@ Haftalık Aksiyon Planı:
             <button
               type="button"
               onClick={onOpenWeeklyList}
-              className="btn-3d-secondary px-3.5 py-2 rounded-xl text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer"
+              className="btn-3d-secondary px-3.5 py-2 rounded-xl text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
             >
               <TrendingUp className="w-4 h-4" aria-hidden="true" />
               <span>Haftalık Liste & Karşılaştırma</span>
@@ -462,11 +568,27 @@ Haftalık Aksiyon Planı:
           )}
         </div>
       </div>
+      {parentPdfNotice && (
+        <div
+          className="surface-alt rounded-xl px-4 py-2.5 text-xs font-semibold flex items-center justify-between gap-2 border"
+          style={{ borderColor: 'var(--border-subtle)', color: 'var(--text-primary)' }}
+          data-testid="reports-parent-pdf-notice"
+        >
+          <span>{parentPdfNotice}</span>
+          <button
+            type="button"
+            onClick={() => setParentPdfNotice(null)}
+            className="text-xs font-bold opacity-75 hover:opacity-100 cursor-pointer"
+          >
+            Kapat
+          </button>
+        </div>
+      )}
 
       {!hasLiveAnalysis && !openEndedAnalysis && (
         <div
-          className="surface-card rounded-xl p-6 flex flex-wrap items-center justify-between gap-4 border-l-4"
-          style={{ borderLeftColor: 'var(--accent-primary)' }}
+          className="surface-card rounded-xl p-6 flex flex-wrap items-center justify-between gap-4 border"
+          style={{ borderColor: 'var(--border-subtle)' }}
           data-testid="reports-empty-exam-banner"
         >
           <div className="space-y-1.5 min-w-0 max-w-2xl">
@@ -475,8 +597,8 @@ Haftalık Aksiyon Planı:
             </div>
             <p className="text-xs leading-relaxed" style={{ color: 'var(--text-secondary)' }}>
               {analysis.studentName
-                ? `${analysis.studentName} için henüz optik okuma veya açık uçlu kağıt değerlendirmesi yapılmadı. Optik Okuma sekmesinden cevap kağıdı okutulduğunda net, puan, 5 çeşit karne ve otomatik veli mesajı burada oluşur.`
-                : `${effectiveInstitutionName} kurumunda henüz deneme değerlendirmesi yapılmadı. Önce Genel Bakış’tan bir öğrenci seçip Optik Okuma veya 10 Soruluk Açık Uçlu Kağıt Analizini başlatabilirsiniz.`}
+                ? `${analysis.studentName} için henüz optik okuma veya açık uçlu kağıt değerlendirmesi yapılmadı. Optik Okuma sekmesinden cevap kağıdı okutulduğunda net, puan, 5 çeşit karne ve otomatik veli mesajı burada güncellenir.`
+                : `${effectiveInstitutionName} kurumunda henüz deneme değerlendirmesi yapılmadı. Aşağıdaki Veli Mesaj Şablonları önizlemesinden yararlanabilir veya Genel Bakış’tan bir öğrenci seçip Optik Okuma başlatabilirsiniz.`}
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -504,7 +626,8 @@ Haftalık Aksiyon Planı:
 
       {openEndedAnalysis && (
         <div
-          className="surface-card rounded-xl p-5 flex flex-wrap items-center justify-between gap-4 border-l-4 border-emerald-500"
+          className="surface-card rounded-xl p-5 flex flex-wrap items-center justify-between gap-4 border"
+          style={{ borderColor: 'var(--border-subtle)' }}
           data-testid="reports-open-ended-summary"
         >
           <div className="space-y-1 min-w-0 max-w-2xl">
@@ -553,7 +676,6 @@ Haftalık Aksiyon Planı:
         </div>
       )}
 
-      {(hasLiveAnalysis || Boolean(openEndedAnalysis)) && (
       <section aria-labelledby="karne-veli-mesaj-title" className="surface-card rounded-xl p-5 space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2.5">
@@ -562,10 +684,10 @@ Haftalık Aksiyon Planı:
             </div>
             <div>
               <h3 id="karne-veli-mesaj-title" className="text-base font-bold">
-                Otomatik Veli Mesaj Sistemi (WhatsApp & SMS)
+                Veli Mesaj Şablonları (WhatsApp &amp; SMS)
               </h3>
               <p className="text-xs" style={{ color: 'var(--text-secondary)' }}>
-                {effectiveInstitutionName} · {effectiveAnalysisForTemplate.studentName || 'Öğrenci'} ({gradeProfile.shortLabel}) not ve gelişim özeti tek tıkla veliye gider
+                {effectiveInstitutionName} · {effectiveAnalysisForTemplate.studentName || 'Öğrenci'} ({gradeProfile.shortLabel}) netleri, konu eksikleri ve sonraki etüt tarihi otomatik çekilir
               </p>
             </div>
           </div>
@@ -591,7 +713,7 @@ Haftalık Aksiyon Planı:
                       );
                     }
                   }}
-                  className={`px-2.5 py-1.5 rounded-lg text-xs font-bold cursor-pointer ${
+                  className={`px-2.5 py-1.5 rounded-lg text-xs font-bold whitespace-nowrap shrink-0 cursor-pointer ${
                     active ? 'btn-3d' : 'btn-3d-secondary'
                   }`}
                 >
@@ -603,13 +725,37 @@ Haftalık Aksiyon Planı:
               type="button"
               onClick={() => setShowCustomTemplates((v) => !v)}
               data-testid="custom-parent-template-toggle"
-              className={`px-2.5 py-1.5 rounded-lg text-xs font-bold inline-flex items-center gap-1 cursor-pointer ${
+              className={`px-2.5 py-1.5 rounded-lg text-xs font-bold inline-flex items-center gap-1 whitespace-nowrap shrink-0 cursor-pointer ${
                 showCustomTemplates ? 'btn-3d' : 'btn-3d-secondary'
               }`}
             >
               <SlidersHorizontal className="w-3.5 h-3.5" aria-hidden="true" />
               <span>Özel Şablonlar ({customTemplates.length})</span>
             </button>
+            <a
+              href={whatsappHref}
+              target="_blank"
+              rel="noopener noreferrer"
+              data-testid="karne-template-share-btn"
+              title="Öğrenci netlerini, konu eksiklerini ve bir sonraki etüt tarihini WhatsApp ile paylaş"
+              onClick={() => {
+                if (!parentMessage.trim()) {
+                  setParentMessage(
+                    buildReportCardParentMessage({
+                      analysis,
+                      academyName: effectiveInstitutionName,
+                      gradeProfile,
+                      templateMode,
+                      nextStudyEvent,
+                    })
+                  );
+                }
+              }}
+              className="px-3.5 py-1.5 rounded-lg text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm transition-colors"
+            >
+              <Share2 className="w-3.5 h-3.5" aria-hidden="true" />
+              <span>Paylaş</span>
+            </a>
           </div>
         </div>
 
@@ -699,7 +845,7 @@ Haftalık Aksiyon Planı:
                   </select>
                 </label>
                 <div className="flex flex-wrap gap-1 pt-1">
-                  {['{ogrenci}', '{sinif}', '{net}', '{puan}', '{durum}', '{eksik}'].map(
+                  {['{ogrenci}', '{sinif}', '{net}', '{netler}', '{puan}', '{durum}', '{eksik}', '{etut}'].map(
                     (ph) => (
                       <button
                         key={ph}
@@ -717,7 +863,7 @@ Haftalık Aksiyon Planı:
               <div className="lg:col-span-8 space-y-2">
                 <label className="block text-[11px] font-bold">
                   <span style={{ color: 'var(--text-secondary)' }}>
-                    Şablon Metni (Değişkenler: {'{ogrenci}'}, {'{kurum}'}, {'{sinif}'}, {'{sinav}'}, {'{net}'}, {'{puan}'}, {'{basari}'}, {'{durum}'}, {'{guclu}'}, {'{eksik}'})
+                    Şablon Metni (Değişkenler: {'{ogrenci}'}, {'{kurum}'}, {'{sinif}'}, {'{sinav}'}, {'{net}'}, {'{netler}'}, {'{puan}'}, {'{basari}'}, {'{durum}'}, {'{guclu}'}, {'{eksik}'}, {'{etut}'})
                   </span>
                   <textarea
                     rows={4}
@@ -759,23 +905,72 @@ Haftalık Aksiyon Planı:
               />
             </label>
 
-            <div className="surface-alt rounded-lg p-3 text-[11px] space-y-1" style={{ color: 'var(--text-secondary)' }}>
+            <div
+              className="surface-alt rounded-lg p-3 text-[11px] space-y-1.5"
+              style={{ color: 'var(--text-secondary)' }}
+              data-testid="karne-template-auto-summary"
+            >
               <div className="font-bold" style={{ color: 'var(--text-primary)' }}>
                 Mesaja Çekilen Analiz Özeti:
               </div>
-              <div>• Kurum: {effectiveInstitutionName}</div>
-              <div>• Öğrenci & Sınıf: {effectiveAnalysisForTemplate.studentName || 'Öğrenci'} · {gradeProfile.shortLabel}</div>
+              <div>Kurum: {effectiveInstitutionName}</div>
+              <div>
+                Öğrenci &amp; Sınıf: {effectiveAnalysisForTemplate.studentName || 'Öğrenci'} ·{' '}
+                {gradeProfile.shortLabel}
+              </div>
               {hasLiveAnalysis ? (
                 <>
-                  <div>• Not: {analysis.totalNet.toFixed(2)} Net · {analysis.estimatedScore.toFixed(1)} Puan (%{successPct})</div>
-                  <div>• Gelişim Durumu: <strong style={{ color: 'var(--accent-primary)' }}>{developmentStatus}</strong></div>
+                  <div className="font-mono-num">
+                    Toplam Net: {analysis.totalNet.toFixed(2)} Net · {analysis.estimatedScore.toFixed(1)} Puan (%
+                    {successPct})
+                  </div>
+                  <div>Ders Netleri: {subjectNetsSummary}</div>
+                  <div>Gelişim Durumu: <strong style={{ color: 'var(--accent-primary)' }}>{developmentStatus}</strong></div>
                 </>
               ) : openEndedAnalysis ? (
                 <>
-                  <div>• Açık Uçlu Not: {openEndedAnalysis.totalScore} / {openEndedAnalysis.maxTotalScore} Puan (%{openEndedAnalysis.successPct})</div>
-                  <div>• Gelişim Durumu: <strong style={{ color: 'var(--accent-primary)' }}>{openEndedAnalysis.developmentStatus}</strong></div>
+                  <div className="font-mono-num">
+                    Açık Uçlu Not: {openEndedAnalysis.totalScore} / {openEndedAnalysis.maxTotalScore} Puan (%
+                    {openEndedAnalysis.successPct})
+                  </div>
+                  <div>
+                    Gelişim Durumu:{' '}
+                    <strong style={{ color: 'var(--accent-primary)' }}>
+                      {openEndedAnalysis.developmentStatus}
+                    </strong>
+                  </div>
                 </>
-              ) : null}
+              ) : (
+                <>
+                  <div className="font-mono-num">
+                    Toplam Net: 0.00 Net · Henüz sınav değerlendirilmedi
+                  </div>
+                  <div>Optik değerlendirme yapıldığında gerçek netler otomatik güncellenir.</div>
+                </>
+              )}
+              <div>
+                Konu Eksikleri:{' '}
+                <strong style={{ color: 'var(--text-primary)' }}>
+                  {hasLiveAnalysis || openEndedAnalysis
+                    ? topicGapsSummaryList.join(', ') || 'Belirgin konu eksiği bulunmamaktadır'
+                    : 'Henüz deneme yapılmadığı için konu eksiği yok'}
+                </strong>
+              </div>
+              <div className="flex items-start gap-1.5 pt-0.5">
+                <CalendarClock
+                  className="w-3.5 h-3.5 shrink-0 mt-0.5"
+                  style={{ color: 'var(--accent-primary)' }}
+                  aria-hidden="true"
+                />
+                <span>
+                  Bir Sonraki Etüt Tarihi:{' '}
+                  <strong style={{ color: 'var(--text-primary)' }}>
+                    {nextStudyEvent
+                      ? nextStudyEvent.summaryLine
+                      : 'Planlanacak (Eğitim Takvimi üzerinden)'}
+                  </strong>
+                </span>
+              </div>
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
@@ -798,6 +993,7 @@ Haftalık Aksiyon Planı:
                       academyName: effectiveInstitutionName,
                       gradeProfile,
                       templateMode,
+                      nextStudyEvent,
                     })
                   );
                 }}
@@ -838,15 +1034,51 @@ Haftalık Aksiyon Planı:
                 target="_blank"
                 rel="noopener noreferrer"
                 data-testid="karne-send-to-parent-btn"
-                className="px-4 py-2 rounded-lg text-xs font-bold inline-flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm transition-colors"
+                className="px-4 py-2 rounded-lg text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm transition-colors"
               >
                 <Send className="w-3.5 h-3.5" aria-hidden="true" />
-                <span>Veliye Gönder (WhatsApp)</span>
+                <span>WhatsApp ile Paylaş</span>
               </a>
+
+              <button
+                type="button"
+                disabled={parentPdfDownloading}
+                onClick={handleDownloadParentReportPdf}
+                data-testid="karne-parent-pdf-download-btn"
+                className="btn-3d-secondary px-3 py-2 rounded-lg text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-60"
+              >
+                {parentPdfDownloading ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
+                ) : (
+                  <FileDown className="w-3.5 h-3.5" aria-hidden="true" />
+                )}
+                <span>Veli Raporu (PDF)</span>
+              </button>
             </div>
           </div>
 
-          <div className="lg:col-span-8">
+          <div className="lg:col-span-8 space-y-3">
+            <KarneTrendSparkline
+              historicalTrend={
+                hasLiveAnalysis
+                  ? analysis.historicalTrend
+                  : openEndedAnalysis
+                  ? [
+                      ...analysis.historicalTrend.slice(0, 4),
+                      {
+                        examName: 'Son Deneme (Açık Uçlu)',
+                        date: new Date().toLocaleDateString('tr-TR'),
+                        net: Number((openEndedAnalysis.totalScore / 10).toFixed(2)),
+                        score: openEndedAnalysis.totalScore,
+                        academyAvgNet: analysis.historicalTrend[3]?.academyAvgNet ?? 0,
+                      },
+                    ]
+                  : []
+              }
+              gradeProfile={gradeProfile}
+              studentName={effectiveAnalysisForTemplate.studentName}
+            />
+
             <label className="block text-xs font-semibold">
               <span style={{ color: 'var(--text-secondary)' }}>Düzenlenebilir Veli Mesaj Metni</span>
               <textarea
@@ -854,6 +1086,7 @@ Haftalık Aksiyon Planı:
                 value={parentMessage}
                 onChange={(e) => setParentMessage(e.target.value)}
                 aria-label="Karne Veli Mesaj Metni"
+                data-testid="karne-parent-message-textarea"
                 className="mt-1 w-full rounded-xl p-3.5 text-xs leading-relaxed surface-alt border"
                 style={{ borderColor: 'var(--border-subtle)' }}
               />
@@ -861,7 +1094,15 @@ Haftalık Aksiyon Planı:
           </div>
         </div>
       </section>
-      )}
+
+      <ReportsAnalysisChart
+        analysis={analysis}
+        gradeProfile={gradeProfile}
+        hasLiveAnalysis={hasLiveAnalysis}
+        openEndedAnalysis={openEndedAnalysis}
+        institutionName={effectiveInstitutionName}
+        onOpenOmr={onOpenOmr}
+      />
 
       {!hasLiveAnalysis ? null : (
       <>

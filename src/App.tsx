@@ -23,6 +23,8 @@ import {
   LogOut,
   ShieldCheck,
   FileText,
+  Users,
+  FlaskConical,
 } from 'lucide-react';
 import { DEFAULT_COVER_REMINDERS, GRADE_PROFILES, getGradeProfile } from './data/curriculum';
 import { getLogoPreset } from './data/logos';
@@ -76,7 +78,6 @@ import {
 } from './utils/pdfAndZip';
 import { buildWeeklyComparisonWorkbookBlob, defaultClassroomForGrade } from './utils/excelExport';
 import {
-  buildDefaultCalendarEvents,
   buildRemedialCalendarEvent,
   buildSmartRecommendations,
 } from './utils/recommendations';
@@ -109,6 +110,9 @@ import { Logo3D } from './components/Logo3D';
 import { Education3DCascade } from './components/Education3DCascade';
 import { OfflineIndicator, PWAInstallButton } from './components/PWAInstallButton';
 import { InstitutionPortalScreen } from './components/InstitutionPortalScreen';
+import { AcademyTransitionSplash } from './components/AcademyTransitionSplash';
+import { ThreeDotStudentModal } from './components/ThreeDotStudentModal';
+import { SampleDemoPageView } from './components/SampleDemoPageView';
 
 function readStorageJson<T>(key: string, fallback: T): T {
   try {
@@ -135,6 +139,7 @@ export default function App() {
         'calendar',
         'poster',
         'drive',
+        'sample',
       ];
       if (tabParam && validTabs.includes(tabParam)) return tabParam;
     } catch {
@@ -253,11 +258,7 @@ export default function App() {
 
   const [calendarEvents, setCalendarEvents] = useState<EducationCalendarEvent[]>(() => {
     const saved = readStorageJson<EducationCalendarEvent[]>('da_calendar_events_v1', []);
-    if (Array.isArray(saved) && saved.length > 0) return saved;
-    return [
-      ...buildDefaultCalendarEvents(DEFAULT_INSTITUTIONS[0].id, '5'),
-      ...buildDefaultCalendarEvents(DEFAULT_INSTITUTIONS[1].id, '8'),
-    ];
+    return Array.isArray(saved) ? saved : [];
   });
 
   const [cascadeEnabled, setCascadeEnabled] = useState<boolean>(true);
@@ -267,9 +268,34 @@ export default function App() {
   const modulesMenuRef = useRef<HTMLDivElement | null>(null);
   const [threeDotOpen, setThreeDotOpen] = useState(false);
   const threeDotRef = useRef<HTMLDivElement | null>(null);
+  const [studentPanelOpen, setStudentPanelOpen] = useState(false);
   const [globalSearchQuery, setGlobalSearchQuery] = useState<string>('');
   const [searchFocused, setSearchFocused] = useState<boolean>(false);
   const searchBoxRef = useRef<HTMLDivElement | null>(null);
+  const [transitionSplash, setTransitionSplash] = useState<{
+    visible: boolean;
+    subtitle: string;
+    institutionName?: string;
+  }>(() => {
+    try {
+      const autostart = new URLSearchParams(window.location.search).get('autostart') === '1';
+      if (autostart) return { visible: false, subtitle: '' };
+      const isStandaloneApp =
+        (typeof window.matchMedia === 'function' &&
+          window.matchMedia('(display-mode: standalone)').matches) ||
+        document.referrer.includes('android-app://');
+      const alreadyUnlocked = window.sessionStorage.getItem('da_portal_unlocked_v1') === '1';
+      if (isStandaloneApp && alreadyUnlocked) {
+        return {
+          visible: true,
+          subtitle: 'Doğruluk Akademi Uygulaması Başlatılıyor',
+        };
+      }
+    } catch {
+      // Ignore browser environment detection error
+    }
+    return { visible: false, subtitle: '' };
+  });
 
   // Google Drive Auth State (Strictly in-memory token, never localStorage)
   const [driveUser, setDriveUser] = useState<User | null>(null);
@@ -487,16 +513,12 @@ export default function App() {
             : s
         )
       );
-    } else {
-      setCalendarEvents((prev) => [
-        ...buildDefaultCalendarEvents(saved.id, gradeId),
-        ...prev,
-      ]);
     }
     setStudentName('');
     setStudentNumber('');
     setStudentAnswersRaw('');
     setHasLiveAnalysis(false);
+    setOpenEndedAnalysis(null);
     setAiCoachSummary(undefined);
     setClassroom(defaultClassroomForGrade(gradeId));
     ensureGradeAllowedForInst(saved);
@@ -509,7 +531,7 @@ export default function App() {
     showToast(
       res.wasDuplicate
         ? `"${saved.name}" zaten kayıtlı olduğu için ikinci kurum açılmadı; mevcut kayıt (${saved.code8}) güncellendi.`
-        : `Yeni kurum "${saved.name}" (${saved.code8}) eklendi. Öğrenci ve sınav verileri temiz açıldı.`
+        : `Yeni kurum "${saved.name}" (${saved.code8}) sıfır veriyle oluşturuldu.`
     );
   };
 
@@ -683,6 +705,27 @@ export default function App() {
     );
   };
 
+  const handleDeleteStudent = (studentId: string) => {
+    const target = students.find((s) => s.id === studentId);
+    setStudents((prev) => prev.filter((s) => s.id !== studentId));
+    if (
+      target &&
+      (studentNumber === target.studentNumber8 ||
+        (studentName && studentName === target.fullName))
+    ) {
+      setStudentName('');
+      setStudentNumber('');
+      setStudentAnswersRaw('');
+      setHasLiveAnalysis(false);
+      setOpenEndedAnalysis(null);
+      setAiCoachSummary(undefined);
+      setClassroom(defaultClassroomForGrade(gradeId));
+    }
+    if (target) {
+      showToast(`${target.fullName} (${target.studentNumber8}) kurum öğrenci listesinden silindi.`);
+    }
+  };
+
   const handleLoadDemoStudent = (demo: StudentRecord) => {
     setCover((prev) => ({ ...prev, isSampleDemo: true }));
     const nextProfile = getGradeProfile(demo.gradeId);
@@ -794,6 +837,16 @@ export default function App() {
     setLoginMode(nextLoginMode);
     setPortalOpen(false);
     setActiveTab('dashboard');
+    setTransitionSplash({
+      visible: true,
+      institutionName: nextLoginMode === 'institution' ? inst.name : undefined,
+      subtitle:
+        mode === 'admin'
+          ? `Yönetici Ana Paneli Hazırlanıyor (${inst.name})`
+          : mode === 'preview'
+            ? `${inst.name} Kurum Önizleme Alanı Açılıyor`
+            : `${inst.name} Kurum Alanına Geçiliyor`,
+    });
     try {
       window.sessionStorage.setItem('da_portal_unlocked_v1', '1');
       window.sessionStorage.setItem('da_login_mode_v1', nextLoginMode);
@@ -1179,6 +1232,7 @@ export default function App() {
     { id: 'td-calendar', label: 'Eğitim Takvimi', sublabel: 'Deneme ve telafi etüt programı', tab: 'calendar', icon: CalendarDays },
     { id: 'td-poster', label: '3D Afiş & QR', sublabel: 'Kurumsal afiş ve QR kod oluşturucu', tab: 'poster', icon: ImageIcon },
     { id: 'td-drive', label: 'Yedek, Telefon & PC (PWA Kur)', sublabel: 'Google Drive yedek & uygulama yükleme', tab: 'drive', icon: Cloud },
+    { id: 'td-sample', label: 'Örnek Sayfa (Demo & Türkiye Geneli)', sublabel: 'Kurum verilerinden bağımsız örnek analiz sayfası', tab: 'sample', icon: FlaskConical },
   ];
 
   const primaryNavItems: Array<{
@@ -1204,8 +1258,10 @@ export default function App() {
     { id: 'calendar', label: 'Eğitim Takvimi', shortLabel: 'Eğitim Takvimi', icon: CalendarDays },
     { id: 'poster', label: '3D Afiş & QR', shortLabel: '3D Afiş', icon: ImageIcon },
     { id: 'drive', label: 'Yedek, Telefon & PC', shortLabel: 'Yedek & Kur', icon: Cloud },
+    { id: 'sample', label: 'Örnek Sayfa', shortLabel: 'Örnek Sayfa', icon: FlaskConical },
   ];
 
+  const instStudentsCount = students.filter((s) => s.institutionId === activeInstitution.id).length;
   const allNavItems = [...primaryNavItems, ...moduleNavItems];
   const isModuleTabActive = moduleNavItems.some((m) => m.id === activeTab);
 
@@ -1227,6 +1283,26 @@ export default function App() {
 
   return (
     <div className="min-h-screen flex flex-col lg:flex-row relative">
+      <AcademyTransitionSplash
+        visible={transitionSplash.visible}
+        institutionName={transitionSplash.institutionName ?? (loginMode === 'institution' ? activeInstitution.name : undefined)}
+        logoVariant={activeLogoId}
+        subtitle={transitionSplash.subtitle || 'Doğruluk Akademi Çalışma Alanı Açılıyor'}
+        gradeLabel={gradeProfile.shortLabel}
+        onFinish={() => setTransitionSplash((prev) => ({ ...prev, visible: false }))}
+      />
+      <ThreeDotStudentModal
+        open={studentPanelOpen}
+        activeInstitution={activeInstitution}
+        students={students}
+        activeGradeId={gradeId}
+        activeStudentNumber8={studentNumber}
+        onClose={() => setStudentPanelOpen(false)}
+        onAddStudent={handleAddStudent}
+        onSelectStudent={handleSelectStudent}
+        onDeleteStudent={handleDeleteStudent}
+        onNavigateModule={handleTabNavigation}
+      />
       <OfflineIndicator />
       <DriveConfirmModal
         open={Boolean(driveSaveConfirm?.open)}
@@ -1249,8 +1325,8 @@ export default function App() {
       {/* Left Sidebar (Desktop + Drawer on Mobile) */}
       <aside
         className={`${
-          mobileMenuOpen ? 'fixed inset-0 z-50 flex' : 'hidden'
-        } lg:flex lg:w-64 lg:shrink-0 flex-col justify-between p-5 relative z-20`}
+          mobileMenuOpen ? 'fixed inset-0 z-50 flex overflow-y-auto' : 'hidden'
+        } lg:flex lg:w-64 lg:shrink-0 flex-col justify-between p-5 lg:relative lg:z-20`}
         style={{
           backgroundColor: 'var(--bg-sidebar)',
           color: 'var(--text-sidebar)',
@@ -1307,6 +1383,22 @@ export default function App() {
                 </button>
               );
             })}
+
+            <button
+              type="button"
+              data-testid="sidebar-student-panel-btn"
+              onClick={() => {
+                setMobileMenuOpen(false);
+                setStudentPanelOpen(true);
+              }}
+              className="w-full text-left px-3.5 py-2.5 rounded-xl text-sm font-bold flex items-center justify-between gap-2 whitespace-nowrap shrink-0 cursor-pointer transition-colors bg-white/10 hover:bg-white/15 border border-white/15 mt-2"
+            >
+              <span className="inline-flex items-center gap-3">
+                <Users className="w-4 h-4 shrink-0" aria-hidden="true" />
+                <span>Öğrenci Paneli</span>
+              </span>
+              <span className="font-mono-num text-xs opacity-90">{instStudentsCount}</span>
+            </button>
           </nav>
 
           {/* Compact Theme Switcher & Live 3D Cascade Toggle in Sidebar */}
@@ -1523,7 +1615,34 @@ export default function App() {
                     </div>
                   </div>
 
-                  <div className="max-h-80 overflow-y-auto space-y-0.5 pr-0.5">
+                  <div className="pb-1 border-b" style={{ borderColor: 'var(--border-subtle)' }}>
+                    <button
+                      role="menuitem"
+                      type="button"
+                      data-testid="three-dot-student-panel-btn"
+                      onClick={() => {
+                        setThreeDotOpen(false);
+                        setStudentPanelOpen(true);
+                      }}
+                      className="w-full text-left px-2.5 py-2 rounded-xl text-xs flex items-start gap-2.5 cursor-pointer transition-colors hover:bg-black/5 dark:hover:bg-white/10"
+                    >
+                      <Users
+                        className="w-4 h-4 shrink-0 mt-0.5"
+                        style={{ color: 'var(--accent-primary)' }}
+                        aria-hidden="true"
+                      />
+                      <div className="min-w-0">
+                        <div className="font-bold leading-tight truncate">
+                          Öğrenci Ekleme &amp; Öğrenci Paneli
+                        </div>
+                        <div className="text-[10px] truncate" style={{ color: 'var(--text-secondary)' }}>
+                          {students.filter((s) => s.institutionId === activeInstitution.id).length} Öğrenci · Hızlı ekle, seç ve yönet
+                        </div>
+                      </div>
+                    </button>
+                  </div>
+
+                  <div className="max-h-72 overflow-y-auto space-y-0.5 pr-0.5">
                     {threeDotQuickItems.map((item) => {
                       const Icon = item.icon;
                       const isCurrent =
@@ -1611,15 +1730,26 @@ export default function App() {
                 </div>
               </div>
 
-              <button
-                type="button"
-                onClick={handleOpenPortalSwitch}
-                data-testid="open-portal-btn"
-                className="btn-3d-secondary px-3 py-2 rounded-xl text-[11px] font-bold inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
-              >
-                <LogOut className="w-3.5 h-3.5" aria-hidden="true" />
-                <span>{loginMode === 'institution' ? 'Kurum / Yönetici Değiştir' : 'Kurum Girişi / Değiştir'}</span>
-              </button>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setStudentPanelOpen(true)}
+                  data-testid="topbar-student-panel-btn"
+                  className="btn-3d px-3 py-2 rounded-xl text-[11px] font-bold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
+                >
+                  <Users className="w-3.5 h-3.5" aria-hidden="true" />
+                  <span>Öğrenci Paneli ({instStudentsCount})</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleOpenPortalSwitch}
+                  data-testid="open-portal-btn"
+                  className="btn-3d-secondary px-3 py-2 rounded-xl text-[11px] font-bold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
+                >
+                  <LogOut className="w-3.5 h-3.5" aria-hidden="true" />
+                  <span>{loginMode === 'institution' ? 'Kurum / Yönetici Değiştir' : 'Kurum Girişi / Değiştir'}</span>
+                </button>
+              </div>
             </div>
 
             {/* Global Arama Çubuğu */}
@@ -1752,6 +1882,7 @@ export default function App() {
             </div>
           </section>
 
+          <div key={activeTab} className="academy-stage-enter space-y-5">
           {activeTab === 'dashboard' && (
             <DashboardView
               gradeProfile={gradeProfile}
@@ -1958,7 +2089,9 @@ export default function App() {
               hasLiveAnalysis={hasLiveAnalysis}
               institutionName={activeInstitution.name}
               institutionCode8={activeInstitution.code8}
+              activeInstitutionId={activeInstitution.id}
               studentPhone={activeStudentParentPhone}
+              calendarEvents={calendarEvents}
               openEndedAnalysis={openEndedAnalysis}
               onUpdateCoachSummary={(summary) => {
                 setAiCoachSummary(summary);
@@ -2009,10 +2142,29 @@ export default function App() {
                   blob: zipBlob,
                 };
               }}
+              onDownloadSourceZip={handleDownloadSourceZip}
               academyName={activeInstitution.name}
               onToast={showToast}
             />
           )}
+
+          {activeTab === 'sample' && (
+            <SampleDemoPageView
+              gradeProfile={gradeProfile}
+              questionCount={questions.length}
+              penaltyDivisor={penaltyDivisor}
+              activeInstitution={activeInstitution}
+              students={students}
+              hasLiveAnalysis={hasLiveAnalysis}
+              isSampleDemoActive={Boolean(cover.isSampleDemo)}
+              analysis={analysis}
+              onLoadDemoStudent={handleLoadDemoStudent}
+              onResetCleanWorkspace={handleResetCleanWorkspace}
+              onReturnToDashboard={() => handleTabNavigation('dashboard')}
+              onOpenStudentPanel={() => setStudentPanelOpen(true)}
+            />
+          )}
+          </div>
         </main>
       </div>
     </div>

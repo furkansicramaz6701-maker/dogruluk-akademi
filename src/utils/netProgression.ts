@@ -99,6 +99,8 @@ export function buildGradeNetProgression(input: {
   institutionId: string;
   institutionCode8: string;
   students: StudentRecord[];
+  includeTurkeyBenchmark?: boolean;
+  isSamplePreview?: boolean;
   liveAnalysis?: {
     hasLiveAnalysis: boolean;
     studentName: string;
@@ -106,6 +108,7 @@ export function buildGradeNetProgression(input: {
     examTitle: string;
   };
 }): NetProgressionDataset {
+  const includeTurkey = input.includeTurkeyBenchmark ?? true;
   const profileTotal = input.gradeProfile.subjects.reduce(
     (sum, s) => sum + s.questionCount,
     0
@@ -149,6 +152,11 @@ export function buildGradeNetProgression(input: {
     );
   }
 
+  const hasMeasuredInstitutionData =
+    Boolean(input.isSamplePreview) ||
+    gradeEvaluatedStudents.length > 0 ||
+    Boolean(input.liveAnalysis?.hasLiveAnalysis && input.liveAnalysis.studentName.trim().length > 0);
+
   const rawPoints = EXAM_TEMPLATES.map((tpl, idx) => {
     const turkeyRatio = Math.min(
       0.88,
@@ -162,9 +170,11 @@ export function buildGradeNetProgression(input: {
       )
     );
 
-    const turkeyAvgNet = Number((maxQuestions * turkeyRatio).toFixed(2));
+    const turkeyAvgNet = includeTurkey ? Number((maxQuestions * turkeyRatio).toFixed(2)) : 0;
     const isLastBasePoint = idx === EXAM_TEMPLATES.length - 1;
-    let institutionAvgNet = Number((maxQuestions * instRatio).toFixed(2));
+    let institutionAvgNet = hasMeasuredInstitutionData
+      ? Number((maxQuestions * instRatio).toFixed(2))
+      : 0;
 
     if (isLastBasePoint && measuredInstAvgNet !== null) {
       institutionAvgNet = measuredInstAvgNet;
@@ -177,16 +187,25 @@ export function buildGradeNetProgression(input: {
         ? Number(input.liveAnalysis.totalNet.toFixed(2))
         : undefined;
 
+    if (isLastBasePoint && measuredInstAvgNet === null && activeStudentNet !== undefined) {
+      institutionAvgNet = activeStudentNet;
+    }
+
     return {
       id: `prog-${input.gradeProfile.id}-${idx + 1}`,
-      examName: formatGradeExamName(input.gradeProfile, tpl.suffix),
+      examName: includeTurkey
+        ? formatGradeExamName(input.gradeProfile, tpl.suffix)
+        : formatGradeExamName(
+            input.gradeProfile,
+            tpl.suffix.replace('Türkiye Geneli', 'Kurumsal Genel')
+          ),
       shortLabel: tpl.shortPrefix,
       date: tpl.date,
       totalQuestions: maxQuestions,
       institutionAvgNet,
       turkeyAvgNet,
       activeStudentNet,
-      participantCount: tpl.participants,
+      participantCount: hasMeasuredInstitutionData ? tpl.participants : 0,
       isLivePoint: isLastBasePoint && (measuredInstAvgNet !== null || activeStudentNet !== undefined),
     };
   });
@@ -196,10 +215,17 @@ export function buildGradeNetProgression(input: {
     return {
       ...pt,
       institutionDelta:
-        idx === 0 ? 0 : Number((pt.institutionAvgNet - prev.institutionAvgNet).toFixed(2)),
+        idx === 0 || !hasMeasuredInstitutionData
+          ? 0
+          : Number((pt.institutionAvgNet - prev.institutionAvgNet).toFixed(2)),
       turkeyDelta:
-        idx === 0 ? 0 : Number((pt.turkeyAvgNet - prev.turkeyAvgNet).toFixed(2)),
-      vsTurkeyDiff: Number((pt.institutionAvgNet - pt.turkeyAvgNet).toFixed(2)),
+        idx === 0 || !includeTurkey
+          ? 0
+          : Number((pt.turkeyAvgNet - prev.turkeyAvgNet).toFixed(2)),
+      vsTurkeyDiff:
+        includeTurkey && hasMeasuredInstitutionData
+          ? Number((pt.institutionAvgNet - pt.turkeyAvgNet).toFixed(2))
+          : 0,
     };
   });
 
@@ -210,12 +236,17 @@ export function buildGradeNetProgression(input: {
     points,
     summary: {
       latestInstitutionNet: last.institutionAvgNet,
-      latestTurkeyNet: last.turkeyAvgNet,
-      institutionGrowth: Number((last.institutionAvgNet - first.institutionAvgNet).toFixed(2)),
-      turkeyGrowth: Number((last.turkeyAvgNet - first.turkeyAvgNet).toFixed(2)),
-      institutionVsTurkeyDiff: Number(
-        (last.institutionAvgNet - last.turkeyAvgNet).toFixed(2)
-      ),
+      latestTurkeyNet: includeTurkey ? last.turkeyAvgNet : 0,
+      institutionGrowth: hasMeasuredInstitutionData
+        ? Number((last.institutionAvgNet - first.institutionAvgNet).toFixed(2))
+        : 0,
+      turkeyGrowth: includeTurkey
+        ? Number((last.turkeyAvgNet - first.turkeyAvgNet).toFixed(2))
+        : 0,
+      institutionVsTurkeyDiff:
+        includeTurkey && hasMeasuredInstitutionData
+          ? Number((last.institutionAvgNet - last.turkeyAvgNet).toFixed(2))
+          : 0,
       maxQuestions,
       evaluatedStudentCount: gradeEvaluatedStudents.length,
     },

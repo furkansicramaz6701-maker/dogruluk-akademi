@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { getGradeProfile } from '../data/curriculum';
 import { DEFAULT_INSTITUTIONS } from './institutionCodes';
 import {
+  applyCustomParentTemplate,
   buildGradeAppropriateSubtitle,
   buildParentMessage,
   buildReportCardParentMessage,
@@ -13,6 +14,8 @@ import {
   computeWeeklyComparison,
   filterAndSortWeeklyRows,
   filterRowsForBulkMessages,
+  findNextStudyEventForStudent,
+  formatCalendarDateTr,
   getDynamicAchievementTier,
   normalizeClassroomForGrade,
   sanitizeExamLabelForGrade,
@@ -257,4 +260,103 @@ test('normalizeClassroomForGrade rewrites stale 12-A Sayısal to 5-A when 5. Sı
   assert.ok(msg.includes('5. Sınıf · 5-A'));
   assert.equal(msg.includes('12-A'), false);
   assert.equal(msg.includes('Sayısal'), false);
+});
+
+test('findNextStudyEventForStudent prioritizes upcoming incomplete telafi-etutu and populates Karne message', () => {
+  assert.equal(formatCalendarDateTr('2026-11-22'), '22.11.2026');
+  const g5 = getGradeProfile('5');
+  const inst = DEFAULT_INSTITUTIONS[0];
+  const nextEv = findNextStudyEventForStudent({
+    institutionId: inst.id,
+    gradeId: '5',
+    studentName: 'Alihan Sarı',
+    classroom: '5-A',
+    referenceDateIso: '2026-11-19',
+    events: [
+      {
+        id: 'ev-other-inst',
+        institutionId: 'other-inst',
+        title: 'Başka Kurum Etütü',
+        date: '2026-11-20',
+        time: '14:00',
+        gradeId: '5',
+        type: 'telafi-etutu',
+        classroom: '5-A',
+        note: '',
+      },
+      {
+        id: 'ev-done',
+        institutionId: inst.id,
+        title: 'Tamamlanan Etüt',
+        date: '2026-11-20',
+        time: '15:00',
+        gradeId: '5',
+        type: 'telafi-etutu',
+        classroom: '5-A',
+        note: '',
+        completed: true,
+      },
+      {
+        id: 'ev-exam',
+        institutionId: inst.id,
+        title: 'Deneme Sınavı',
+        date: '2026-11-21',
+        time: '09:30',
+        gradeId: '5',
+        type: 'deneme-sinavi',
+        classroom: '5-A',
+        note: '',
+      },
+      {
+        id: 'ev-etut',
+        institutionId: inst.id,
+        title: 'Kesir Problemleri Birebir Etütü',
+        date: '2026-11-23',
+        time: '16:00',
+        gradeId: '5',
+        type: 'telafi-etutu',
+        classroom: '5-A',
+        note: 'Alihan Sarı için etüt',
+      },
+    ],
+  });
+
+  assert.ok(nextEv !== null);
+  assert.equal(nextEv.eventId, 'ev-etut');
+  assert.equal(nextEv.dateFormatted, '23.11.2026');
+  assert.ok(nextEv.summaryLine.includes('23.11.2026'));
+
+  const questions = buildAutoExamQuestions('5', 'dengeli');
+  const pair = generateSampleOmrPair(questions, 0.72);
+  const analysis = evaluateOmrExam({
+    studentName: 'Alihan Sarı',
+    studentNumber: '31998173',
+    classroom: '5-A',
+    examTitle: '5. Sınıf Kurumsal Deneme',
+    gradeId: '5',
+    penaltyDivisor: 3,
+    studentAnswers: pair.studentString.split(''),
+    answerKey: pair.keyString.split(''),
+    questions,
+  });
+
+  const fullMsg = buildReportCardParentMessage({
+    analysis,
+    academyName: inst.name,
+    gradeProfile: g5,
+    nextStudyEvent: nextEv,
+  });
+  assert.ok(fullMsg.includes('Ders Netleri:'));
+  assert.ok(fullMsg.includes('Konu Eksikleri:'));
+  assert.ok(fullMsg.includes('Bir Sonraki Etüt Tarihi: 23.11.2026 · Saat 16:00'));
+
+  const customRendered = applyCustomParentTemplate({
+    templateBody: '{ogrenci} | {netler} | {eksik} | Etüt: {etut}',
+    analysis,
+    academyName: inst.name,
+    gradeProfile: g5,
+    nextStudyEvent: nextEv,
+  });
+  assert.ok(customRendered.includes('Alihan Sarı'));
+  assert.ok(customRendered.includes('23.11.2026 · Saat 16:00'));
 });

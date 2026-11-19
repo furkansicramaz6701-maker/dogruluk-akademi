@@ -2,6 +2,7 @@ import express from 'express';
 import { createServer as createViteServer } from 'vite';
 import dotenv from 'dotenv';
 import fs from 'node:fs/promises';
+import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import JSZip from 'jszip';
@@ -786,6 +787,8 @@ En Zayıf Konular: ${JSON.stringify((analysis.topicGaps ?? []).slice(0, 5))}`;
     }
   });
 
+  const httpServer = http.createServer(app);
+
   const isProd = process.env.NODE_ENV === 'production';
   if (isProd) {
     const distPath = path.resolve(__dirname, 'dist');
@@ -795,14 +798,19 @@ En Zayıf Konular: ${JSON.stringify((analysis.topicGaps ?? []).slice(0, 5))}`;
     });
   } else {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        allowedHosts: true,
+        hmr: process.env.DISABLE_HMR !== 'true',
+        ws: { server: httpServer },
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);
   }
 
   const port = Number(process.env.PORT) || 3000;
-  app.listen(port, '0.0.0.0', () => {
+  httpServer.listen(port, '0.0.0.0', () => {
     console.log(`Doğruluk Akademi sunucusu http://localhost:${port} adresinde çalışıyor`);
   });
 }

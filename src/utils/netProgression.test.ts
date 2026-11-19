@@ -5,7 +5,7 @@ import { DEFAULT_INSTITUTIONS } from './institutionCodes';
 import { buildGradeNetProgression } from './netProgression';
 import { StudentRecord } from '../types/academy';
 
-test('buildGradeNetProgression computes grade-scaled institution and Turkey averages without TYT leaks', () => {
+test('buildGradeNetProgression starts institution averages at zero before any evaluated exam and scales Turkey reference cleanly', () => {
   const g5 = getGradeProfile('5');
   const inst = DEFAULT_INSTITUTIONS[0];
 
@@ -20,8 +20,11 @@ test('buildGradeNetProgression computes grade-scaled institution and Turkey aver
 
   assert.equal(ds.points.length, 5);
   assert.equal(ds.summary.maxQuestions, 70);
+  assert.equal(ds.summary.latestInstitutionNet, 0);
+  assert.equal(ds.summary.institutionGrowth, 0);
+  assert.equal(ds.summary.institutionVsTurkeyDiff, 0);
   for (const pt of ds.points) {
-    assert.ok(pt.institutionAvgNet > 0 && pt.institutionAvgNet <= 70);
+    assert.equal(pt.institutionAvgNet, 0);
     assert.ok(pt.turkeyAvgNet > 0 && pt.turkeyAvgNet <= 70);
     assert.equal(/\b(TYT|AYT|YKS)\b/i.test(pt.examName), false);
     assert.ok(pt.examName.includes('5. Sınıf'));
@@ -92,4 +95,30 @@ test('buildGradeNetProgression reflects penaltyDivisor = 0 (götürmesiz) and ev
   assert.equal(measuredDs.summary.evaluatedStudentCount, 1);
   assert.equal(measuredDs.summary.latestInstitutionNet, 60);
   assert.equal(measuredDs.points[measuredDs.points.length - 1].activeStudentNet, 60);
+});
+
+test('buildGradeNetProgression excludes Turkey-wide benchmarks when includeTurkeyBenchmark is false', () => {
+  const g5 = getGradeProfile('5');
+  const inst = DEFAULT_INSTITUTIONS[0];
+
+  const instOnly = buildGradeNetProgression({
+    gradeProfile: g5,
+    questionCount: 70,
+    penaltyDivisor: 3,
+    institutionId: inst.id,
+    institutionCode8: inst.code8,
+    students: [],
+    includeTurkeyBenchmark: false,
+  });
+
+  assert.equal(instOnly.summary.latestInstitutionNet, 0);
+  assert.equal(instOnly.summary.latestTurkeyNet, 0);
+  assert.equal(instOnly.summary.turkeyGrowth, 0);
+  assert.equal(instOnly.summary.institutionVsTurkeyDiff, 0);
+  for (const pt of instOnly.points) {
+    assert.equal(pt.turkeyAvgNet, 0);
+    assert.equal(pt.turkeyDelta, 0);
+    assert.equal(pt.vsTurkeyDiff, 0);
+    assert.equal(pt.examName.includes('Türkiye'), false);
+  }
 });

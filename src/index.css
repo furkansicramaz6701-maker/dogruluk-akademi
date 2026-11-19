@@ -260,6 +260,50 @@ h1, h2, h3, h4, .font-display {
   animation: squareTile3DFlip 9s linear infinite;
 }
 
+@keyframes academyStageEnter {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 10px, 0) scale(0.994);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+@keyframes academySplashCrest {
+  0% {
+    opacity: 0;
+    transform: translate3d(0, 14px, 0) scale(0.9);
+  }
+  100% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+@keyframes academySplashBar {
+  0% {
+    transform: scaleX(0.08);
+  }
+  100% {
+    transform: scaleX(1);
+  }
+}
+
+.academy-stage-enter {
+  animation: academyStageEnter 220ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.academy-splash-crest {
+  animation: academySplashCrest 360ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.academy-splash-bar {
+  transform-origin: left center;
+  animation: academySplashBar 620ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .btn-3d,
   .btn-3d-secondary,
@@ -271,7 +315,10 @@ h1, h2, h3, h4, .font-display {
   .logo-3d-orbit,
   .edu-cascade-item,
   .cube-3d-box,
-  .square-3d-spin {
+  .square-3d-spin,
+  .academy-stage-enter,
+  .academy-splash-crest,
+  .academy-splash-bar {
     animation: none !important;
   }
 }

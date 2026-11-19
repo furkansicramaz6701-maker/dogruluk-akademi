@@ -115,11 +115,13 @@ export function EducationCalendarView({
     return map;
   }, [instEvents]);
 
+  const hasExamEvaluation = analysis.totalCorrect > 0 || analysis.totalWrong > 0;
   const weakTopicSuggestions = useMemo(() => {
+    if (!hasExamEvaluation) return [];
     return [...analysis.topicGaps]
       .sort((a, b) => a.masteryPct - b.masteryPct)
       .slice(0, 4);
-  }, [analysis.topicGaps]);
+  }, [analysis.topicGaps, hasExamEvaluation]);
 
   const handlePrevMonth = () => {
     if (viewMonth === 0) {
@@ -386,38 +388,44 @@ export function EducationCalendarView({
             </p>
 
             <div className="space-y-2.5">
-              {weakTopicSuggestions.map((gap, idx) => (
-                <div
-                  key={`${gap.subject}-${gap.topic}`}
-                  className="surface-alt rounded-lg p-3 flex items-center justify-between gap-3 text-xs"
-                >
-                  <div className="min-w-0">
-                    <div className="font-bold truncate">
-                      {gap.subject} · {gap.topic}
-                    </div>
-                    <div className="text-[11px]" style={{ color: 'var(--text-secondary)' }}>
-                      Başarı: %{gap.masteryPct} · {gap.gainCode} · Önerilen: {idx + 2} gün sonra
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      onAddEvent(
-                        buildRemedialCalendarEvent({
-                          topicGap: gap,
-                          institutionId: activeInstitution.id,
-                          gradeId: gradeProfile.id,
-                          classroom,
-                          offsetDays: idx + 2,
-                        })
-                      )
-                    }
-                    className="btn-3d-secondary px-3 py-1.5 rounded-lg text-xs font-bold whitespace-nowrap shrink-0 cursor-pointer"
-                  >
-                    Takvime Ekle
-                  </button>
+              {weakTopicSuggestions.length === 0 ? (
+                <div className="surface-alt rounded-lg p-3 text-xs" style={{ color: 'var(--text-secondary)' }}>
+                  Henüz sınav veya optik okuma değerlendirmesi yapılmadı. Değerlendirme yapıldığında eksik kazanım etüt önerileri burada listelenir.
                 </div>
-              ))}
+              ) : (
+                weakTopicSuggestions.map((gap, idx) => (
+                  <div
+                    key={`${gap.subject}-${gap.topic}`}
+                    className="surface-alt rounded-lg p-3 flex items-center justify-between gap-3 text-xs"
+                  >
+                    <div className="min-w-0">
+                      <div className="font-bold truncate">
+                        {gap.subject} · {gap.topic}
+                      </div>
+                      <div className="text-[11px]" style={{ color: 'var(--text-secondary)' }}>
+                        Başarı: %{gap.masteryPct} · {gap.gainCode} · Önerilen: {idx + 2} gün sonra
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        onAddEvent(
+                          buildRemedialCalendarEvent({
+                            topicGap: gap,
+                            institutionId: activeInstitution.id,
+                            gradeId: gradeProfile.id,
+                            classroom,
+                            offsetDays: idx + 2,
+                          })
+                        )
+                      }
+                      className="btn-3d-secondary px-3 py-1.5 rounded-lg text-xs font-bold whitespace-nowrap shrink-0 cursor-pointer"
+                    >
+                      Takvime Ekle
+                    </button>
+                  </div>
+                ))
+              )}
             </div>
           </section>
         </div>
@@ -434,6 +442,18 @@ export function EducationCalendarView({
           </span>
         </div>
 
+        {instEvents.length === 0 ? (
+          <div
+            className="surface-alt rounded-xl p-6 text-center text-xs space-y-1"
+            style={{ color: 'var(--text-secondary)' }}
+            data-testid="calendar-empty-state"
+          >
+            <div className="font-bold" style={{ color: 'var(--text-primary)' }}>
+              Bu kurumda henüz planlanmış etkinlik veya sınav yok (0 Etkinlik)
+            </div>
+            <p>Yukarıdaki formdan yeni deneme sınavı, telafi etütü veya veli görüşmesi ekleyebilirsiniz.</p>
+          </div>
+        ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           {instEvents.map((ev) => (
             <article
@@ -484,6 +504,7 @@ export function EducationCalendarView({
             </article>
           ))}
         </div>
+        )}
       </section>
     </div>
   );

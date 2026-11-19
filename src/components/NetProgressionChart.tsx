@@ -36,6 +36,8 @@ interface NetProgressionChartProps {
   activeStudentName: string;
   activeStudentNet: number;
   activeExamTitle: string;
+  showTurkeyBenchmark?: boolean;
+  isSamplePreview?: boolean;
 }
 
 type ChartDisplayType = 'area' | 'bar';
@@ -51,9 +53,10 @@ interface CustomTooltipPayloadItem {
 interface CustomTooltipProps {
   active?: boolean;
   payload?: CustomTooltipPayloadItem[];
+  showTurkeyBenchmark?: boolean;
 }
 
-function NetChartTooltip({ active, payload }: CustomTooltipProps) {
+function NetChartTooltip({ active, payload, showTurkeyBenchmark = true }: CustomTooltipProps) {
   if (!active || !payload || payload.length === 0) return null;
   const point = payload[0]?.payload;
   if (!point) return null;
@@ -74,12 +77,14 @@ function NetChartTooltip({ active, payload }: CustomTooltipProps) {
             {point.institutionAvgNet.toFixed(2)} Net
           </span>
         </div>
-        <div className="flex items-center justify-between gap-4">
-          <span style={{ color: 'var(--text-secondary)' }}>Türkiye Geneli Ort.</span>
-          <span className="font-mono-num font-bold" style={{ color: 'var(--chart-3)' }}>
-            {point.turkeyAvgNet.toFixed(2)} Net
-          </span>
-        </div>
+        {showTurkeyBenchmark && (
+          <div className="flex items-center justify-between gap-4">
+            <span style={{ color: 'var(--text-secondary)' }}>Türkiye Geneli Ort.</span>
+            <span className="font-mono-num font-bold" style={{ color: 'var(--chart-3)' }}>
+              {point.turkeyAvgNet.toFixed(2)} Net
+            </span>
+          </div>
+        )}
         {point.activeStudentNet !== undefined && (
           <div className="flex items-center justify-between gap-4">
             <span style={{ color: 'var(--text-secondary)' }}>Aktif Öğrenci</span>
@@ -88,18 +93,20 @@ function NetChartTooltip({ active, payload }: CustomTooltipProps) {
             </span>
           </div>
         )}
-        <div className="flex items-center justify-between gap-4 pt-1 border-t" style={{ borderColor: 'var(--border-subtle)' }}>
-          <span style={{ color: 'var(--text-secondary)' }}>Kurum vs TG Farkı</span>
-          <span
-            className={`font-mono-num font-bold ${
-              point.vsTurkeyDiff >= 0
-                ? 'text-emerald-600 dark:text-emerald-400'
-                : 'text-rose-600 dark:text-rose-400'
-            }`}
-          >
-            {point.vsTurkeyDiff >= 0 ? `+${point.vsTurkeyDiff.toFixed(2)}` : point.vsTurkeyDiff.toFixed(2)} Net
-          </span>
-        </div>
+        {showTurkeyBenchmark && (
+          <div className="flex items-center justify-between gap-4 pt-1 border-t" style={{ borderColor: 'var(--border-subtle)' }}>
+            <span style={{ color: 'var(--text-secondary)' }}>Kurum vs TG Farkı</span>
+            <span
+              className={`font-mono-num font-bold ${
+                point.vsTurkeyDiff >= 0
+                  ? 'text-emerald-600 dark:text-emerald-400'
+                  : 'text-rose-600 dark:text-rose-400'
+              }`}
+            >
+              {point.vsTurkeyDiff >= 0 ? `+${point.vsTurkeyDiff.toFixed(2)}` : point.vsTurkeyDiff.toFixed(2)} Net
+            </span>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -115,8 +122,12 @@ export function NetProgressionChart({
   activeStudentName,
   activeStudentNet,
   activeExamTitle,
+  showTurkeyBenchmark = true,
+  isSamplePreview = false,
 }: NetProgressionChartProps) {
-  const [scopeMode, setScopeMode] = useState<ProgressionScopeMode>('both');
+  const [scopeMode, setScopeMode] = useState<ProgressionScopeMode>(
+    showTurkeyBenchmark ? 'both' : 'institution'
+  );
   const [chartType, setChartType] = useState<ChartDisplayType>('area');
   const [selectedPointId, setSelectedPointId] = useState<string | null>(null);
 
@@ -129,6 +140,8 @@ export function NetProgressionChart({
         institutionId: activeInstitution.id,
         institutionCode8: activeInstitution.code8,
         students,
+        includeTurkeyBenchmark: showTurkeyBenchmark,
+        isSamplePreview,
         liveAnalysis: {
           hasLiveAnalysis,
           studentName: activeStudentName,
@@ -143,6 +156,8 @@ export function NetProgressionChart({
       activeInstitution.id,
       activeInstitution.code8,
       students,
+      showTurkeyBenchmark,
+      isSamplePreview,
       hasLiveAnalysis,
       activeStudentName,
       activeStudentNet,
@@ -155,9 +170,13 @@ export function NetProgressionChart({
     return matched ?? dataset.points[dataset.points.length - 1];
   }, [dataset.points, selectedPointId]);
 
-  const showInstitution = scopeMode === 'both' || scopeMode === 'institution';
-  const showTurkey = scopeMode === 'both' || scopeMode === 'turkey';
+  const effectiveScope: ProgressionScopeMode = showTurkeyBenchmark ? scopeMode : 'institution';
+  const showInstitution = effectiveScope === 'both' || effectiveScope === 'institution';
+  const showTurkey = showTurkeyBenchmark && (effectiveScope === 'both' || effectiveScope === 'turkey');
   const hasStudentOverlay = dataset.points.some((p) => p.activeStudentNet !== undefined);
+  const hasAnyNonZeroInstitutionPoint = dataset.points.some(
+    (p) => p.institutionAvgNet > 0 || (p.activeStudentNet ?? 0) > 0
+  );
 
   return (
     <section
@@ -175,49 +194,54 @@ export function NetProgressionChart({
           />
           <div className="min-w-0">
             <h2 id="net-progression-title" className="text-base sm:text-lg font-bold leading-tight">
-              Net Gelişim Grafiği — {gradeProfile.shortLabel}
+              {showTurkeyBenchmark
+                ? `Örnek Net Gelişim Grafiği (Kurum & Türkiye Geneli) — ${gradeProfile.shortLabel}`
+                : `Kurum Net Gelişim Grafiği — ${gradeProfile.shortLabel}`}
             </h2>
             <p className="text-xs mt-0.5" style={{ color: 'var(--text-secondary)' }}>
               {activeInstitution.name} · {dataset.summary.maxQuestions} Soru ·{' '}
               {formatPenaltyRuleLabel(penaltyDivisor, true)} ·{' '}
               {dataset.summary.evaluatedStudentCount > 0
                 ? `${dataset.summary.evaluatedStudentCount} optik sonucu işlendi`
-                : 'Dönemsel kurum & Türkiye geneli ortalama seyri'}
+                : showTurkeyBenchmark
+                  ? 'Örnek dönemlik kurum & Türkiye geneli ortalama seyri'
+                  : 'Kurum içi dönemlik deneme net seyri (Optik değerlendirme sonrası oluşur)'}
             </p>
           </div>
         </div>
 
         <div className="flex flex-wrap items-center gap-2 shrink-0">
-          {/* Scope Selector */}
-          <div
-            role="group"
-            aria-label="Ortalama Kapsamı"
-            className="surface-alt rounded-lg p-1 inline-flex items-center gap-1"
-          >
-            {(
-              [
-                { id: 'both' as ProgressionScopeMode, label: 'Karşılaştırmalı' },
-                { id: 'institution' as ProgressionScopeMode, label: 'Kurum Geneli' },
-                { id: 'turkey' as ProgressionScopeMode, label: 'Türkiye Geneli' },
-              ] as const
-            ).map((opt) => {
-              const active = scopeMode === opt.id;
-              return (
-                <button
-                  key={opt.id}
-                  type="button"
-                  data-testid={`net-scope-${opt.id}`}
-                  aria-pressed={active}
-                  onClick={() => setScopeMode(opt.id)}
-                  className={`px-2.5 py-1.5 rounded-md text-xs font-bold whitespace-nowrap shrink-0 cursor-pointer transition-colors ${
-                    active ? 'btn-3d' : 'hover:bg-black/5 dark:hover:bg-white/10'
-                  }`}
-                >
-                  {opt.label}
-                </button>
-              );
-            })}
-          </div>
+          {showTurkeyBenchmark && (
+            <div
+              role="group"
+              aria-label="Ortalama Kapsamı"
+              className="surface-alt rounded-lg p-1 inline-flex items-center gap-1"
+            >
+              {(
+                [
+                  { id: 'both' as ProgressionScopeMode, label: 'Karşılaştırmalı' },
+                  { id: 'institution' as ProgressionScopeMode, label: 'Kurum Geneli' },
+                  { id: 'turkey' as ProgressionScopeMode, label: 'Türkiye Geneli' },
+                ] as const
+              ).map((opt) => {
+                const active = effectiveScope === opt.id;
+                return (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    data-testid={`net-scope-${opt.id}`}
+                    aria-pressed={active}
+                    onClick={() => setScopeMode(opt.id)}
+                    className={`px-2.5 py-1.5 rounded-md text-xs font-bold whitespace-nowrap shrink-0 cursor-pointer transition-colors ${
+                      active ? 'btn-3d' : 'hover:bg-black/5 dark:hover:bg-white/10'
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                );
+              })}
+            </div>
+          )}
 
           {/* Chart Visualization Mode */}
           <div
@@ -269,47 +293,89 @@ export function NetProgressionChart({
             >
               {dataset.summary.latestInstitutionNet.toFixed(2)} Net
             </span>
-            <span className="text-xs font-mono-num font-bold text-emerald-600 dark:text-emerald-400">
-              {dataset.summary.institutionGrowth >= 0 ? '+' : ''}
-              {dataset.summary.institutionGrowth.toFixed(2)} artış
-            </span>
-          </div>
-        </div>
-
-        <div>
-          <div className="text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
-            Türkiye Geneli Son Ortalama
-          </div>
-          <div className="mt-1 flex items-baseline gap-2.5">
             <span
-              className="text-xl font-display font-extrabold font-mono-num"
-              data-testid="net-summary-turkey"
+              className={`text-xs font-mono-num font-bold ${
+                dataset.summary.evaluatedStudentCount > 0 || hasStudentOverlay || isSamplePreview
+                  ? 'text-emerald-600 dark:text-emerald-400'
+                  : ''
+              }`}
+              style={
+                dataset.summary.evaluatedStudentCount === 0 && !hasStudentOverlay && !isSamplePreview
+                  ? { color: 'var(--text-secondary)' }
+                  : undefined
+              }
             >
-              {dataset.summary.latestTurkeyNet.toFixed(2)} Net
-            </span>
-            <span className="text-xs font-mono-num font-bold" style={{ color: 'var(--chart-3)' }}>
-              {dataset.summary.turkeyGrowth >= 0 ? '+' : ''}
-              {dataset.summary.turkeyGrowth.toFixed(2)} artış
+              {dataset.summary.evaluatedStudentCount > 0 || hasStudentOverlay || isSamplePreview
+                ? `${dataset.summary.institutionGrowth >= 0 ? '+' : ''}${dataset.summary.institutionGrowth.toFixed(2)} artış`
+                : '0 deneme (Temiz başlangıç)'}
             </span>
           </div>
         </div>
 
+        {showTurkeyBenchmark ? (
+          <div>
+            <div className="text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
+              Türkiye Geneli Referans
+            </div>
+            <div className="mt-1 flex items-baseline gap-2.5">
+              <span
+                className="text-xl font-display font-extrabold font-mono-num"
+                data-testid="net-summary-turkey"
+              >
+                {dataset.summary.latestTurkeyNet.toFixed(2)} Net
+              </span>
+              <span className="text-xs font-mono-num font-bold" style={{ color: 'var(--chart-3)' }}>
+                {dataset.summary.turkeyGrowth >= 0 ? '+' : ''}
+                {dataset.summary.turkeyGrowth.toFixed(2)} artış
+              </span>
+            </div>
+          </div>
+        ) : (
+          <div>
+            <div className="text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
+              Değerlendirilen Optik
+            </div>
+            <div className="mt-1 flex items-baseline gap-2.5">
+              <span className="text-xl font-display font-extrabold font-mono-num">
+                {dataset.summary.evaluatedStudentCount} Öğrenci
+              </span>
+              <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>
+                {dataset.summary.evaluatedStudentCount > 0
+                  ? 'Kurum ortalamasına işlendi'
+                  : 'Optik okuma ile güncellenir'}
+              </span>
+            </div>
+          </div>
+        )}
+
         <div>
           <div className="text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
-            {hasStudentOverlay ? `Aktif Öğrenci (${activeStudentName})` : 'Kurum vs Türkiye Geneli Farkı'}
+            {hasStudentOverlay
+              ? `Aktif Öğrenci (${activeStudentName})`
+              : showTurkeyBenchmark && dataset.summary.evaluatedStudentCount > 0
+                ? 'Kurum vs Türkiye Geneli Farkı'
+                : 'Kurum Veri Durumu'}
           </div>
           <div className="mt-1 flex items-baseline gap-2.5">
             <span className="text-xl font-display font-extrabold font-mono-num">
               {hasStudentOverlay
                 ? `${activeStudentNet.toFixed(2)} Net`
-                : `${dataset.summary.institutionVsTurkeyDiff >= 0 ? '+' : ''}${dataset.summary.institutionVsTurkeyDiff.toFixed(2)} Net`}
+                : showTurkeyBenchmark && dataset.summary.evaluatedStudentCount > 0
+                  ? `${dataset.summary.institutionVsTurkeyDiff >= 0 ? '+' : ''}${dataset.summary.institutionVsTurkeyDiff.toFixed(2)} Net`
+                  : `${dataset.summary.latestInstitutionNet.toFixed(2)} Net`}
             </span>
             <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>
               {hasStudentOverlay
-                ? `TG Ort: ${dataset.summary.latestTurkeyNet.toFixed(1)}`
-                : dataset.summary.institutionVsTurkeyDiff >= 0
-                  ? 'TG ortalamasının üzerinde'
-                  : 'TG ortalamasına yakınsama'}
+                ? showTurkeyBenchmark
+                  ? `TG Ort: ${dataset.summary.latestTurkeyNet.toFixed(1)}`
+                  : 'Aktif optik ölçüm sonucu'
+                : dataset.summary.evaluatedStudentCount === 0 && !isSamplePreview
+                  ? 'Henüz sınav değerlendirilmedi'
+                  : showTurkeyBenchmark
+                    ? dataset.summary.institutionVsTurkeyDiff >= 0
+                      ? 'TG ortalamasının üzerinde'
+                      : 'TG ortalamasına yakınsama'
+                    : 'Güncel kurum ortalaması'}
             </span>
           </div>
         </div>
@@ -388,23 +454,29 @@ export function NetProgressionChart({
                 tickLine={false}
               />
               <YAxis
-                domain={[
-                  (dataMin: number) => Math.max(0, Math.floor((dataMin - 6) / 5) * 5),
-                  (dataMax: number) =>
-                    Math.min(dataset.summary.maxQuestions, Math.ceil((dataMax + 6) / 5) * 5),
-                ]}
+                domain={
+                  !showTurkeyBenchmark && !hasAnyNonZeroInstitutionPoint
+                    ? [0, dataset.summary.maxQuestions]
+                    : [
+                        (dataMin: number) => Math.max(0, Math.floor((dataMin - 6) / 5) * 5),
+                        (dataMax: number) =>
+                          Math.min(dataset.summary.maxQuestions, Math.ceil((dataMax + 6) / 5) * 5),
+                      ]
+                }
                 tick={{ fill: 'var(--text-secondary)', fontSize: 12 }}
                 axisLine={false}
                 tickLine={false}
                 width={42}
               />
-              <Tooltip content={<NetChartTooltip />} />
-              <ReferenceLine
-                y={dataset.summary.latestTurkeyNet}
-                stroke="var(--chart-3)"
-                strokeDasharray="4 4"
-                strokeOpacity={0.6}
-              />
+              <Tooltip content={<NetChartTooltip showTurkeyBenchmark={showTurkeyBenchmark} />} />
+              {showTurkey && (
+                <ReferenceLine
+                  y={dataset.summary.latestTurkeyNet}
+                  stroke="var(--chart-3)"
+                  strokeDasharray="4 4"
+                  strokeOpacity={0.6}
+                />
+              )}
 
               {showInstitution && (
                 <Area
@@ -475,7 +547,7 @@ export function NetProgressionChart({
                 tickLine={false}
                 width={42}
               />
-              <Tooltip content={<NetChartTooltip />} />
+              <Tooltip content={<NetChartTooltip showTurkeyBenchmark={showTurkeyBenchmark} />} />
               {showInstitution && (
                 <Bar
                   dataKey="institutionAvgNet"

@@ -10,6 +10,7 @@ import {
   GradeProfile,
   Institution,
   LogoPreset,
+  OpenEndedPaperAnalysis,
   OpenEndedQuestion,
   PdfUploadStripOptions,
   QuestionVisualSpec,
@@ -18,6 +19,11 @@ import {
 } from '../types/academy';
 import { computeKeptUploadedPdfIndices } from './examPdfParser';
 import { buildWeeklyComparisonWorkbookBlob, defaultClassroomForGrade } from './excelExport';
+import {
+  buildParentInformationReportData,
+  ParentReportData,
+} from './parentReportPdf';
+import { NextStudySessionSummary } from './weeklyAnalysis';
 
 const A4_W = 1240;
 const A4_H = 1754;
@@ -3221,4 +3227,691 @@ export async function generateOpenEndedExamPdf(params: {
 
   return await pdfDoc.save();
 }
+
+export interface ParentInformationReportPdfInput {
+  analysis: ExamAnalysisResult;
+  cover: CoverConfig;
+  gradeProfile: GradeProfile;
+  hasLiveAnalysis?: boolean;
+  institutionName?: string;
+  institutionCode8?: string;
+  openEndedAnalysis?: OpenEndedPaperAnalysis | null;
+  nextStudyEvent?: NextStudySessionSummary | null;
+  parentMessage?: string;
+}
+
+/**
+ * Kapsamlı 2 Sayfalık A4 Veli Bilgilendirme Raporu (PDF)
+ */
+export async function generateParentInformationReportPdf(
+  input: ParentInformationReportPdfInput
+): Promise<{ bytes: Uint8Array; filename: string; report: ParentReportData }> {
+  const {
+    analysis,
+    cover,
+    gradeProfile,
+    hasLiveAnalysis = true,
+    institutionName,
+    institutionCode8,
+    openEndedAnalysis = null,
+    nextStudyEvent = null,
+    parentMessage,
+  } = input;
+
+  const effectiveInstitution = (institutionName || cover.academyName || 'Doğruluk Akademi').trim();
+  const effectiveCode8 = (institutionCode8 || cover.institutionCode8 || '48291045').trim();
+  const preset = getLogoPreset(cover.logoStyleId);
+  const showSampleStamp = Boolean(cover.isSampleDemo);
+
+  const report = buildParentInformationReportData({
+    analysis,
+    gradeProfile,
+    institutionName: effectiveInstitution,
+    institutionCode8: effectiveCode8,
+    examDate: cover.examDate,
+    hasLiveAnalysis,
+    openEndedAnalysis,
+    nextStudyEvent,
+    parentMessage,
+  });
+
+  // ==================== SAYFA 1: VELİ ÖZETİ, DERS PERFORMANSI & GELİŞİM GRAFİĞİ ====================
+  const c1 = document.createElement('canvas');
+  c1.width = A4_W;
+  c1.height = A4_H;
+  const ctx1 = c1.getContext('2d')!;
+
+  ctx1.fillStyle = '#f8fafc';
+  ctx1.fillRect(0, 0, A4_W, A4_H);
+  ctx1.fillStyle = '#ffffff';
+  ctx1.fillRect(24, 24, A4_W - 48, A4_H - 48);
+  ctx1.strokeStyle = preset.secondaryColor;
+  ctx1.lineWidth = 4;
+  ctx1.strokeRect(34, 34, A4_W - 68, A4_H - 68);
+
+  // Header band
+  const hGrad1 = ctx1.createLinearGradient(34, 34, A4_W - 34, 178);
+  hGrad1.addColorStop(0, '#0f172a');
+  hGrad1.addColorStop(0.55, preset.secondaryColor);
+  hGrad1.addColorStop(1, '#047857');
+  ctx1.fillStyle = hGrad1;
+  ctx1.fillRect(34, 34, A4_W - 68, 144);
+  ctx1.fillStyle = preset.goldColor;
+  ctx1.fillRect(34, 178, A4_W - 68, 6);
+
+  drawAcademyCrestCanvas(ctx1, 108, 106, 42, preset);
+
+  ctx1.textAlign = 'left';
+  ctx1.fillStyle = '#ffffff';
+  ctx1.font = '800 30px "Plus Jakarta Sans", sans-serif';
+  ctx1.fillText(`${report.institutionName.toUpperCase()} — VELİ BİLGİLENDİRME RAPORU`, 172, 90, A4_W - 230);
+  ctx1.fillStyle = '#d1fae5';
+  ctx1.font = '700 17.5px "DM Sans", sans-serif';
+  ctx1.fillText(
+    `${report.gradeLabel} · ${report.penaltyRuleText}`,
+    172,
+    124,
+    A4_W - 230
+  );
+  ctx1.fillStyle = '#fde68a';
+  ctx1.font = '700 15.5px "JetBrains Mono", monospace';
+  ctx1.fillText(
+    `KURUM KODU: ${report.institutionCode8} · RAPOR TARİHİ: ${report.examDate} · ${report.dataModeLabel.toUpperCase()}`,
+    172,
+    154,
+    A4_W - 230
+  );
+
+  // Parent greeting & student summary box
+  ctx1.fillStyle = 'rgba(15, 23, 42, 0.08)';
+  ctx1.fillRect(64, 210, A4_W - 116, 130);
+  ctx1.fillStyle = '#f0fdf4';
+  ctx1.fillRect(58, 204, A4_W - 116, 130);
+  ctx1.fillStyle = '#059669';
+  ctx1.fillRect(58, 204, 10, 130);
+  ctx1.strokeStyle = '#86efac';
+  ctx1.lineWidth = 2;
+  ctx1.strokeRect(58, 204, A4_W - 116, 130);
+
+  ctx1.textAlign = 'left';
+  ctx1.fillStyle = '#065f46';
+  ctx1.font = '700 15px "DM Sans", sans-serif';
+  ctx1.fillText('SAYIN VELİMİZ, ÖĞRENCİMİZİN GÜNCEL AKADEMİK GELİŞİM ÖZETİ', 86, 234);
+
+  ctx1.fillStyle = '#0f172a';
+  ctx1.font = '800 28px "Plus Jakarta Sans", sans-serif';
+  ctx1.fillText(report.studentName, 86, 270, A4_W - 260);
+
+  ctx1.fillStyle = '#334155';
+  ctx1.font = '600 17px "DM Sans", sans-serif';
+  ctx1.fillText(
+    `Öğrenci No: ${report.studentNumber}   ·   Sınıf/Şube: ${report.classroom}   ·   Düzey: ${report.gradeShortLabel}   ·   Durum: ${report.developmentStatus}`,
+    86,
+    300,
+    A4_W - 250
+  );
+  ctx1.fillStyle = '#047857';
+  ctx1.font = '700 15.5px "DM Sans", sans-serif';
+  ctx1.fillText(`Değerlendirilen Sınav: ${report.examTitle}`, 86, 324, A4_W - 250);
+
+  if (report.metrics.academyRank >= 1 && report.metrics.academyRank <= 3 && hasLiveAnalysis) {
+    drawTop3MedalCanvas(ctx1, A4_W - 116, 269, 32, report.metrics.academyRank as 1 | 2 | 3);
+  }
+
+  // 4 Key KPI Cards
+  const kpiW = (A4_W - 116 - 48) / 4;
+  const netSign = report.metrics.netDelta >= 0 ? '+' : '';
+  const scoreSign = report.metrics.scoreDelta >= 0 ? '+' : '';
+  const kpis = [
+    {
+      label: 'TOPLAM NET',
+      value: report.metrics.totalNet.toFixed(2),
+      sub: `${report.metrics.totalCorrect}D · ${report.metrics.totalWrong}Y · ${report.metrics.totalBlank}B (${netSign}${report.metrics.netDelta.toFixed(2)})`,
+      bg: '#eff6ff',
+      accent: '#1d4ed8',
+      shadow: '#bfdbfe',
+    },
+    {
+      label: 'TAHMİNİ PUAN',
+      value: `${report.metrics.estimatedScore.toFixed(1)}`,
+      sub: `Azami ${report.metrics.maxScore} Puan (${scoreSign}${report.metrics.scoreDelta.toFixed(1)}p)`,
+      bg: '#ecfdf5',
+      accent: '#059669',
+      shadow: '#a7f3d0',
+    },
+    {
+      label: 'BAŞARI & SIRALAMA',
+      value: `%${report.metrics.successPct}`,
+      sub:
+        report.metrics.academySize > 0
+          ? `Kurum: ${report.metrics.academyRank}/${report.metrics.academySize} · Şube: ${report.metrics.classRank}/${report.metrics.classSize}`
+          : 'Kurum: Deneme bekleniyor',
+      bg: '#eef2ff',
+      accent: '#4338ca',
+      shadow: '#c7d2fe',
+    },
+    {
+      label: 'SONRAKİ HEDEF',
+      value: `${report.metrics.targetNet.toFixed(1)} Net`,
+      sub:
+        report.metrics.academySize > 0
+          ? `Hedef Puan: ${report.metrics.targetScore.toFixed(1)} · Üst %${Math.max(1, 100 - report.metrics.percentile).toFixed(0)}`
+          : `Hedef Puan: ${report.metrics.targetScore.toFixed(1)}`,
+      bg: '#fffbeb',
+      accent: '#d97706',
+      shadow: '#fde68a',
+    },
+  ];
+
+  kpis.forEach((k, idx) => {
+    const kx = 58 + idx * (kpiW + 16);
+    const ky = 356;
+    ctx1.fillStyle = k.shadow;
+    ctx1.fillRect(kx + 4, ky + 5, kpiW, 114);
+    ctx1.fillStyle = k.bg;
+    ctx1.fillRect(kx, ky, kpiW, 114);
+    ctx1.fillStyle = k.accent;
+    ctx1.fillRect(kx, ky, kpiW, 7);
+    ctx1.strokeStyle = k.accent;
+    ctx1.lineWidth = 2;
+    ctx1.strokeRect(kx, ky, kpiW, 114);
+
+    ctx1.fillStyle = '#334155';
+    ctx1.font = '700 13.5px "DM Sans", sans-serif';
+    ctx1.textAlign = 'left';
+    ctx1.fillText(k.label, kx + 16, ky + 32);
+    ctx1.fillStyle = k.accent;
+    ctx1.font = '800 30px "Plus Jakarta Sans", sans-serif';
+    ctx1.fillText(k.value, kx + 16, ky + 72);
+    ctx1.fillStyle = '#475569';
+    ctx1.font = '600 12.5px "DM Sans", sans-serif';
+    ctx1.fillText(k.sub.slice(0, 34), kx + 16, ky + 99);
+  });
+
+  // 1. Ders Bazlı Başarı Tablosu
+  let y1 = 510;
+  ctx1.fillStyle = '#0f172a';
+  ctx1.font = '800 21px "Plus Jakarta Sans", sans-serif';
+  ctx1.textAlign = 'left';
+  ctx1.fillText('1. DERS BAZLI BAŞARI VE KURUMSAL KARŞILAŞTIRMA TABLOSU', 58, y1);
+  y1 += 16;
+
+  const colOffsets = [58, 340, 420, 495, 570, 645, 745, 870, 995, 1182];
+  const headers = ['Ders Adı', 'Soru', 'Doğru', 'Yanlış', 'Boş', 'Net', 'Kurum Ort.', 'Başarı %', 'Değerlendirme'];
+  const tblGrad = ctx1.createLinearGradient(58, y1, A4_W - 58, y1 + 40);
+  tblGrad.addColorStop(0, '#0f172a');
+  tblGrad.addColorStop(1, '#047857');
+  ctx1.fillStyle = tblGrad;
+  ctx1.fillRect(58, y1, A4_W - 116, 40);
+  ctx1.fillStyle = '#ffffff';
+  ctx1.font = '700 14px "DM Sans", sans-serif';
+  headers.forEach((h, i) => {
+    const isTextCol = i === 0 || i === 8;
+    ctx1.textAlign = isTextCol ? 'left' : 'right';
+    const tx = i === 0 ? colOffsets[0] + 12 : i === 8 ? colOffsets[8] + 12 : colOffsets[i + 1] - 10;
+    ctx1.fillText(h, tx, y1 + 25);
+  });
+  y1 += 40;
+
+  report.subjectRows.slice(0, 8).forEach((s, idx) => {
+    const rowH = 38;
+    ctx1.fillStyle = idx % 2 === 0 ? '#ffffff' : '#f8fafc';
+    ctx1.fillRect(58, y1, A4_W - 116, rowH);
+    ctx1.strokeStyle = '#cbd5e1';
+    ctx1.lineWidth = 1;
+    ctx1.strokeRect(58, y1, A4_W - 116, rowH);
+
+    ctx1.fillStyle = '#0f172a';
+    ctx1.font = '700 14.5px "DM Sans", sans-serif';
+    ctx1.textAlign = 'left';
+    ctx1.fillText(s.subject.slice(0, 25), colOffsets[0] + 12, y1 + 24);
+
+    const vals = [
+      String(s.total),
+      String(s.correct),
+      String(s.wrong),
+      String(s.blank),
+      s.net.toFixed(2),
+      s.academyAvgNet.toFixed(2),
+      `%${s.accuracyPct}`,
+    ];
+    vals.forEach((v, vi) => {
+      ctx1.textAlign = 'right';
+      ctx1.fillStyle =
+        vi === 4 ? '#1d4ed8' : vi === 1 ? '#059669' : vi === 2 ? '#e11d48' : vi === 6 ? '#0f766e' : '#334155';
+      ctx1.font = vi === 4 || vi === 6 ? '800 14.5px "JetBrains Mono", monospace' : '600 14.5px "JetBrains Mono", monospace';
+      ctx1.fillText(v, colOffsets[vi + 2] - 10, y1 + 24);
+    });
+
+    ctx1.textAlign = 'left';
+    ctx1.fillStyle =
+      s.accuracyPct >= 80
+        ? '#047857'
+        : s.accuracyPct >= 62
+          ? '#1d4ed8'
+          : s.accuracyPct >= 45
+            ? '#b45309'
+            : '#be123c';
+    ctx1.font = '700 13.5px "DM Sans", sans-serif';
+    ctx1.fillText(s.statusLabel, colOffsets[8] + 12, y1 + 24);
+    y1 += rowH;
+  });
+
+  // 2. Dönemsel Net Gelişim Çizelgesi (Canvas Chart)
+  y1 += 36;
+  ctx1.fillStyle = '#0f172a';
+  ctx1.font = '800 21px "Plus Jakarta Sans", sans-serif';
+  ctx1.textAlign = 'left';
+  ctx1.fillText('2. DÖNEMSEL NET GELİŞİM ÇİZELGESİ VE HEDEF PROJEKSİYONU', 58, y1);
+  y1 += 16;
+
+  const chartBoxY = y1;
+  const chartBoxH = Math.max(260, A4_H - 115 - chartBoxY);
+  ctx1.fillStyle = '#f8fafc';
+  ctx1.fillRect(58, chartBoxY, A4_W - 116, chartBoxH);
+  ctx1.strokeStyle = '#cbd5e1';
+  ctx1.lineWidth = 2;
+  ctx1.strokeRect(58, chartBoxY, A4_W - 116, chartBoxH);
+
+  // Legend
+  ctx1.fillStyle = '#1d4ed8';
+  ctx1.fillRect(82, chartBoxY + 18, 18, 12);
+  ctx1.fillStyle = '#0f172a';
+  ctx1.font = '700 14px "DM Sans", sans-serif';
+  ctx1.fillText('Öğrenci Neti', 108, chartBoxY + 29);
+
+  ctx1.fillStyle = '#10b981';
+  ctx1.fillRect(240, chartBoxY + 18, 18, 12);
+  ctx1.fillStyle = '#0f172a';
+  ctx1.fillText('Kurum Ortalaması', 266, chartBoxY + 29);
+
+  ctx1.strokeStyle = '#d97706';
+  ctx1.lineWidth = 3;
+  ctx1.setLineDash([8, 6]);
+  ctx1.beginPath();
+  ctx1.moveTo(435, chartBoxY + 24);
+  ctx1.lineTo(468, chartBoxY + 24);
+  ctx1.stroke();
+  ctx1.setLineDash([]);
+  ctx1.fillStyle = '#92400e';
+  ctx1.fillText(`Hedef Net (${report.metrics.targetNet.toFixed(1)})`, 476, chartBoxY + 29);
+
+  const plotX = 128;
+  const plotY = chartBoxY + 56;
+  const plotW = A4_W - 116 - 112;
+  const plotH = chartBoxH - 112;
+  const maxChartNet = Math.max(
+    10,
+    report.metrics.totalQuestions,
+    ...report.trendSeries.map((t) => Math.max(t.studentNet, t.academyAvgNet, t.targetNet))
+  );
+
+  // Gridlines
+  for (let gi = 0; gi <= 4; gi++) {
+    const val = (maxChartNet * gi) / 4;
+    const gy = plotY + plotH - (gi / 4) * plotH;
+    ctx1.strokeStyle = '#e2e8f0';
+    ctx1.lineWidth = 1;
+    ctx1.beginPath();
+    ctx1.moveTo(plotX, gy);
+    ctx1.lineTo(plotX + plotW, gy);
+    ctx1.stroke();
+
+    ctx1.fillStyle = '#64748b';
+    ctx1.font = '600 12.5px "JetBrains Mono", monospace';
+    ctx1.textAlign = 'right';
+    ctx1.fillText(val.toFixed(0), plotX - 12, gy + 4);
+  }
+
+  // Target dashed line
+  const targetY = plotY + plotH - (report.metrics.targetNet / maxChartNet) * plotH;
+  ctx1.strokeStyle = '#d97706';
+  ctx1.lineWidth = 2;
+  ctx1.setLineDash([8, 6]);
+  ctx1.beginPath();
+  ctx1.moveTo(plotX, targetY);
+  ctx1.lineTo(plotX + plotW, targetY);
+  ctx1.stroke();
+  ctx1.setLineDash([]);
+
+  const count = Math.max(1, report.trendSeries.length);
+  const slotW = plotW / count;
+  const barW = Math.min(44, slotW * 0.28);
+
+  report.trendSeries.forEach((pt, idx) => {
+    const cx = plotX + idx * slotW + slotW / 2;
+    const stuH = Math.max(4, (pt.studentNet / maxChartNet) * plotH);
+    const avgH = Math.max(4, (pt.academyAvgNet / maxChartNet) * plotH);
+
+    // Student bar
+    ctx1.fillStyle = pt.isProjected ? '#60a5fa' : pt.isCurrent ? '#0f172a' : '#1d4ed8';
+    ctx1.fillRect(cx - barW - 3, plotY + plotH - stuH, barW, stuH);
+
+    // Academy bar
+    ctx1.fillStyle = '#10b981';
+    ctx1.fillRect(cx + 3, plotY + plotH - avgH, barW, avgH);
+
+    // Value label above student bar
+    ctx1.fillStyle = '#0f172a';
+    ctx1.font = '800 13px "JetBrains Mono", monospace';
+    ctx1.textAlign = 'center';
+    ctx1.fillText(pt.studentNet.toFixed(1), cx - barW / 2 - 3, plotY + plotH - stuH - 8);
+
+    // X label
+    ctx1.fillStyle = pt.isCurrent ? '#0f172a' : '#475569';
+    ctx1.font = pt.isCurrent ? '800 13.5px "DM Sans", sans-serif' : '600 13px "DM Sans", sans-serif';
+    ctx1.fillText(pt.label, cx, plotY + plotH + 24);
+  });
+
+  // Footer Page 1
+  ctx1.fillStyle = '#0f172a';
+  ctx1.fillRect(34, A4_H - 90, A4_W - 68, 56);
+  ctx1.fillStyle = '#ffffff';
+  ctx1.font = '700 15.5px "DM Sans", sans-serif';
+  ctx1.textAlign = 'center';
+  ctx1.fillText(
+    showSampleStamp
+      ? `${report.institutionName} · Kurum Kodu: ${report.institutionCode8} · VELİ BİLGİLENDİRME RAPORU · ÖRNEKTİR · Sayfa 1 / 2`
+      : `${report.institutionName} · Kurum Kodu: ${report.institutionCode8} · RESMİ VELİ BİLGİLENDİRME RAPORU · Sayfa 1 / 2`,
+    A4_W / 2,
+    A4_H - 56
+  );
+
+  // ==================== SAYFA 2: KONU EKSİKLERİ, ETÜT TAKVİMİ & EVDE ÇALIŞMA PLANI ====================
+  const c2 = document.createElement('canvas');
+  c2.width = A4_W;
+  c2.height = A4_H;
+  const ctx2 = c2.getContext('2d')!;
+
+  ctx2.fillStyle = '#ffffff';
+  ctx2.fillRect(0, 0, A4_W, A4_H);
+  ctx2.strokeStyle = preset.secondaryColor;
+  ctx2.lineWidth = 4;
+  ctx2.strokeRect(34, 34, A4_W - 68, A4_H - 68);
+
+  const hGrad2 = ctx2.createLinearGradient(34, 34, A4_W - 34, 120);
+  hGrad2.addColorStop(0, '#0f172a');
+  hGrad2.addColorStop(0.55, preset.secondaryColor);
+  hGrad2.addColorStop(1, '#047857');
+  ctx2.fillStyle = hGrad2;
+  ctx2.fillRect(34, 34, A4_W - 68, 86);
+  drawAcademyCrestCanvas(ctx2, 88, 77, 28, preset);
+
+  ctx2.textAlign = 'left';
+  ctx2.fillStyle = '#ffffff';
+  ctx2.font = '800 23px "Plus Jakarta Sans", sans-serif';
+  ctx2.fillText(
+    `${report.studentName.toUpperCase()} — KONU EKSİKLERİ, ETÜT VE VELİ REHBERİ`,
+    134,
+    72,
+    A4_W - 190
+  );
+  ctx2.fillStyle = '#fde68a';
+  ctx2.font = '700 14.5px "JetBrains Mono", monospace';
+  ctx2.fillText(
+    `Öğrenci No: ${report.studentNumber} · ${report.gradeShortLabel} · ${report.classroom} · Kurum: ${report.institutionCode8}`,
+    134,
+    100,
+    A4_W - 190
+  );
+
+  // 3. Konu Eksikleri ve Kazanım Analizi Tablosu
+  let y2 = 158;
+  ctx2.fillStyle = '#0f172a';
+  ctx2.font = '800 20px "Plus Jakarta Sans", sans-serif';
+  ctx2.fillText('3. ÖNCELİKLİ KONU EKSİKLERİ VE KAZANIM ANALİZİ', 58, y2);
+  y2 += 14;
+
+  const tCols = [58, 240, 620, 740, 815, 890, 965, 1055, 1182];
+  const tHeaders = ['Ders', 'Konu / Kazanım Başlığı', 'Kod', 'D', 'Y', 'B', 'Başarı %', 'Durum'];
+  ctx2.fillStyle = '#0f172a';
+  ctx2.fillRect(58, y2, A4_W - 116, 36);
+  ctx2.fillStyle = '#ffffff';
+  ctx2.font = '700 13.5px "DM Sans", sans-serif';
+  tHeaders.forEach((h, idx) => {
+    const isNum = idx >= 3 && idx <= 6;
+    ctx2.textAlign = isNum ? 'right' : 'left';
+    const tx = isNum ? tCols[idx + 1] - 10 : idx === 7 ? tCols[7] + 12 : tCols[idx] + 10;
+    ctx2.fillText(h, tx, y2 + 23);
+  });
+  y2 += 36;
+
+  if (report.prioritizedTopics.length === 0) {
+    const emptyRowH = 44;
+    ctx2.fillStyle = '#f8fafc';
+    ctx2.fillRect(58, y2, A4_W - 116, emptyRowH);
+    ctx2.strokeStyle = '#e2e8f0';
+    ctx2.lineWidth = 1;
+    ctx2.strokeRect(58, y2, A4_W - 116, emptyRowH);
+    ctx2.textAlign = 'center';
+    ctx2.fillStyle = '#475569';
+    ctx2.font = '600 14px "DM Sans", sans-serif';
+    ctx2.fillText(
+      'Henüz değerlendirilen deneme sınavı olmadığı için öncelikli konu eksiği kaydı bulunmamaktadır.',
+      A4_W / 2,
+      y2 + 27
+    );
+    y2 += emptyRowH;
+  } else {
+    report.prioritizedTopics.slice(0, 8).forEach((t, idx) => {
+      const rowH = 38;
+      ctx2.fillStyle = idx % 2 === 0 ? '#ffffff' : '#f8fafc';
+      ctx2.fillRect(58, y2, A4_W - 116, rowH);
+      ctx2.strokeStyle = '#e2e8f0';
+      ctx2.lineWidth = 1;
+      ctx2.strokeRect(58, y2, A4_W - 116, rowH);
+
+      ctx2.textAlign = 'left';
+      ctx2.fillStyle = '#0f172a';
+      ctx2.font = '700 13.5px "DM Sans", sans-serif';
+      ctx2.fillText(t.subject.slice(0, 19), tCols[0] + 10, y2 + 24);
+      ctx2.font = '500 13.5px "DM Sans", sans-serif';
+      ctx2.fillText(t.topic.slice(0, 42), tCols[1] + 10, y2 + 24);
+      ctx2.fillStyle = '#64748b';
+      ctx2.font = '600 12.5px "JetBrains Mono", monospace';
+      ctx2.fillText(t.gainCode.slice(0, 14), tCols[2] + 10, y2 + 24);
+
+      const nums = [String(t.correct), String(t.wrong), String(t.blank), `%${t.masteryPct}`];
+      nums.forEach((nv, ni) => {
+        ctx2.textAlign = 'right';
+        ctx2.fillStyle = ni === 0 ? '#047857' : ni === 1 ? '#be123c' : '#0f172a';
+        ctx2.font = '700 13.5px "JetBrains Mono", monospace';
+        ctx2.fillText(nv, tCols[ni + 4] - 10, y2 + 24);
+      });
+
+      ctx2.textAlign = 'left';
+      ctx2.fillStyle =
+        t.status === 'Kritik Eksik'
+          ? '#be123c'
+          : t.status === 'Geliştirilmeli'
+            ? '#b45309'
+            : '#047857';
+      ctx2.font = '700 13px "DM Sans", sans-serif';
+      ctx2.fillText(t.status, tCols[7] + 12, y2 + 24);
+      y2 += rowH;
+    });
+  }
+
+  // 4 & 5 Side-by-side: Zorluk/Hata Profili + Etüt Takvimi & Evde Çalışma Planı
+  const midY = Math.max(y2 + 28, 540);
+  const colW = (A4_W - 116 - 24) / 2;
+  const midH = 390;
+
+  // Left card: Zorluk & Hata Profili
+  ctx2.fillStyle = '#eff6ff';
+  ctx2.fillRect(58, midY, colW, midH);
+  ctx2.strokeStyle = '#3b82f6';
+  ctx2.lineWidth = 2;
+  ctx2.strokeRect(58, midY, colW, midH);
+
+  ctx2.textAlign = 'left';
+  ctx2.fillStyle = '#1e3a8a';
+  ctx2.font = '800 18px "Plus Jakarta Sans", sans-serif';
+  ctx2.fillText('4. ZORLUK DÜZEYİ VE HATA PROFİLİ', 78, midY + 34);
+
+  const diffColors = ['#10b981', '#2563eb', '#f59e0b'];
+  report.difficultyMetrics.slice(0, 3).forEach((d, idx) => {
+    const dy = midY + 68 + idx * 46;
+    const dc = diffColors[idx % diffColors.length];
+    ctx2.fillStyle = '#0f172a';
+    ctx2.font = '700 14px "DM Sans", sans-serif';
+    ctx2.textAlign = 'left';
+    ctx2.fillText(`${d.difficulty} Sorular (${d.correct}/${d.total} Doğru)`, 78, dy);
+    ctx2.textAlign = 'right';
+    ctx2.fillStyle = dc;
+    ctx2.fillText(`%${d.successPct}`, 58 + colW - 22, dy);
+
+    ctx2.fillStyle = '#dbeafe';
+    ctx2.fillRect(78, dy + 8, colW - 44, 10);
+    ctx2.fillStyle = dc;
+    ctx2.fillRect(78, dy + 8, ((colW - 44) * d.successPct) / 100, 10);
+  });
+
+  ctx2.textAlign = 'left';
+  ctx2.fillStyle = '#9f1239';
+  ctx2.font = '800 16px "Plus Jakarta Sans", sans-serif';
+  ctx2.fillText('Hata Nedenleri Özeti:', 78, midY + 225);
+
+  report.errorDistribution.slice(0, 4).forEach((er, idx) => {
+    const ey = midY + 255 + idx * 31;
+    ctx2.fillStyle = '#334155';
+    ctx2.font = '600 14px "DM Sans", sans-serif';
+    ctx2.textAlign = 'left';
+    ctx2.fillText(`• ${er.label}`, 80, ey);
+    ctx2.textAlign = 'right';
+    ctx2.fillStyle = '#be123c';
+    ctx2.font = '700 14px "JetBrains Mono", monospace';
+    ctx2.fillText(`${er.count} soru (%${er.pct})`, 58 + colW - 22, ey);
+  });
+
+  // Right card: Bir Sonraki Etüt Tarihi & Evde Destek Planı
+  const rightCardX = 58 + colW + 24;
+  ctx2.fillStyle = '#ecfdf5';
+  ctx2.fillRect(rightCardX, midY, colW, midH);
+  ctx2.strokeStyle = '#059669';
+  ctx2.lineWidth = 2;
+  ctx2.strokeRect(rightCardX, midY, colW, midH);
+
+  ctx2.textAlign = 'left';
+  ctx2.fillStyle = '#065f46';
+  ctx2.font = '800 18px "Plus Jakarta Sans", sans-serif';
+  ctx2.fillText('5. ETÜT TAKVİMİ VE EVDE DESTEK PLANI', rightCardX + 20, midY + 34);
+
+  // Highlighted next study box
+  ctx2.fillStyle = '#ffffff';
+  ctx2.fillRect(rightCardX + 18, midY + 50, colW - 36, 76);
+  ctx2.strokeStyle = '#10b981';
+  ctx2.lineWidth = 1.5;
+  ctx2.strokeRect(rightCardX + 18, midY + 50, colW - 36, 76);
+
+  ctx2.fillStyle = '#047857';
+  ctx2.font = '800 13.5px "DM Sans", sans-serif';
+  ctx2.fillText('BİR SONRAKİ ETÜT / TELAFİ RANDEVUSU:', rightCardX + 32, midY + 74);
+  ctx2.fillStyle = '#0f172a';
+  ctx2.font = '700 14px "DM Sans", sans-serif';
+  const etutLines = wrapTextLines(ctx2, report.nextStudySession.summaryLine, colW - 64).slice(0, 2);
+  etutLines.forEach((el, idx) => {
+    ctx2.fillText(el, rightCardX + 32, midY + 98 + idx * 18);
+  });
+
+  ctx2.fillStyle = '#065f46';
+  ctx2.font = '800 15px "Plus Jakarta Sans", sans-serif';
+  ctx2.fillText('Velimiz İçin 4 Adımlık Destek Rehberi:', rightCardX + 20, midY + 154);
+
+  let py = midY + 180;
+  report.homeActionPlan.forEach((step, idx) => {
+    ctx2.fillStyle = '#1e293b';
+    ctx2.font = '500 13.5px "DM Sans", sans-serif';
+    const lines = wrapTextLines(ctx2, `${idx + 1}. ${step}`, colW - 44).slice(0, 3);
+    lines.forEach((ln) => {
+      if (py < midY + midH - 14) {
+        ctx2.fillText(ln, rightCardX + 20, py);
+        py += 19;
+      }
+    });
+    py += 6;
+  });
+
+  // 6. Veliye Özel Akademik Değerlendirme Notu
+  const noteY = midY + midH + 26;
+  const noteH = 380;
+  ctx2.fillStyle = '#f8fafc';
+  ctx2.fillRect(58, noteY, A4_W - 116, noteH);
+  ctx2.strokeStyle = preset.primaryColor;
+  ctx2.lineWidth = 2.5;
+  ctx2.strokeRect(58, noteY, A4_W - 116, noteH);
+
+  ctx2.textAlign = 'left';
+  ctx2.fillStyle = preset.secondaryColor;
+  ctx2.font = '800 19px "Plus Jakarta Sans", sans-serif';
+  ctx2.fillText('6. VELİYE ÖZEL AKADEMİK DEĞERLENDİRME VE BİLGİLENDİRME NOTU', 80, noteY + 38);
+
+  ctx2.fillStyle = '#1e293b';
+  ctx2.font = '500 16px "DM Sans", sans-serif';
+  let ny = noteY + 76;
+  const noteParagraphs = report.parentNote.split(/\n+/);
+  for (const para of noteParagraphs) {
+    const trimmed = para.trim();
+    if (!trimmed) continue;
+    const lines = wrapTextLines(ctx2, trimmed, A4_W - 164);
+    for (const ln of lines) {
+      if (ny < noteY + noteH - 22) {
+        ctx2.fillText(ln, 80, ny);
+        ny += 25;
+      }
+    }
+    ny += 6;
+  }
+
+  // Bottom 3D Signature & Institutional Footer
+  const sigY = 1390;
+  ctx2.textAlign = 'left';
+  ctx2.fillStyle = preset.secondaryColor;
+  ctx2.font = '800 20px "Plus Jakarta Sans", sans-serif';
+  ctx2.fillText(
+    showSampleStamp ? 'VELİ BİLGİLENDİRME BELGESİ · ÖRNEKTİR' : 'RESMİ VELİ BİLGİLENDİRME BELGESİ',
+    64,
+    sigY + 42
+  );
+  ctx2.fillStyle = '#475569';
+  ctx2.font = '600 15.5px "DM Sans", sans-serif';
+  ctx2.fillText(
+    `${report.institutionName} · Kurum Kodu: ${report.institutionCode8} · ${cover.securityNotice}`,
+    64,
+    sigY + 72
+  );
+
+  draw3DFurkanSignature(ctx2, A4_W - 360, sigY - 8, '#0f172a', '#f59e0b');
+  ctx2.textAlign = 'center';
+  ctx2.fillStyle = '#0f172a';
+  ctx2.font = '800 19px "Plus Jakarta Sans", sans-serif';
+  ctx2.fillText(`${cover.signatureName} (${cover.signatureTitle})`, A4_W - 240, sigY + 108);
+
+  ctx2.fillStyle = '#0f172a';
+  ctx2.fillRect(34, A4_H - 90, A4_W - 68, 56);
+  ctx2.fillStyle = '#ffffff';
+  ctx2.font = '700 15.5px "DM Sans", sans-serif';
+  ctx2.fillText(
+    showSampleStamp
+      ? `${report.institutionName} · Kurum Kodu: ${report.institutionCode8} · VELİ BİLGİLENDİRME RAPORU · ÖRNEKTİR · Sayfa 2 / 2`
+      : `${report.institutionName} · Kurum Kodu: ${report.institutionCode8} · RESMİ VELİ BİLGİLENDİRME RAPORU · Sayfa 2 / 2`,
+    A4_W / 2,
+    A4_H - 56
+  );
+
+  const pdfDoc = await PDFDocument.create();
+  for (const canvas of [c1, c2]) {
+    const pngBytes = await canvasToPngBytes(canvas);
+    const img = await pdfDoc.embedPng(pngBytes);
+    const page = pdfDoc.addPage([595.28, 841.89]);
+    page.drawImage(img, { x: 0, y: 0, width: 595.28, height: 841.89 });
+  }
+
+  return {
+    bytes: await pdfDoc.save(),
+    filename: report.safeFilename,
+    report,
+  };
+}
+
 

@@ -515,5 +515,6 @@ export type ActiveTab =
   | 'calendar'
   | 'reports'
   | 'poster'
-  | 'drive';
+  | 'drive'
+  | 'sample';
 

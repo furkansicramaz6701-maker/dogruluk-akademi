@@ -2,11 +2,13 @@ import { FormEvent, useCallback, useEffect, useState } from 'react';
 import {
   Check,
   Cloud,
+  Copy,
   Download,
   ExternalLink,
   FileSpreadsheet,
   FileText,
   FolderOpen,
+  GitBranch,
   HardDriveDownload,
   Loader2,
   LogOut,
@@ -43,6 +45,7 @@ interface GoogleDrivePanelProps {
   onSignOut: () => Promise<void>;
   onBuildWeeklyFiles: () => Promise<DriveUploadPayload[]>;
   onBuildFullSystemZipBlob: () => Promise<DriveUploadPayload>;
+  onDownloadSourceZip?: () => Promise<void>;
   academyName: string;
   onToast: (msg: string) => void;
 }
@@ -55,6 +58,12 @@ interface PendingConfirm {
   action: () => Promise<void>;
 }
 
+const GITHUB_SYNC_COMMANDS = [
+  'git add .',
+  'git commit -m "Dogruluk Akademi guncel arayuz ve PWA gecisi"',
+  'git push origin main',
+].join('\n');
+
 export function GoogleDrivePanel({
   driveUser,
   driveToken,
@@ -62,6 +71,7 @@ export function GoogleDrivePanel({
   onSignOut,
   onBuildWeeklyFiles,
   onBuildFullSystemZipBlob,
+  onDownloadSourceZip,
   academyName,
   onToast,
 }: GoogleDrivePanelProps) {
@@ -69,6 +79,7 @@ export function GoogleDrivePanel({
   const [searchQuery, setSearchQuery] = useState('');
   const [loadingList, setLoadingList] = useState(false);
   const [actionBusy, setActionBusy] = useState(false);
+  const [gitCmdCopied, setGitCmdCopied] = useState(false);
   const [authBusy, setAuthBusy] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [pendingConfirm, setPendingConfirm] = useState<PendingConfirm | null>(null);
@@ -311,6 +322,115 @@ export function GoogleDrivePanel({
           onNativeInstall={install}
           onToast={onToast}
         />
+      </section>
+
+      {/* GITHUB GÜNCEL DOSYALAR & PWA/VERCEL ARAYÜZ EŞİTLEME */}
+      <section
+        aria-labelledby="github-sync-card-title"
+        className="surface-card rounded-xl p-5 space-y-4"
+        data-testid="github-sync-panel"
+      >
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="flex items-start gap-3">
+            <div
+              className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0 text-white"
+              style={{ backgroundColor: 'var(--accent-primary)' }}
+            >
+              <GitBranch className="w-5 h-5" aria-hidden="true" />
+            </div>
+            <div>
+              <h2 id="github-sync-card-title" className="text-base sm:text-lg font-bold">
+                GitHub’a Güncel Dosyaları Gönder &amp; Uygulama Eşitleme
+              </h2>
+              <p className="text-xs leading-relaxed mt-0.5" style={{ color: 'var(--text-secondary)' }}>
+                Web sitesi ve kurulu mobil/masaüstü uygulama (PWA) aynı arayüzü, aynı manifest yapılandırmasını ve akademi geçiş animasyonunu kullanır. Güncel tüm dosyaları ZIP olarak indirip GitHub deponuza gönderdiğinizde Vercel canlı uygulamanız birebir güncellenir.
+              </p>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              disabled={actionBusy}
+              data-testid="github-download-source-zip-btn"
+              onClick={async () => {
+                setActionBusy(true);
+                try {
+                  if (onDownloadSourceZip) {
+                    await onDownloadSourceZip();
+                  } else {
+                    const resp = await fetch('/api/export/app-zip');
+                    if (!resp.ok) throw new Error('Kaynak ZIP indirilemedi');
+                    const blob = await resp.blob();
+                    triggerDownload(blob, 'Dogruluk-Akademi-Uygulama-Kaynak-Kodu.zip');
+                    onToast('Güncel GitHub/Vercel kaynak kod paketi indirildi.');
+                  }
+                } finally {
+                  setActionBusy(false);
+                }
+              }}
+              className="btn-3d px-4 py-2 rounded-xl text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+            >
+              <Download className="w-3.5 h-3.5" aria-hidden="true" />
+              <span>Güncel Kaynak Paketini İndir (.zip)</span>
+            </button>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 items-stretch">
+          <div
+            className="lg:col-span-7 surface-alt rounded-xl p-3.5 border space-y-2"
+            style={{ borderColor: 'var(--border-subtle)' }}
+          >
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs font-bold">GitHub Gönderim Komutları (Terminal / Git Bash)</span>
+              <button
+                type="button"
+                data-testid="github-copy-commands-btn"
+                onClick={async () => {
+                  try {
+                    await navigator.clipboard.writeText(GITHUB_SYNC_COMMANDS);
+                    setGitCmdCopied(true);
+                    onToast('GitHub gönderim komutları panoya kopyalandı.');
+                    setTimeout(() => setGitCmdCopied(false), 2200);
+                  } catch {
+                    setGitCmdCopied(false);
+                  }
+                }}
+                className="btn-3d-secondary px-2.5 py-1 rounded-lg text-[11px] font-bold inline-flex items-center gap-1 cursor-pointer"
+              >
+                {gitCmdCopied ? (
+                  <>
+                    <Check className="w-3 h-3 text-emerald-600" aria-hidden="true" />
+                    <span>Kopyalandı</span>
+                  </>
+                ) : (
+                  <>
+                    <Copy className="w-3 h-3" aria-hidden="true" />
+                    <span>Komutları Kopyala</span>
+                  </>
+                )}
+              </button>
+            </div>
+            <pre
+              className="text-[11px] font-mono-num overflow-x-auto p-2.5 rounded-lg bg-slate-900 text-slate-100 leading-relaxed"
+            >
+              {GITHUB_SYNC_COMMANDS}
+            </pre>
+          </div>
+
+          <div
+            className="lg:col-span-5 surface-alt rounded-xl p-3.5 border text-xs space-y-1.5"
+            style={{ borderColor: 'var(--border-subtle)', color: 'var(--text-secondary)' }}
+          >
+            <div className="font-bold" style={{ color: 'var(--text-primary)' }}>
+              Kurulu Uygulama &amp; Site Eşitleme Adımları
+            </div>
+            <div>1. <strong className="font-semibold">Güncel Kaynak Paketini İndir (.zip)</strong> butonuyla güncel dosyaları indirip GitHub repo klasörünüzün üzerine açın.</div>
+            <div>2. Soldaki Git komutlarıyla güncellemeyi <span className="font-mono-num">main</span> dalına gönderin.</div>
+            <div>3. Vercel otomatik derlediğinde web sitesi ve Android/PC uygulama arayüzü akademi geçişiyle birlikte eşitlenir.</div>
+          </div>
+        </div>
       </section>
 
       {/* Top Auth & Optional Google Drive Overview Card */}

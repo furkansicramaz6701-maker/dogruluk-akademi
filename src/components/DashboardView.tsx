@@ -542,7 +542,7 @@ export function DashboardView({
         </section>
       </div>
 
-      {/* İnteraktif Net Gelişim Grafiği (Kurum Geneli & Türkiye Geneli) */}
+      {/* İnteraktif Kurum Net Gelişim Grafiği (Kurum Panelinde Türkiye Geneli Gösterilmez) */}
       <NetProgressionChart
         gradeProfile={gradeProfile}
         questionCount={questionCount}
@@ -553,6 +553,7 @@ export function DashboardView({
         activeStudentName={analysis.studentName}
         activeStudentNet={analysis.totalNet}
         activeExamTitle={analysis.examTitle}
+        showTurkeyBenchmark={false}
       />
 
       {/* Grade Selector (Filtered cleanly by Kurum Yetki Kapsamı!) */}
@@ -987,11 +988,20 @@ export function DashboardView({
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => onNavigate('sample')}
+              data-testid="open-sample-page-btn"
+              className="btn-3d px-3.5 py-2 rounded-lg text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              <FlaskConical className="w-3.5 h-3.5" aria-hidden="true" />
+              <span>Örnek Sayfayı Aç (Türkiye Geneli &amp; Demo)</span>
+            </button>
             {hasLiveAnalysis && (
               <button
                 type="button"
                 onClick={onResetCleanWorkspace}
-                className="btn-3d-secondary px-3 py-2 rounded-lg text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer"
+                className="btn-3d-secondary px-3 py-2 rounded-lg text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
               >
                 <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" />
                 <span>Örneği Temizle (Sade Görünüm)</span>
@@ -1001,7 +1011,7 @@ export function DashboardView({
               type="button"
               onClick={() => setDemoAreaOpen((v) => !v)}
               aria-expanded={demoAreaOpen}
-              className="btn-3d-secondary px-3.5 py-2 rounded-lg text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer"
+              className="btn-3d-secondary px-3.5 py-2 rounded-lg text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
             >
               <span>{demoAreaOpen ? 'Örnek Alanını Gizle' : 'Örnek Verileri Göster'}</span>
               {demoAreaOpen ? (

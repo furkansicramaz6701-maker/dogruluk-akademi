@@ -91,6 +91,13 @@ export const WORKSPACE_MODULE_ITEMS: SearchModuleItem[] = [
     keywords: ['yedek', 'drive', 'telefon', 'kur', 'pwa', 'uygulama', 'masaüstü', 'whatsapp gonder'],
   },
   {
+    id: 'mod-sample',
+    label: 'Örnek Sayfa (Demo & Türkiye Geneli)',
+    description: 'Kurum panelini kirletmeyen ayrılmış örnek öğrenci ve Türkiye geneli net karşılaştırma sayfası',
+    tab: 'sample',
+    keywords: ['ornek', 'örnek sayfa', 'demo', 'turkiye geneli', 'simulasyon'],
+  },
+  {
     id: 'mod-portal',
     label: 'Kurum Girişi & Şifre Ekranı',
     description: 'Kurum seçimi, 8 haneli kurum kodu ve şifreyle kuruma özel alana geçiş',
