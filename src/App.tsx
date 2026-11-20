@@ -56,8 +56,10 @@ import {
   parseAnswerString,
 } from './utils/examAnalysis';
 import { searchWorkspaceEntities } from './utils/globalSearch';
+import { parseDigitalKarneQuery } from './utils/digitalKarneQr';
 import {
   DEFAULT_INSTITUTIONS,
+  DEFAULT_STUDENTS,
   bulkUpsertInstitutions,
   canInstitutionUseModule,
   deleteInstitutionSafely,
@@ -374,6 +376,79 @@ export default function App() {
     };
     document.addEventListener('mousedown', handleOutside);
     return () => document.removeEventListener('mousedown', handleOutside);
+  }, []);
+
+  const deepLinkAppliedRef = useRef(false);
+  useEffect(() => {
+    if (deepLinkAppliedRef.current) return;
+    deepLinkAppliedRef.current = true;
+    try {
+      const parsed = parseDigitalKarneQuery(window.location.search);
+      if (!parsed.isDigitalKarneDeepLink) return;
+
+      setPortalOpen(false);
+      setTransitionSplash({ visible: false, subtitle: '' });
+      setActiveTab('reports');
+
+      const matchedInst =
+        (parsed.institutionCode8
+          ? institutions.find((i) => i.code8 === parsed.institutionCode8)
+          : undefined) ?? activeInstitution;
+
+      if (matchedInst && matchedInst.id !== activeInstitutionId) {
+        setActiveInstitutionId(matchedInst.id);
+      }
+
+      const matchedStudent = parsed.studentNumber8
+        ? students.find(
+            (s) =>
+              s.studentNumber8 === parsed.studentNumber8 &&
+              (!parsed.institutionCode8 || s.institutionCode8 === parsed.institutionCode8)
+          ) ?? students.find((s) => s.studentNumber8 === parsed.studentNumber8)
+        : undefined;
+
+      if (matchedStudent) {
+        handleSelectStudent(matchedStudent);
+        return;
+      }
+
+      const matchedDemo = parsed.isSampleDemo
+        ? DEFAULT_STUDENTS.find((d) => d.studentNumber8 === parsed.studentNumber8) ??
+          (parsed.studentName
+            ? DEFAULT_STUDENTS.find(
+                (d) => d.fullName.toLowerCase() === parsed.studentName!.toLowerCase()
+              )
+            : undefined)
+        : undefined;
+
+      if (matchedDemo) {
+        handleLoadDemoStudent(matchedDemo);
+        if (matchedInst) {
+          setCover((prev) => ({
+            ...prev,
+            academyName: matchedInst.name,
+            institutionCode8: matchedInst.code8,
+          }));
+        }
+        return;
+      }
+
+      if (parsed.gradeId) {
+        syncGradeForStudent(parsed.gradeId);
+      }
+      if (parsed.studentName) setStudentName(parsed.studentName);
+      if (parsed.studentNumber8) setStudentNumber(parsed.studentNumber8);
+      if (parsed.classroom) setClassroom(parsed.classroom);
+      if (matchedInst) {
+        setCover((prev) => ({
+          ...prev,
+          academyName: matchedInst.name,
+          institutionCode8: matchedInst.code8,
+        }));
+      }
+    } catch {
+      // Ignore malformed deep-link query parameters
+    }
   }, []);
 
   // Evaluate OMR deterministically from current state
