@@ -202,13 +202,38 @@ export interface StudentRecord {
   lastEvaluatedAt?: string;
 }
 
+export type BookletCode = 'A' | 'B' | 'C' | 'D';
+
+export type CoverColorThemeId =
+  | 'otomatik-abcd'
+  | 'kurum-temasi'
+  | 'lacivert-altin'
+  | 'zumrut-gumus'
+  | 'bordo-kehribar'
+  | 'turkuaz-bakir'
+  | 'indigo-lavanta';
+
+export interface StudentBookletAssignment {
+  index: number;
+  studentName: string;
+  studentNumber8: string;
+  classroom: string;
+  gradeLabel: string;
+  bookletCode: BookletCode;
+  bookletNumber: string;
+  answerKey: string;
+}
+
 export interface CoverConfig {
   academyName: string;
   institutionCode8?: string;
   logoStyleId?: LogoStyleId;
   examTitle: string;
   subtitle: string;
-  bookletCode: 'A' | 'B';
+  gradeLabel?: string;
+  bookletCode: BookletCode;
+  bookletNumber?: string;
+  coverColorThemeId?: CoverColorThemeId;
   signatureName: string;
   signatureTitle: string;
   securityNotice: string;

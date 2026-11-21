@@ -33,6 +33,7 @@ import {
   AcademyThemeId,
   ActiveTab,
   AppPermissionKey,
+  BookletCode,
   CoverConfig,
   DynamicCurriculumOverride,
   EducationCalendarEvent,
@@ -42,12 +43,19 @@ import {
   InstitutionPermissions,
   LogoStyleId,
   OpenEndedPaperAnalysis,
+  OpenEndedQuestion,
   PdfUploadStripOptions,
   PenaltyDivisor,
   SmartRecommendation,
+  StudentBookletAssignment,
   StudentRecord,
   TopicGapMetric,
 } from './types/academy';
+import {
+  buildAnswerKeyString,
+  buildBookletVariantQuestions,
+  defaultStartBookletNumberForGrade,
+} from './utils/bookletDistribution';
 import {
   buildAutoExamQuestions,
   evaluateOmrExam,
@@ -173,6 +181,7 @@ export default function App() {
   const [hasLiveAnalysis, setHasLiveAnalysis] = useState<boolean>(false);
   const [omrInitialMode, setOmrInitialMode] = useState<'omr' | 'open-ended'>('omr');
   const [openEndedAnalysis, setOpenEndedAnalysis] = useState<OpenEndedPaperAnalysis | null>(null);
+  const [customOpenEndedQuestions, setCustomOpenEndedQuestions] = useState<OpenEndedQuestion[] | null>(null);
   const [mebOverride, setMebOverride] = useState<DynamicCurriculumOverride | null>(null);
 
   const [activeLogoId, setActiveLogoId] = useState<LogoStyleId>(() => {
@@ -215,9 +224,11 @@ export default function App() {
   const activeLogoPreset = useMemo(() => getLogoPreset(activeLogoId), [activeLogoId]);
   const gradeProfile = useMemo(() => getGradeProfile(gradeId), [gradeId]);
 
-  const [questions, setQuestions] = useState<ExamQuestion[]>(() =>
+  const [baseExamQuestions, setBaseExamQuestions] = useState<ExamQuestion[]>(() =>
     buildAutoExamQuestions('5', 'dengeli')
   );
+  const [questions, setQuestions] = useState<ExamQuestion[]>(baseExamQuestions);
+  const [batchAssignments, setBatchAssignments] = useState<StudentBookletAssignment[]>([]);
 
   const [studentAnswersRaw, setStudentAnswersRaw] = useState<string>('');
   const [answerKeyRaw, setAnswerKeyRaw] = useState<string>(() =>
@@ -237,7 +248,10 @@ export default function App() {
     logoStyleId: activeLogoId,
     examTitle: '5. Sınıf Kurumsal Deneme Sınavı',
     subtitle: buildGradeAppropriateSubtitle(getGradeProfile('5')),
+    gradeLabel: getGradeProfile('5').shortLabel,
     bookletCode: 'A',
+    bookletNumber: '050001',
+    coverColorThemeId: 'otomatik-abcd',
     signatureName: 'Furkan',
     signatureTitle: 'Kurucu & Eğitim Koordinatörü',
     securityNotice:
@@ -525,22 +539,29 @@ export default function App() {
       return;
     }
     const nextQuestions = buildAutoExamQuestions(targetGradeId, 'dengeli');
+    const variantQuestions = buildBookletVariantQuestions(nextQuestions, cover.bookletCode);
+    const nextStartNum = String(defaultStartBookletNumberForGrade(targetGradeId)).padStart(6, '0');
     setGradeId(targetGradeId);
     setMebOverride(null);
-    setQuestions(nextQuestions);
+    setCustomOpenEndedQuestions(null);
+    setBatchAssignments([]);
+    setBaseExamQuestions(nextQuestions);
+    setQuestions(variantQuestions);
     setPenaltyDivisor(nextProfile.penaltyDivisor);
     if (shouldResetExam) {
       setStudentAnswersRaw('');
       setHasLiveAnalysis(false);
     }
-    setAnswerKeyRaw(nextQuestions.map((q) => q.correctOption).join(''));
+    setAnswerKeyRaw(buildAnswerKeyString(variantQuestions));
     setAiCoachSummary(undefined);
     setCover((prev) => ({
       ...prev,
       examTitle: nextProfile.examName,
       subtitle: buildGradeAppropriateSubtitle(nextProfile),
+      gradeLabel: nextProfile.shortLabel,
+      bookletNumber: nextStartNum,
       durationMinutes: nextProfile.durationMinutes,
-      questionCount: nextQuestions.length,
+      questionCount: variantQuestions.length,
     }));
   };
 
@@ -569,6 +590,7 @@ export default function App() {
     setStudentAnswersRaw('');
     setHasLiveAnalysis(false);
     setOpenEndedAnalysis(null);
+    setCustomOpenEndedQuestions(null);
     setAiCoachSummary(undefined);
     setClassroom(defaultClassroomForGrade(gradeId));
     ensureGradeAllowedForInst(normalized);
@@ -808,6 +830,8 @@ export default function App() {
     const nextSample = generateSampleOmrPair(nextQuestions, 0.76);
     setGradeId(demo.gradeId);
     setMebOverride(null);
+    setBatchAssignments([]);
+    setBaseExamQuestions(nextQuestions);
     setQuestions(nextQuestions);
     setPenaltyDivisor(nextProfile.penaltyDivisor);
     setStudentAnswersRaw(nextSample.studentString);
@@ -817,6 +841,9 @@ export default function App() {
       ...prev,
       examTitle: nextProfile.examName,
       subtitle: buildGradeAppropriateSubtitle(nextProfile),
+      gradeLabel: nextProfile.shortLabel,
+      bookletCode: 'A',
+      bookletNumber: String(defaultStartBookletNumberForGrade(demo.gradeId)).padStart(6, '0'),
       durationMinutes: nextProfile.durationMinutes,
       questionCount: nextQuestions.length,
       isSampleDemo: true,
@@ -840,18 +867,47 @@ export default function App() {
     showToast('Sade çalışma alanına dönüldü; örnek simülasyon verisi temizlendi.');
   };
 
+  const handleSelectBookletVariant = (
+    nextCode: BookletCode,
+    opts?: {
+      bookletNumber?: string;
+      studentName?: string;
+      studentNumber?: string;
+      classroom?: string;
+      autoSyncAnswerKey?: boolean;
+    }
+  ) => {
+    const variantQuestions = buildBookletVariantQuestions(baseExamQuestions, nextCode);
+    setQuestions(variantQuestions);
+    if (opts?.autoSyncAnswerKey !== false) {
+      setAnswerKeyRaw(buildAnswerKeyString(variantQuestions));
+    }
+    if (opts?.studentName !== undefined) setStudentName(opts.studentName);
+    if (opts?.studentNumber !== undefined) setStudentNumber(opts.studentNumber);
+    if (opts?.classroom !== undefined) setClassroom(opts.classroom);
+    setCover((prev) => ({
+      ...prev,
+      bookletCode: nextCode,
+      bookletNumber: opts?.bookletNumber ?? prev.bookletNumber,
+      gradeLabel: prev.gradeLabel || gradeProfile.shortLabel,
+      questionCount: variantQuestions.length,
+    }));
+  };
+
   const handleApplyMebCurriculum = (
     override: DynamicCurriculumOverride,
     generatedQuestions: ExamQuestion[]
   ) => {
     setMebOverride(override);
-    setQuestions(generatedQuestions);
-    setAnswerKeyRaw(generatedQuestions.map((q) => q.correctOption).join(''));
+    setBaseExamQuestions(generatedQuestions);
+    const variant = buildBookletVariantQuestions(generatedQuestions, cover.bookletCode);
+    setQuestions(variant);
+    setAnswerKeyRaw(buildAnswerKeyString(variant));
     setStudentAnswersRaw('');
     setHasLiveAnalysis(false);
     setCover((prev) => ({
       ...prev,
-      questionCount: generatedQuestions.length,
+      questionCount: variant.length,
     }));
     showToast(`MEB PDF "${override.sourceName}" aktif müfredat olarak uygulandı.`);
   };
@@ -859,13 +915,15 @@ export default function App() {
   const handleClearMebCurriculum = () => {
     setMebOverride(null);
     const nextQuestions = buildAutoExamQuestions(gradeId, 'dengeli');
-    setQuestions(nextQuestions);
-    setAnswerKeyRaw(nextQuestions.map((q) => q.correctOption).join(''));
+    setBaseExamQuestions(nextQuestions);
+    const variant = buildBookletVariantQuestions(nextQuestions, cover.bookletCode);
+    setQuestions(variant);
+    setAnswerKeyRaw(buildAnswerKeyString(variant));
     setStudentAnswersRaw('');
     setHasLiveAnalysis(false);
     setCover((prev) => ({
       ...prev,
-      questionCount: nextQuestions.length,
+      questionCount: variant.length,
     }));
     showToast(`${gradeProfile.shortLabel} standart müfredatına dönüldü.`);
   };
@@ -873,24 +931,30 @@ export default function App() {
   const handleSelectGrade = (nextGradeId: GradeLevelId) => {
     setGradeId(nextGradeId);
     setMebOverride(null);
+    setBatchAssignments([]);
     const nextProfile = getGradeProfile(nextGradeId);
     const nextQuestions = buildAutoExamQuestions(nextGradeId, 'dengeli');
-    setQuestions(nextQuestions);
+    const variant = buildBookletVariantQuestions(nextQuestions, cover.bookletCode);
+    const nextStartNum = String(defaultStartBookletNumberForGrade(nextGradeId)).padStart(6, '0');
+    setBaseExamQuestions(nextQuestions);
+    setQuestions(variant);
     setPenaltyDivisor(nextProfile.penaltyDivisor);
     setClassroom(defaultClassroomForGrade(nextGradeId));
     setStudentAnswersRaw('');
     setHasLiveAnalysis(false);
-    setAnswerKeyRaw(nextQuestions.map((q) => q.correctOption).join(''));
+    setAnswerKeyRaw(buildAnswerKeyString(variant));
     setAiCoachSummary(undefined);
     setCover((prev) => ({
       ...prev,
       examTitle: nextProfile.examName,
       subtitle: buildGradeAppropriateSubtitle(nextProfile),
+      gradeLabel: nextProfile.shortLabel,
+      bookletNumber: nextStartNum,
       durationMinutes: nextProfile.durationMinutes,
-      questionCount: nextQuestions.length,
+      questionCount: variant.length,
       penaltyRuleLabel: formatPenaltyRuleLabel(nextProfile.penaltyDivisor, true),
     }));
-    showToast(`${nextProfile.label} profili (${nextQuestions.length} soru) yüklendi.`);
+    showToast(`${nextProfile.label} profili (${variant.length} soru) yüklendi.`);
   };
 
   const handleChangePenaltyDivisor = (nextDivisor: PenaltyDivisor) => {
@@ -977,7 +1041,7 @@ export default function App() {
       const blob = new Blob([bytes.buffer as ArrayBuffer], { type: 'application/pdf' });
       triggerDownload(
         blob,
-        `Dogruluk-Akademi-${cover.bookletCode}-Kitapcik-Furkan-Imzali.pdf`
+        `Dogruluk-Akademi-${cover.bookletCode}-Kitapcik-${cover.bookletNumber || '050001'}.pdf`
       );
       showToast(
         uploadedPdfBytes
@@ -1080,15 +1144,17 @@ export default function App() {
   const handleExecuteRecommendation = (rec: SmartRecommendation) => {
     if (rec.actionType === 'apply-balanced-exam') {
       const next = buildAutoExamQuestions(gradeId, 'dengeli', questions.length);
-      const pair = generateSampleOmrPair(next, 0.78);
-      setQuestions(next);
-      setAnswerKeyRaw(pair.keyString);
-      showToast(`${gradeProfile.shortLabel} için ÖSYM standardında dengeli ${next.length} soruluk deneme hazırlandı.`);
+      setBaseExamQuestions(next);
+      const variant = buildBookletVariantQuestions(next, cover.bookletCode);
+      setQuestions(variant);
+      setAnswerKeyRaw(buildAnswerKeyString(variant));
+      showToast(`${gradeProfile.shortLabel} için ÖSYM standardında dengeli ${variant.length} soruluk deneme hazırlandı.`);
     } else if (rec.actionType === 'apply-hard-exam') {
       const next = buildAutoExamQuestions(gradeId, 'zor', questions.length);
-      const pair = generateSampleOmrPair(next, 0.72);
-      setQuestions(next);
-      setAnswerKeyRaw(pair.keyString);
+      setBaseExamQuestions(next);
+      const variant = buildBookletVariantQuestions(next, cover.bookletCode);
+      setQuestions(variant);
+      setAnswerKeyRaw(buildAnswerKeyString(variant));
       showToast(`${gradeProfile.shortLabel} için derece seçici zorlukta deneme oluşturuldu.`);
     } else if (rec.actionType === 'add-calendar-remedial') {
       const gap =
@@ -2013,8 +2079,13 @@ export default function App() {
               cover={cover}
               institutionCode8={activeInstitution.code8}
               parentPhone={activeStudentParentPhone}
+              batchAssignments={batchAssignments}
+              onSelectBookletVariant={handleSelectBookletVariant}
+              onUpdateCover={(patch) => setCover((prev) => ({ ...prev, ...patch }))}
               initialMode={omrInitialMode}
               openEndedAnalysis={openEndedAnalysis}
+              externalOpenEndedQuestions={customOpenEndedQuestions}
+              onSyncOpenEndedQuestions={(next) => setCustomOpenEndedQuestions(next)}
               onSaveOpenEndedAnalysis={(res) => {
                 setOpenEndedAnalysis(res);
                 showToast(
@@ -2067,7 +2138,12 @@ export default function App() {
               penaltyDivisor={penaltyDivisor}
               onChangePenaltyDivisor={handleChangePenaltyDivisor}
               questions={questions}
+              baseQuestions={baseExamQuestions}
               cover={cover}
+              students={students}
+              batchAssignments={batchAssignments}
+              onSetBatchAssignments={setBatchAssignments}
+              onSelectBookletVariant={handleSelectBookletVariant}
               uploadedPdfName={uploadedPdfName}
               uploadedPdfPageCount={uploadedPdfPageCount}
               pdfStripOptions={pdfStripOptions}
@@ -2078,9 +2154,10 @@ export default function App() {
               onApplyMebCurriculum={handleApplyMebCurriculum}
               onClearMebCurriculum={handleClearMebCurriculum}
               onUpdateQuestions={(next) => {
-                setQuestions(next);
-                const pair = generateSampleOmrPair(next, 0.76);
-                setAnswerKeyRaw(pair.keyString);
+                setBaseExamQuestions(next);
+                const variant = buildBookletVariantQuestions(next, cover.bookletCode);
+                setQuestions(variant);
+                setAnswerKeyRaw(buildAnswerKeyString(variant));
               }}
               onUpdateCover={(patch) => setCover((prev) => ({ ...prev, ...patch }))}
               onUploadExamPdf={(bytes, name, pageCount) => {
@@ -2099,6 +2176,10 @@ export default function App() {
               onDownloadSourceZip={handleDownloadSourceZip}
               onOpenEditor={() => handleTabNavigation('editor')}
               onOpenOpenEnded={() => handleTabNavigation('omr', 'open-ended')}
+              onApplyOpenEndedQuestions={(generated) => {
+                setCustomOpenEndedQuestions(generated);
+                showToast(`${generated.length} soruluk açık uçlu yazılı kağıdı Açık Uçlu paneline aktarıldı.`);
+              }}
             />
           )}
 
@@ -2110,9 +2191,10 @@ export default function App() {
               questions={questions}
               cover={cover}
               onUpdateQuestions={(next) => {
+                setBaseExamQuestions(next);
                 setQuestions(next);
                 setCover((prev) => ({ ...prev, questionCount: next.length }));
-                setAnswerKeyRaw(next.map((q) => q.correctOption).join(''));
+                setAnswerKeyRaw(buildAnswerKeyString(next));
               }}
               onDownloadBookletPdf={handleDownloadBookletPdf}
             />

@@ -280,7 +280,7 @@ export const DEFAULT_HISTORICAL_TREND: HistoricalExamPoint[] = [
 
 export const DEFAULT_COVER_REMINDERS: string[] = [
   'Kodlama işlemini yalnızca yumuşak uçlu siyah kurşun kalemle yapınız.',
-  'Kitapçık türünü (A / B) optik cevap kağıdına işaretlemeyi unutmayınız.',
+  'Kitapçık türünü (A / B / C / D) ve kitapçık numarasını optik cevap kağıdına işaretlemeyi unutmayınız.',
   'Sınav esnasında her soruda doğru şıkkı bulduktan sonra kaydırma kontrolü yapınız.',
   'Bu deneme Doğruluk Akademi için özel hazırlanmıştır; izinsiz çoğaltılamaz ve dağıtılamaz.',
 ];

@@ -10,13 +10,18 @@ import {
   FileText,
 } from 'lucide-react';
 import {
+  BookletCode,
   CoverConfig,
   ExamAnalysisResult,
   ExamQuestion,
   GradeProfile,
   OpenEndedPaperAnalysis,
+  OpenEndedQuestion,
   PenaltyDivisor,
+  StudentBookletAssignment,
 } from '../types/academy';
+import { getLogoPreset } from '../data/logos';
+import { BOOKLET_CODES, resolveCoverColorPalette } from '../utils/bookletDistribution';
 import { generateSampleOmrPair, parseAnswerString } from '../utils/examAnalysis';
 import { OpenEndedPaperPanel } from './OpenEndedPaperPanel';
 import { OpticalFormPreview } from './OpticalFormPreview';
@@ -34,8 +39,22 @@ interface OmrScannerViewProps {
   cover: CoverConfig;
   institutionCode8: string;
   parentPhone?: string;
+  batchAssignments?: StudentBookletAssignment[];
+  onSelectBookletVariant?: (
+    code: BookletCode,
+    opts?: {
+      bookletNumber?: string;
+      studentName?: string;
+      studentNumber?: string;
+      classroom?: string;
+      autoSyncAnswerKey?: boolean;
+    }
+  ) => void;
+  onUpdateCover?: (patch: Partial<CoverConfig>) => void;
   initialMode?: 'omr' | 'open-ended';
   openEndedAnalysis?: OpenEndedPaperAnalysis | null;
+  externalOpenEndedQuestions?: OpenEndedQuestion[] | null;
+  onSyncOpenEndedQuestions?: (next: OpenEndedQuestion[]) => void;
   onSaveOpenEndedAnalysis?: (result: OpenEndedPaperAnalysis) => void;
   onUpdateOmrState: (patch: {
     studentAnswersRaw?: string;
@@ -74,8 +93,13 @@ export function OmrScannerView({
   cover,
   institutionCode8,
   parentPhone,
+  batchAssignments = [],
+  onSelectBookletVariant,
+  onUpdateCover,
   initialMode = 'omr',
   openEndedAnalysis = null,
+  externalOpenEndedQuestions = null,
+  onSyncOpenEndedQuestions,
   onSaveOpenEndedAnalysis,
   onUpdateOmrState,
   onEvaluateNow,
@@ -239,6 +263,8 @@ export function OmrScannerView({
           classroom={classroom}
           parentPhone={parentPhone}
           latestAnalysis={openEndedAnalysis}
+          externalQuestions={externalOpenEndedQuestions}
+          onSyncQuestions={onSyncOpenEndedQuestions}
           onSavePaperAnalysis={(res) => onSaveOpenEndedAnalysis?.(res)}
           onGoToReports={onGoToReports}
         />
@@ -270,6 +296,110 @@ export function OmrScannerView({
             >
               Örnek Gelişim Odaklı Optik (%58)
             </button>
+          </div>
+        </div>
+
+        {/* A-B-C-D Kitapçık & Kitapçık No Otomatik Optik Kodlama Paneli */}
+        <div
+          data-testid="omr-booklet-coding-bar"
+          className="surface-alt rounded-xl p-3.5 mb-5 flex flex-wrap items-center justify-between gap-3"
+        >
+          <div className="space-y-1">
+            <div className="text-xs font-extrabold">
+              Kitapçık Türü (A · B · C · D) &amp; Kitapçık No Otomatik Optik Kodlama
+            </div>
+            <p className="text-[11px]" style={{ color: 'var(--text-secondary)' }}>
+              A, B, C veya D seçtiğinizde optik formdaki kitapçık kutucuğu, 6 haneli Kitapçık No ve Deneme Cevap Anahtarı otomatik kodlanır.
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="flex items-center gap-1.5" role="group" aria-label="Optik kitapçık türü seçimi">
+              {BOOKLET_CODES.map((code) => {
+                const pal = resolveCoverColorPalette(
+                  { bookletCode: code, coverColorThemeId: 'otomatik-abcd' },
+                  getLogoPreset(cover.logoStyleId)
+                );
+                const active = cover.bookletCode === code;
+                return (
+                  <button
+                    key={code}
+                    type="button"
+                    data-testid={`omr-booklet-btn-${code}`}
+                    onClick={() => {
+                      if (onSelectBookletVariant) {
+                        onSelectBookletVariant(code, { autoSyncAnswerKey: true });
+                      } else {
+                        onUpdateCover?.({ bookletCode: code });
+                      }
+                      setErrorMsg(null);
+                      setStatusMessage(
+                        `${code} Kitapçığı seçildi: Optik formdaki '${code}' balonu ve ${questions.length} soruluk cevap anahtarı otomatik kodlandı.`
+                      );
+                    }}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-extrabold cursor-pointer transition-all border ${
+                      active ? 'text-white shadow-md' : 'surface-card'
+                    }`}
+                    style={
+                      active
+                        ? { backgroundColor: pal.primaryColor, borderColor: pal.goldColor }
+                        : { borderColor: pal.primaryColor, color: pal.primaryColor }
+                    }
+                  >
+                    {code} Kitapçığı
+                  </button>
+                );
+              })}
+            </div>
+
+            <label className="flex items-center gap-1.5 text-xs font-semibold">
+              <span style={{ color: 'var(--text-secondary)' }}>Kitapçık No:</span>
+              <input
+                type="text"
+                maxLength={6}
+                data-testid="omr-booklet-number-input"
+                value={cover.bookletNumber ?? '050001'}
+                onChange={(e) =>
+                  onUpdateCover?.({
+                    bookletNumber: e.target.value.replace(/\D/g, '').slice(0, 6),
+                  })
+                }
+                className="w-24 rounded-lg px-2.5 py-1.5 text-xs font-mono-num font-bold surface-card"
+              />
+            </label>
+
+            {batchAssignments.length > 0 && (
+              <select
+                data-testid="omr-batch-slot-select"
+                value=""
+                onChange={(e) => {
+                  const idx = Number(e.target.value);
+                  const found = batchAssignments.find((a) => a.index === idx);
+                  if (!found) return;
+                  if (onSelectBookletVariant) {
+                    onSelectBookletVariant(found.bookletCode, {
+                      bookletNumber: found.bookletNumber,
+                      studentName: found.studentName,
+                      studentNumber: found.studentNumber8,
+                      classroom: found.classroom,
+                      autoSyncAnswerKey: true,
+                    });
+                  }
+                  setStatusMessage(
+                    `${found.studentName} · ${found.bookletCode} Kitapçığı (No: ${found.bookletNumber}) optiğe otomatik kodlandı.`
+                  );
+                }}
+                aria-label="Dağıtım listesinden öğrenci kitapçığı yükle"
+                className="rounded-lg px-2.5 py-1.5 text-xs font-semibold surface-card max-w-[220px]"
+              >
+                <option value="">Listeden Öğrenci No Seç ({batchAssignments.length})</option>
+                {batchAssignments.map((a) => (
+                  <option key={a.index} value={a.index}>
+                    #{a.index} · {a.studentName} · {a.bookletCode} ({a.bookletNumber})
+                  </option>
+                ))}
+              </select>
+            )}
           </div>
         </div>
 

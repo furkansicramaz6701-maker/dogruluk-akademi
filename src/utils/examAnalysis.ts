@@ -119,7 +119,8 @@ export function buildAutoExamQuestions(
       if (progress < ratios.Kolay) difficulty = 'Kolay';
       else if (progress >= ratios.Kolay + ratios.Orta) difficulty = 'Zor';
 
-      const correctIndex = (qNumber * 3 + subjIdx + i) % optionKeys.length;
+      const answerSeed = qNumber * 5 + subjIdx * 11 + i * i + Math.floor(qNumber / 3);
+      const correctIndex = answerSeed % optionKeys.length;
       const correctOption = optionKeys[correctIndex];
       const tpl = generateRealisticQuestionContent(
         qNumber,

@@ -17,6 +17,11 @@ import {
   StudentRecord,
   WeeklyComparisonRow,
 } from '../types/academy';
+import {
+  extractGradeLabelFromCover,
+  normalizeBookletNumber,
+  resolveCoverColorPalette,
+} from './bookletDistribution';
 import { computeKeptUploadedPdfIndices } from './examPdfParser';
 import { buildWeeklyComparisonWorkbookBlob, defaultClassroomForGrade } from './excelExport';
 import {
@@ -292,7 +297,16 @@ function drawTop3MedalCanvas(
 }
 
 export async function renderCoverCanvasPng(cover: CoverConfig): Promise<Uint8Array> {
-  const preset = getLogoPreset(cover.logoStyleId);
+  const basePreset = getLogoPreset(cover.logoStyleId);
+  const palette = resolveCoverColorPalette(cover, basePreset);
+  const preset: LogoPreset = {
+    ...basePreset,
+    primaryColor: palette.primaryColor,
+    secondaryColor: palette.secondaryColor,
+    goldColor: palette.goldColor,
+  };
+  const gradeLabel = extractGradeLabelFromCover(cover);
+  const bookletNum = cover.bookletNumber ? normalizeBookletNumber(cover.bookletNumber) : '';
   const canvas = document.createElement('canvas');
   canvas.width = A4_W;
   canvas.height = A4_H;
@@ -304,7 +318,7 @@ export async function renderCoverCanvasPng(cover: CoverConfig): Promise<Uint8Arr
 
   // Subtle Colorful 3D Geometric Corner Ribbons
   ctx.save();
-  ctx.globalAlpha = 0.08;
+  ctx.globalAlpha = 0.09;
   ctx.fillStyle = preset.primaryColor;
   ctx.beginPath();
   ctx.moveTo(0, 270);
@@ -349,29 +363,38 @@ export async function renderCoverCanvasPng(cover: CoverConfig): Promise<Uint8Arr
   // Brand & 8-digit Kurum Kodu
   ctx.textAlign = 'left';
   ctx.fillStyle = '#ffffff';
-  ctx.font = '800 42px "Plus Jakarta Sans", sans-serif';
-  ctx.fillText(cover.academyName.toUpperCase(), 252, 134);
+  ctx.font = '800 40px "Plus Jakarta Sans", sans-serif';
+  ctx.fillText(cover.academyName.toUpperCase(), 252, 128);
   ctx.fillStyle = '#dbeafe';
-  ctx.font = '600 21px "DM Sans", sans-serif';
-  ctx.fillText(preset.headerSubtitle.toUpperCase(), 252, 176);
+  ctx.font = '600 20px "DM Sans", sans-serif';
+  ctx.fillText(`${gradeLabel.toUpperCase()} · ${preset.headerSubtitle.toUpperCase()}`, 252, 168);
   ctx.fillStyle = '#fde68a';
-  ctx.font = '700 20px "JetBrains Mono", monospace';
-  ctx.fillText(`KURUM KODU: ${cover.institutionCode8 || '48291045'}`, 252, 214);
+  ctx.font = '700 19px "JetBrains Mono", monospace';
+  ctx.fillText(
+    `KURUM KODU: ${cover.institutionCode8 || '48291045'}${bookletNum ? ` · KİTAPÇIK NO: ${bookletNum}` : ''}`,
+    252,
+    208
+  );
 
-  // 3D Booklet Code Card (A or B)
+  // 3D Booklet Code Card (A, B, C, or D)
   ctx.fillStyle = 'rgba(2,6,23,0.35)';
-  ctx.fillRect(A4_W - 208, 102, 114, 134);
+  ctx.fillRect(A4_W - 216, 94, 126, 152);
   ctx.fillStyle = '#ffffff';
-  ctx.fillRect(A4_W - 214, 94, 114, 134);
+  ctx.fillRect(A4_W - 222, 86, 126, 152);
   ctx.strokeStyle = preset.goldColor;
   ctx.lineWidth = 4;
-  ctx.strokeRect(A4_W - 214, 94, 114, 134);
+  ctx.strokeRect(A4_W - 222, 86, 126, 152);
   ctx.fillStyle = preset.secondaryColor;
   ctx.textAlign = 'center';
-  ctx.font = '700 18px "DM Sans", sans-serif';
-  ctx.fillText('KİTAPÇIK', A4_W - 157, 126);
-  ctx.font = '800 72px "Plus Jakarta Sans", sans-serif';
-  ctx.fillText(cover.bookletCode, A4_W - 157, 186);
+  ctx.font = '700 17px "DM Sans", sans-serif';
+  ctx.fillText('KİTAPÇIK', A4_W - 159, 114);
+  ctx.font = '800 68px "Plus Jakarta Sans", sans-serif';
+  ctx.fillText(cover.bookletCode, A4_W - 159, 176);
+  if (bookletNum) {
+    ctx.fillStyle = preset.primaryColor;
+    ctx.font = '700 15px "JetBrains Mono", monospace';
+    ctx.fillText(`NO:${bookletNum}`, A4_W - 159, 218);
+  }
 
   // Main Title Section
   ctx.textAlign = 'center';
@@ -388,8 +411,8 @@ export async function renderCoverCanvasPng(cover: CoverConfig): Promise<Uint8Arr
   }
 
   ctx.fillStyle = '#475569';
-  ctx.font = '600 26px "DM Sans", sans-serif';
-  ctx.fillText(cover.subtitle, A4_W / 2, y + 18);
+  ctx.font = '600 25px "DM Sans", sans-serif';
+  ctx.fillText(`${gradeLabel} · ${cover.subtitle}`, A4_W / 2, y + 18);
 
   // Colorful 3D Exam Spec Strip
   const boxY = y + 82;
@@ -403,9 +426,9 @@ export async function renderCoverCanvasPng(cover: CoverConfig): Promise<Uint8Arr
 
   const showSampleStamp = Boolean(cover.isSampleDemo);
   const cols = [
-    { label: 'TOPLAM SORU', val: `${cover.questionCount} Soru` },
+    { label: 'TOPLAM SORU / SINIF', val: `${cover.questionCount} Soru · ${gradeLabel}` },
     { label: 'SINAV SÜRESİ', val: `${cover.durationMinutes} Dakika` },
-    { label: 'BELGE DURUMU', val: showSampleStamp ? 'ÖRNEKTİR' : 'RESMİ YAYIN' },
+    { label: 'KİTAPÇIK / DURUM', val: `${cover.bookletCode}${bookletNum ? ` #${bookletNum}` : ''} · ${showSampleStamp ? 'ÖRNEK' : 'RESMİ'}` },
   ];
   cols.forEach((col, i) => {
     const cx = 100 + ((A4_W - 200) / 3) * (i + 0.5);
@@ -418,10 +441,10 @@ export async function renderCoverCanvasPng(cover: CoverConfig): Promise<Uint8Arr
       ctx.stroke();
     }
     ctx.fillStyle = '#dbeafe';
-    ctx.font = '700 18px "DM Sans", sans-serif';
+    ctx.font = '700 17px "DM Sans", sans-serif';
     ctx.fillText(col.label, cx, boxY + 48);
     ctx.fillStyle = i === 2 ? '#fde047' : '#ffffff';
-    ctx.font = '800 32px "Plus Jakarta Sans", sans-serif';
+    ctx.font = '800 24px "Plus Jakarta Sans", sans-serif';
     ctx.fillText(col.val, cx, boxY + 98);
   });
 
@@ -436,7 +459,11 @@ export async function renderCoverCanvasPng(cover: CoverConfig): Promise<Uint8Arr
   ctx.fillStyle = '#1e293b';
   ctx.font = '600 22px "DM Sans", sans-serif';
   ctx.fillText('Öğrenci Adı Soyadı : ______________________________________________', 136, stuY + 54);
-  ctx.fillText('Kurum / Öğrenci No : _____________________   Sınıf / Şube : __________', 136, stuY + 108);
+  ctx.fillText(
+    `Öğrenci No : ____________________  Kitapçık : ${cover.bookletCode}${bookletNum ? ` (No: ${bookletNum})` : ''}  Sınıf : ${gradeLabel}`,
+    136,
+    stuY + 108
+  );
 
   // Reminders Box
   const remY = stuY + 184;
@@ -713,7 +740,16 @@ async function drawQuestionVisualOnCanvas(
 export async function renderBrandedBackCoverCanvasPng(
   cover: CoverConfig
 ): Promise<Uint8Array> {
-  const preset = getLogoPreset(cover.logoStyleId);
+  const basePreset = getLogoPreset(cover.logoStyleId);
+  const palette = resolveCoverColorPalette(cover, basePreset);
+  const preset: LogoPreset = {
+    ...basePreset,
+    primaryColor: palette.primaryColor,
+    secondaryColor: palette.secondaryColor,
+    goldColor: palette.goldColor,
+  };
+  const gradeLabel = extractGradeLabelFromCover(cover);
+  const bookletNum = cover.bookletNumber ? normalizeBookletNumber(cover.bookletNumber) : '';
   const canvas = document.createElement('canvas');
   canvas.width = A4_W;
   canvas.height = A4_H;
@@ -723,6 +759,19 @@ export async function renderBrandedBackCoverCanvasPng(
 
   ctx.fillStyle = '#f8fafc';
   ctx.fillRect(0, 0, A4_W, A4_H);
+
+  // Graphical corner accents matching cover color theme
+  ctx.save();
+  ctx.globalAlpha = 0.08;
+  ctx.fillStyle = preset.primaryColor;
+  ctx.beginPath();
+  ctx.moveTo(0, A4_H - 420);
+  ctx.lineTo(A4_W, A4_H - 640);
+  ctx.lineTo(A4_W, A4_H - 220);
+  ctx.lineTo(0, A4_H - 80);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
 
   // Outer institutional frame
   ctx.strokeStyle = preset.secondaryColor;
@@ -738,90 +787,123 @@ export async function renderBrandedBackCoverCanvasPng(
   topGrad.addColorStop(1, preset.primaryColor);
   ctx.fillStyle = topGrad;
   ctx.fillRect(56, 56, A4_W - 112, 160);
+  ctx.fillStyle = preset.goldColor;
+  ctx.fillRect(56, 216, A4_W - 112, 6);
 
   drawAcademyCrestCanvas(ctx, 148, 136, 48, preset);
   ctx.textAlign = 'left';
   ctx.fillStyle = '#ffffff';
-  ctx.font = '800 34px "Plus Jakarta Sans", sans-serif';
-  ctx.fillText(`${cover.academyName.toUpperCase()} — ARKA KAPAK`, 220, 124);
+  ctx.font = '800 32px "Plus Jakarta Sans", sans-serif';
+  ctx.fillText(`${cover.academyName.toUpperCase()} — SON SAYFA & İMZA ONAYI`, 220, 120);
   ctx.fillStyle = '#fde68a';
   ctx.font = '700 18px "JetBrains Mono", monospace';
-  ctx.fillText(`KURUM KODU: ${instCode} · KİTAPÇIK ${cover.bookletCode}`, 220, 162);
+  ctx.fillText(
+    `SINIF: ${gradeLabel.toUpperCase()} · KİTAPÇIK ${cover.bookletCode}${bookletNum ? ` (NO: ${bookletNum})` : ''} · KURUM KODU: ${instCode}`,
+    220,
+    162
+  );
 
-  // Center Ownership Declaration Card (Belongs strictly to this institution)
+  // Center Ownership & Exam Identity Card
   ctx.fillStyle = '#ffffff';
-  ctx.fillRect(110, 320, A4_W - 220, 560);
+  ctx.fillRect(110, 290, A4_W - 220, 560);
   ctx.strokeStyle = preset.primaryColor;
   ctx.lineWidth = 3;
-  ctx.strokeRect(110, 320, A4_W - 220, 560);
+  ctx.strokeRect(110, 290, A4_W - 220, 560);
 
-  drawAcademyCrestCanvas(ctx, A4_W / 2, 445, 68, preset);
+  drawAcademyCrestCanvas(ctx, A4_W / 2, 410, 68, preset);
 
   ctx.textAlign = 'center';
   ctx.fillStyle = preset.secondaryColor;
-  ctx.font = '800 40px "Plus Jakarta Sans", sans-serif';
-  ctx.fillText(cover.academyName.toUpperCase(), A4_W / 2, 575);
+  ctx.font = '800 38px "Plus Jakarta Sans", sans-serif';
+  ctx.fillText(cover.academyName.toUpperCase(), A4_W / 2, 535);
 
   ctx.fillStyle = '#334155';
   ctx.font = '700 24px "DM Sans", sans-serif';
-  ctx.fillText(cover.examTitle, A4_W / 2, 625);
+  ctx.fillText(`${gradeLabel} · ${cover.examTitle}`, A4_W / 2, 582);
+
+  ctx.fillStyle = preset.primaryColor;
+  ctx.font = '800 22px "JetBrains Mono", monospace';
+  ctx.fillText(
+    `${cover.bookletCode} KİTAPÇIĞI${bookletNum ? ` · KİTAPÇIK NO: ${bookletNum}` : ''}`,
+    A4_W / 2,
+    626
+  );
 
   ctx.fillStyle = '#0f172a';
-  ctx.font = '600 20px "DM Sans", sans-serif';
+  ctx.font = '600 19px "DM Sans", sans-serif';
   const ownershipLines = wrapTextLines(
     ctx,
     `Bu deneme sınavı kitapçığı yalnızca ${cover.academyName} (Kurum Kodu: ${instCode}) adına hazırlanmış ve özelleştirilmiştir. Başka kurum, yayınevi veya üçüncü kişiler tarafından izinsiz çoğaltılamaz, dağıtılamaz.`,
     A4_W - 320
   );
-  let oy = 690;
+  let oy = 682;
   for (const line of ownershipLines) {
     ctx.fillText(line, A4_W / 2, oy);
-    oy += 34;
+    oy += 32;
   }
 
   // Self-evaluation / Student Note Box
-  ctx.fillStyle = '#f1f5f9';
-  ctx.fillRect(110, 930, A4_W - 220, 340);
-  ctx.strokeStyle = '#cbd5e1';
+  ctx.fillStyle = palette.softBg;
+  ctx.fillRect(110, 890, A4_W - 220, 320);
+  ctx.strokeStyle = preset.primaryColor;
   ctx.lineWidth = 2;
-  ctx.strokeRect(110, 930, A4_W - 220, 340);
+  ctx.strokeRect(110, 890, A4_W - 220, 320);
   ctx.textAlign = 'left';
   ctx.fillStyle = preset.secondaryColor;
   ctx.font = '800 22px "Plus Jakarta Sans", sans-serif';
-  ctx.fillText('SINAV SONRASI KONTROL & OPTİK TESLİM HATIRLATMASI', 148, 980);
+  ctx.fillText('SINAV SONRASI KONTROL & OPTİK TESLİM HATIRLATMASI', 148, 940);
   ctx.fillStyle = '#334155';
   ctx.font = '500 19px "DM Sans", sans-serif';
   const checks = [
     `1. Optik formunuzdaki 8 haneli Kurum Kodu (${instCode}) ve Öğrenci Numaranızı kontrol ediniz.`,
-    `2. Kitapçık türünü (${cover.bookletCode} Kitapçığı) optik kağıda eksiksiz kodlayınız.`,
+    `2. Kitapçık türünü (${cover.bookletCode} Kitapçığı)${bookletNum ? ` ve Kitapçık Numarasını (${bookletNum})` : ''} optik kağıda eksiksiz kodlayınız.`,
     '3. Cevaplarınızı sınav bitiminde gözetmen öğretmene kitapçık ile birlikte teslim ediniz.',
     '4. Sınav sonuç karneniz ve haftalık gelişim analiziniz veli bilgilendirme sistemiyle paylaşılacaktır.',
   ];
   checks.forEach((c, i) => {
-    ctx.fillText(c, 148, 1038 + i * 52);
+    const lines = wrapTextLines(ctx, c, A4_W - 300);
+    ctx.fillText(lines[0] || c, 148, 996 + i * 52);
   });
 
-  // 3D Furkan Signature + Security Notice
-  draw3DFurkanSignature(ctx, A4_W - 390, 1365, preset.secondaryColor, preset.goldColor);
-  ctx.textAlign = 'center';
-  ctx.fillStyle = '#0f172a';
-  ctx.font = '800 24px "Plus Jakarta Sans", sans-serif';
-  ctx.fillText(`${cover.signatureName} (Onaylı)`, A4_W - 270, 1485);
-  ctx.fillStyle = '#64748b';
-  ctx.font = '600 18px "DM Sans", sans-serif';
-  ctx.fillText(cover.signatureTitle, A4_W - 270, 1515);
+  // Prominent Final Page Signature Box (Kurum Yetkili & Gözetmen / Öğrenci Onay İmzası)
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(110, 1245, A4_W - 220, 330);
+  ctx.strokeStyle = preset.goldColor;
+  ctx.lineWidth = 3;
+  ctx.strokeRect(110, 1245, A4_W - 220, 330);
 
   ctx.textAlign = 'left';
   ctx.fillStyle = '#9f1239';
-  ctx.font = '800 24px "Plus Jakarta Sans", sans-serif';
+  ctx.font = '800 22px "Plus Jakarta Sans", sans-serif';
   ctx.fillText(
-    showSampleStamp ? 'ARKA KAPAK · ÖRNEKTİR · ÇOĞALTILAMAZ' : 'RESMİ KURUM ARKA KAPAĞI · ÇOĞALTILAMAZ',
-    110,
-    1435
+    showSampleStamp ? 'SON SAYFA · İMZA & ONAY · ÖRNEKTİR' : 'RESMİ KURUM SON SAYFASI · İMZA & ONAY',
+    144,
+    1296
   );
+  ctx.fillStyle = '#334155';
+  ctx.font = '600 18px "DM Sans", sans-serif';
+  ctx.fillText(`${cover.academyName} · Kurum Kodu: ${instCode}`, 144, 1334);
+  ctx.fillText(`Sınıf: ${gradeLabel} · Kitapçık: ${cover.bookletCode}${bookletNum ? ` · No: ${bookletNum}` : ''}`, 144, 1368);
+
+  // Gözetmen / Öğrenci İmza Satırı
   ctx.fillStyle = '#475569';
   ctx.font = '600 17px "DM Sans", sans-serif';
-  ctx.fillText(`${cover.academyName} · Kurum Kodu: ${instCode}`, 110, 1472);
+  ctx.fillText('Öğrenci Adı Soyadı : ________________________', 144, 1442);
+  ctx.fillText('Gözetmen / Onay İmza : ______________________', 144, 1492);
+  ctx.fillText(`Tarih : ${cover.examDate || new Date().toLocaleDateString('tr-TR')}`, 144, 1538);
+
+  // 3D Furkan Digital Signature on Right of Signature Box
+  ctx.textAlign = 'center';
+  ctx.fillStyle = preset.secondaryColor;
+  ctx.font = '700 16px "DM Sans", sans-serif';
+  ctx.fillText('KURUCU / KOORDİNATÖR 3D DİJİTAL İMZA', A4_W - 310, 1296);
+  draw3DFurkanSignature(ctx, A4_W - 430, 1320, preset.secondaryColor, preset.goldColor);
+  ctx.fillStyle = '#0f172a';
+  ctx.font = '800 24px "Plus Jakarta Sans", sans-serif';
+  ctx.fillText(`${cover.signatureName} (Onaylı)`, A4_W - 310, 1456);
+  ctx.fillStyle = '#64748b';
+  ctx.font = '600 18px "DM Sans", sans-serif';
+  ctx.fillText(cover.signatureTitle, A4_W - 310, 1490);
 
   // Bottom Banner
   ctx.fillStyle = preset.secondaryColor;
@@ -845,7 +927,16 @@ async function renderQuestionsPagesPng(
   questions: ExamQuestion[],
   cover: CoverConfig
 ): Promise<Uint8Array[]> {
-  const preset = getLogoPreset(cover.logoStyleId);
+  const basePreset = getLogoPreset(cover.logoStyleId);
+  const palette = resolveCoverColorPalette(cover, basePreset);
+  const preset: LogoPreset = {
+    ...basePreset,
+    primaryColor: palette.primaryColor,
+    secondaryColor: palette.secondaryColor,
+    goldColor: palette.goldColor,
+  };
+  const gradeLabel = extractGradeLabelFromCover(cover);
+  const bookletNum = cover.bookletNumber ? normalizeBookletNumber(cover.bookletNumber) : '';
   const pages: Uint8Array[] = [];
   const hasAnyVisual = questions.some((q) => Boolean(q.visual));
   const perPage = hasAnyVisual ? 4 : 6;
@@ -863,45 +954,77 @@ async function renderQuestionsPagesPng(
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(0, 0, A4_W, A4_H);
 
-    // Every-Page Header with Doğruluk Akademi Logo
-    const hGrad = ctx.createLinearGradient(56, 36, A4_W - 56, 110);
+    // Graphical Side & Corner Accent Shapes on EVERY PAGE
+    ctx.save();
+    ctx.fillStyle = preset.primaryColor;
+    ctx.globalAlpha = 0.85;
+    ctx.fillRect(28, 36, 10, A4_H - 72);
+    ctx.fillStyle = preset.goldColor;
+    ctx.fillRect(28, 36, 10, 140);
+    ctx.globalAlpha = 0.06;
+    ctx.fillStyle = preset.primaryColor;
+    ctx.beginPath();
+    ctx.moveTo(A4_W - 260, 0);
+    ctx.lineTo(A4_W, 0);
+    ctx.lineTo(A4_W, 240);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+
+    // Every-Page Graphical Header Banner: Sınıf + Kitapçık Adı + Kitapçık No + Deneme İsmi
+    const hGrad = ctx.createLinearGradient(56, 36, A4_W - 56, 118);
     hGrad.addColorStop(0, preset.secondaryColor);
     hGrad.addColorStop(1, preset.primaryColor);
     ctx.fillStyle = hGrad;
-    ctx.fillRect(56, 36, A4_W - 112, 74);
+    ctx.fillRect(56, 36, A4_W - 112, 82);
+    ctx.fillStyle = preset.goldColor;
+    ctx.fillRect(56, 118, A4_W - 112, 5);
 
     // Drawn Mini Crest Logo on EVERY PAGE
-    drawAcademyCrestCanvas(ctx, 102, 73, 25, preset);
+    drawAcademyCrestCanvas(ctx, 102, 77, 25, preset);
 
     ctx.fillStyle = '#ffffff';
-    ctx.font = '800 22px "Plus Jakarta Sans", sans-serif';
+    ctx.font = '800 21px "Plus Jakarta Sans", sans-serif';
     ctx.textAlign = 'left';
-    ctx.fillText(`${cover.academyName.toUpperCase()} · ${cover.examTitle}`, 144, 70);
+    ctx.fillText(`${cover.examTitle}`, 142, 69);
     ctx.fillStyle = '#fde68a';
-    ctx.font = '700 15px "JetBrains Mono", monospace';
+    ctx.font = '700 14.5px "JetBrains Mono", monospace';
     ctx.fillText(
-      `KURUM KODU: ${cover.institutionCode8 || '48291045'} · ${cover.signatureName} 3D İMZALI · ÇOĞALTILAMAZ`,
-      144,
-      96
+      `SINIF: ${gradeLabel.toUpperCase()} · ${cover.academyName.toUpperCase()} · KURUM KODU: ${cover.institutionCode8 || '48291045'}`,
+      142,
+      98
     );
 
+    // Right Badge Pill inside Header: Kitapçık A/B/C/D + No + Sayfa
+    ctx.fillStyle = 'rgba(255,255,255,0.16)';
+    ctx.fillRect(A4_W - 355, 46, 282, 62);
+    ctx.strokeStyle = preset.goldColor;
+    ctx.lineWidth = 2;
+    ctx.strokeRect(A4_W - 355, 46, 282, 62);
     ctx.textAlign = 'right';
     ctx.fillStyle = '#ffffff';
-    ctx.font = '800 20px "Plus Jakarta Sans", sans-serif';
-    ctx.fillText(`Kitapçık ${cover.bookletCode} · Sayfa ${pageIndex} / ${totalPages}`, A4_W - 78, 80);
+    ctx.font = '800 19px "Plus Jakarta Sans", sans-serif';
+    ctx.fillText(
+      `${cover.bookletCode} KİTAPÇIĞI${bookletNum ? ` · NO:${bookletNum}` : ''}`,
+      A4_W - 88,
+      72
+    );
+    ctx.fillStyle = '#fde68a';
+    ctx.font = '700 14px "JetBrains Mono", monospace';
+    ctx.fillText(`${gradeLabel} · Sayfa ${pageIndex} / ${totalPages}`, A4_W - 88, 97);
 
     // Subtle Diagonal Anti-Duplication Watermark on EVERY PAGE
     const showSampleStamp = Boolean(cover.isSampleDemo);
     ctx.save();
     ctx.translate(A4_W / 2, A4_H / 2);
     ctx.rotate(-0.55);
-    ctx.fillStyle = 'rgba(15, 39, 71, 0.045)';
-    ctx.font = '800 68px "Plus Jakarta Sans", sans-serif';
+    ctx.fillStyle = 'rgba(15, 39, 71, 0.042)';
+    ctx.font = '800 66px "Plus Jakarta Sans", sans-serif';
     ctx.textAlign = 'center';
     ctx.fillText(
       showSampleStamp
         ? `${cover.academyName.toUpperCase()} · ÇOĞALTILAMAZ · ÖRNEKTİR`
-        : `${cover.academyName.toUpperCase()} · ÇOĞALTILAMAZ`,
+        : `${cover.academyName.toUpperCase()} · ${cover.bookletCode} KİTAPÇIĞI`,
       0,
       0
     );
@@ -911,7 +1034,7 @@ async function renderQuestionsPagesPng(
     ctx.strokeStyle = '#cbd5e1';
     ctx.lineWidth = 2;
     ctx.beginPath();
-    ctx.moveTo(A4_W / 2, 136);
+    ctx.moveTo(A4_W / 2, 142);
     ctx.lineTo(A4_W / 2, isLastPage ? A4_H - 210 : A4_H - 110);
     ctx.stroke();
 
@@ -923,7 +1046,7 @@ async function renderQuestionsPagesPng(
       const col = idx < perCol ? 0 : 1;
       const row = idx % perCol;
       const x = col === 0 ? 74 : A4_W / 2 + 34;
-      let y = 158 + row * rowSpacing;
+      let y = 164 + row * rowSpacing;
       const maxW = A4_W / 2 - 112;
 
       ctx.textAlign = 'left';
@@ -958,31 +1081,31 @@ async function renderQuestionsPagesPng(
       });
     }
 
-    // Final Page Special "ÖRNEKTİR / İZİNSİZ ÇOĞALTILAMAZ" Closing Banner + 3D Signature
+    // Final Question Page Closing Banner + 3D Signature
     if (isLastPage) {
       const endY = A4_H - 205;
-      ctx.fillStyle = '#fff1f2';
+      ctx.fillStyle = palette.softBg;
       ctx.fillRect(56, endY, A4_W - 112, 108);
-      ctx.strokeStyle = '#be123c';
+      ctx.strokeStyle = preset.primaryColor;
       ctx.lineWidth = 3;
       ctx.strokeRect(56, endY, A4_W - 112, 108);
 
       drawAcademyCrestCanvas(ctx, 112, endY + 54, 28, preset);
 
       ctx.textAlign = 'left';
-      ctx.fillStyle = '#9f1239';
-      ctx.font = '800 24px "Plus Jakarta Sans", sans-serif';
+      ctx.fillStyle = preset.secondaryColor;
+      ctx.font = '800 22px "Plus Jakarta Sans", sans-serif';
       ctx.fillText(
         showSampleStamp
-          ? 'DENEME SINAVI SONU — ÖRNEKTİR · İZİNSİZ ÇOĞALTILAMAZ'
-          : 'DENEME SINAVI SONU — İZİNSİZ ÇOĞALTILAMAZ VE KOPYALANAMAZ',
+          ? 'SORULARIN SONU — SONRAKİ SAYFA İMZA VE ONAY SAYFASIDIR · ÖRNEKTİR'
+          : 'SORULARIN SONU — SONRAKİ SAYFA KURUMSAL İMZA VE ONAY SAYFASIDIR',
         162,
         endY + 42
       );
       ctx.fillStyle = '#334155';
       ctx.font = '600 17px "DM Sans", sans-serif';
       ctx.fillText(
-        `${cover.academyName} (Kurum Kodu: ${cover.institutionCode8 || '48291045'}) · Cevaplarınızı kontrol ediniz.`,
+        `${cover.academyName} · ${gradeLabel} · ${cover.bookletCode} Kitapçığı${bookletNum ? ` (No: ${bookletNum})` : ''}`,
         162,
         endY + 78
       );
@@ -998,13 +1121,13 @@ async function renderQuestionsPagesPng(
     ctx.lineTo(A4_W - 56, A4_H - 86);
     ctx.stroke();
 
-    ctx.fillStyle = '#9f1239';
-    ctx.font = '800 16px "DM Sans", sans-serif';
+    ctx.fillStyle = preset.secondaryColor;
+    ctx.font = '800 15.5px "DM Sans", sans-serif';
     ctx.textAlign = 'center';
     ctx.fillText(
       showSampleStamp
-        ? `${cover.academyName} · ÇOĞALTILAMAZ · ÖRNEKTİR · ${cover.signatureName} 3D İmzalı · Sayfa ${pageIndex}/${totalPages}`
-        : `${cover.academyName} · ÇOĞALTILAMAZ · ${cover.signatureName} 3D İmzalı · Sayfa ${pageIndex}/${totalPages}`,
+        ? `${cover.academyName} · ${gradeLabel} · ${cover.bookletCode} Kitapçığı${bookletNum ? ` #${bookletNum}` : ''} · ÖRNEKTİR · Sayfa ${pageIndex}/${totalPages}`
+        : `${cover.academyName} · ${gradeLabel} · ${cover.bookletCode} Kitapçığı${bookletNum ? ` #${bookletNum}` : ''} · ${cover.signatureName} 3D İmzalı · Sayfa ${pageIndex}/${totalPages}`,
       A4_W / 2,
       A4_H - 52
     );
@@ -1029,9 +1152,15 @@ export async function generateBookletPdf(
   }
 ): Promise<Uint8Array> {
   const coverPng = await renderCoverCanvasPng(cover);
-  const backCoverPng = stripOptions.appendBrandedBackPage
+  const shouldIncludeSignatureLastPage =
+    uploadedPdfBytes && uploadedPdfBytes.byteLength > 0
+      ? stripOptions.appendBrandedBackPage
+      : true;
+  const backCoverPng = shouldIncludeSignatureLastPage
     ? await renderBrandedBackCoverCanvasPng(cover)
     : null;
+  const gradeLabel = extractGradeLabelFromCover(cover);
+  const bookletNum = cover.bookletNumber ? normalizeBookletNumber(cover.bookletNumber) : '';
 
   if (uploadedPdfBytes && uploadedPdfBytes.byteLength > 0) {
     const loadedPdf = await PDFDocument.load(uploadedPdfBytes);
@@ -1054,10 +1183,10 @@ export async function generateBookletPdf(
       // Mask top & bottom margins lightly so external institution/publisher headers don't clash
       p.drawRectangle({
         x: 0,
-        y: height - 28,
+        y: height - 30,
         width,
-        height: 28,
-        color: rgb(1, 1, 1),
+        height: 30,
+        color: rgb(0.96, 0.98, 1),
       });
       p.drawRectangle({
         x: 0,
@@ -1066,17 +1195,15 @@ export async function generateBookletPdf(
         height: 24,
         color: rgb(1, 1, 1),
       });
-      // Top Logo Header Strip + Bottom Security Notice on every page
+      // Top Graphical Header Strip + Bottom Security Notice on every page
       p.drawText(
         toAsciiSafe(
-          showSampleStamp
-            ? `${cover.academyName.toUpperCase()} (${cover.institutionCode8 || '48291045'}) | COGALTILAMAZ | ORNEKTIR`
-            : `${cover.academyName.toUpperCase()} (${cover.institutionCode8 || '48291045'}) | COGALTILAMAZ`
+          `${cover.examTitle} | ${gradeLabel} | ${cover.bookletCode} KITAPCIGI${bookletNum ? ` #${bookletNum}` : ''} | ${cover.academyName.toUpperCase()}${showSampleStamp ? ' | ORNEKTIR' : ''}`
         ),
         {
-          x: 32,
-          y: height - 19,
-          size: 8.5,
+          x: 28,
+          y: height - 20,
+          size: 8.2,
           font: helvetica,
           color: rgb(0.08, 0.2, 0.45),
         }
@@ -1088,9 +1215,9 @@ export async function generateBookletPdf(
             : `${cover.academyName} | ${cover.signatureName} Imzali | COGALTILAMAZ | Sayfa ${idx + 1}/${totalCopied}`
         ),
         {
-          x: 32,
+          x: 28,
           y: 9,
-          size: 8.5,
+          size: 8.2,
           font: helvetica,
           color: rgb(0.62, 0.08, 0.22),
         }
@@ -1162,6 +1289,7 @@ export function drawOpticalFormCanvas(
   const instCode = (opts.institutionCode8 || opts.cover.institutionCode8 || '48291045').replace(/\D/g, '').padStart(8, '0').slice(0, 8);
   const stuName = (opts.studentName || 'Alihan Sarı').toLocaleUpperCase('tr-TR');
   const stuNum = (opts.studentNumber8 || '48192034').replace(/\D/g, '').padStart(8, '0').slice(0, 8);
+  const bookletNoDigits = normalizeBookletNumber(opts.cover.bookletNumber, 1);
   const optionCount = opts.optionCount ?? opts.gradeProfile?.optionCount ?? 5;
   const letters = optionCount === 4 ? ['A', 'B', 'C', 'D'] : ['A', 'B', 'C', 'D', 'E'];
 
@@ -1189,9 +1317,9 @@ export function drawOpticalFormCanvas(
   ctx.textBaseline = 'middle';
   ctx.fillText(`${instName.toUpperCase()} — OPTİK CEVAP KAĞIDI`, 72, 60);
   ctx.textAlign = 'right';
-  ctx.font = '700 16px "DM Sans", sans-serif';
+  ctx.font = '700 15px "DM Sans", sans-serif';
   ctx.fillText(
-    `${opts.gradeProfile?.shortLabel || '5. Sınıf'} · KURUM: ${instCode} · ÇOĞALTILAMAZ`,
+    `${opts.gradeProfile?.shortLabel || '5. Sınıf'} · KİTAPÇIK ${opts.cover.bookletCode} · NO:${bookletNoDigits} · KURUM: ${instCode}`,
     A4_W - 48,
     60
   );
@@ -1230,13 +1358,17 @@ export function drawOpticalFormCanvas(
   ctx.lineWidth = 2;
   ctx.strokeRect(infoX, infoY, infoW, 134);
   ctx.fillStyle = '#831843';
-  ctx.font = '700 15px "DM Sans", sans-serif';
+  ctx.font = '700 14.5px "DM Sans", sans-serif';
   ctx.textAlign = 'left';
-  ctx.fillText(`Adı Soyadı : ${stuName}`, infoX + 12, infoY + 26);
-  ctx.fillText(`Öğrenci No : ${stuNum}`, infoX + 12, infoY + 54);
+  ctx.fillText(`Adı Soyadı : ${stuName.slice(0, 24)}`, infoX + 12, infoY + 24);
+  ctx.fillText(`Öğrenci No : ${stuNum}`, infoX + 12, infoY + 51);
   const fallbackClass = opts.gradeProfile ? defaultClassroomForGrade(opts.gradeProfile.id) : '5-A';
-  ctx.fillText(`Sınıf/Şube : ${opts.classroom || fallbackClass}`, infoX + 12, infoY + 82);
-  ctx.fillText(`Kurum Adı  : ${instName.slice(0, 26)}`, infoX + 12, infoY + 110);
+  ctx.fillText(
+    `Sınıf/Şube : ${opts.classroom || fallbackClass} · Kitapçık: ${opts.cover.bookletCode} (${bookletNoDigits})`,
+    infoX + 12,
+    infoY + 78
+  );
+  ctx.fillText(`Deneme     : ${(opts.cover.examTitle || instName).slice(0, 26)}`, infoX + 12, infoY + 106);
 
   // Correct Coding Example + Kitapçık Türü Box
   ctx.strokeRect(infoX, 250, 174, 84);
@@ -1255,7 +1387,7 @@ export function drawOpticalFormCanvas(
   ctx.textAlign = 'left';
   ctx.fillText('Tam Doldurun', infoX + 62, 302);
 
-  // Kitapçık Türü (A B C D)
+  // Kitapçık Türü (A B C D) - Otomatik Kodlama
   ctx.strokeStyle = PINK;
   ctx.strokeRect(infoX + 186, 250, 170, 84);
   ctx.fillStyle = PINK_HEADER;
@@ -1263,7 +1395,7 @@ export function drawOpticalFormCanvas(
   ctx.fillStyle = '#ffffff';
   ctx.textAlign = 'center';
   ctx.font = '700 12px "DM Sans", sans-serif';
-  ctx.fillText('KİTAPÇIK TÜRÜ', infoX + 271, 262);
+  ctx.fillText('KİTAPÇIK TÜRÜ (OTO)', infoX + 271, 262);
   ['A', 'B', 'C', 'D'].forEach((bCode, bi) => {
     const bx = infoX + 210 + bi * 38;
     const by = 304;
@@ -1284,15 +1416,16 @@ export function drawOpticalFormCanvas(
     ctx.fillText(bCode, bx, by + 1);
   });
 
-  // Helper: Draw 8-Column Numeric Bubble Grid (0-9)
+  // Helper: Draw N-Column Numeric Bubble Grid (0-9)
   const drawNumericGrid = (
     gx: number,
     gy: number,
     title: string,
-    digits: string
+    digits: string,
+    cols: number
   ) => {
-    const colW = 28;
-    const w = 8 * colW + 16;
+    const colW = 20;
+    const w = cols * colW + 12;
     const h = 320;
     ctx.strokeStyle = PINK;
     ctx.lineWidth = 2;
@@ -1300,43 +1433,44 @@ export function drawOpticalFormCanvas(
     ctx.fillStyle = PINK_HEADER;
     ctx.fillRect(gx, gy, w, 26);
     ctx.fillStyle = '#ffffff';
-    ctx.font = '700 13px "DM Sans", sans-serif';
+    ctx.font = '700 11px "DM Sans", sans-serif';
     ctx.textAlign = 'center';
     ctx.fillText(title, gx + w / 2, gy + 13);
 
     // Top digit preview boxes
-    for (let c = 0; c < 8; c++) {
-      const cx = gx + 8 + c * colW + colW / 2;
+    for (let c = 0; c < cols; c++) {
+      const cx = gx + 6 + c * colW + colW / 2;
       ctx.strokeStyle = PINK_LIGHT;
-      ctx.strokeRect(gx + 8 + c * colW, gy + 30, colW - 2, 22);
+      ctx.strokeRect(gx + 6 + c * colW, gy + 30, colW - 2, 22);
       ctx.fillStyle = '#111827';
-      ctx.font = '700 13px "JetBrains Mono", monospace';
+      ctx.font = '700 12px "JetBrains Mono", monospace';
       ctx.fillText(digits[c] ?? '0', cx, gy + 41);
 
       for (let d = 0; d <= 9; d++) {
         const cy = gy + 68 + d * 25;
         const filled = digits[c] === String(d);
         ctx.beginPath();
-        ctx.arc(cx, cy, 9.5, 0, Math.PI * 2);
+        ctx.arc(cx, cy, 8.2, 0, Math.PI * 2);
         if (filled) {
           ctx.fillStyle = '#111827';
           ctx.fill();
           ctx.fillStyle = '#ffffff';
         } else {
           ctx.strokeStyle = PINK;
-          ctx.lineWidth = 1.4;
+          ctx.lineWidth = 1.3;
           ctx.stroke();
           ctx.fillStyle = PINK;
         }
-        ctx.font = '700 10px "DM Sans", sans-serif';
+        ctx.font = '700 9.5px "DM Sans", sans-serif';
         ctx.fillText(String(d), cx, cy + 0.5);
       }
     }
   };
 
-  // 3. ÖĞRENCİ NO (8 Hane) + KURUM KODU (8 Hane) Bubble Grids
-  drawNumericGrid(72, 348, 'ÖĞRENCİ NO (8 HANE)', stuNum);
-  drawNumericGrid(318, 348, 'KURUM KODU (8 HANE)', instCode);
+  // 3. ÖĞRENCİ NO (8 Hane) + KURUM KODU (8 Hane) + KİTAPÇIK NO (6 Hane) Bubble Grids
+  drawNumericGrid(72, 348, 'ÖĞRENCİ NO (8)', stuNum, 8);
+  drawNumericGrid(252, 348, 'KURUM KODU (8)', instCode, 8);
+  drawNumericGrid(432, 348, 'KİTAPÇIK NO (6)', bookletNoDigits, 6);
 
   // 4. Right Top: ADI SOYADI Alphabet Bubble Grid (20 columns)
   const nameX = 574;

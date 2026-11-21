@@ -60,8 +60,8 @@ export function OpticalFormPreview({
             <h3 id="optical-sheet-preview-title" className="text-base font-bold">
               ÖSYM / MEB Tipi Optik Cevap Kağıdı Canlı Önizleme
             </h3>
-            <p className="text-xs" style={{ color: 'var(--text-secondary)' }}>
-              Kurum Kodu ({institutionCode8}), Öğrenci No ({studentNumber8 || '--------'}) ve Ad-Soyad ({studentName || 'Öğrenci Seçilmedi'}) alanları otomatik kodlanır
+            <p className="text-xs" style={{ color: 'var(--text-secondary)' }} data-testid="optical-preview-meta">
+              Kitapçık: <strong>{cover.bookletCode}</strong> · Kitapçık No: <strong className="font-mono-num">{cover.bookletNumber || '050001'}</strong> · Kurum ({institutionCode8}) ve Öğrenci No ({studentNumber8 || '--------'}) alanları otomatik kodlanır
             </p>
           </div>
         </div>
@@ -78,8 +78,11 @@ export function OpticalFormPreview({
       <div className="surface-alt rounded-xl p-4 flex justify-center overflow-x-auto">
         <canvas
           ref={canvasRef}
+          data-testid="optical-sheet-canvas"
+          data-booklet-code={cover.bookletCode}
+          data-booklet-number={cover.bookletNumber || '050001'}
           className="max-w-[540px] w-full h-auto rounded-lg shadow-xl border border-slate-300 bg-white"
-          aria-label="Optik Cevap Kağıdı Önizleme"
+          aria-label={`Optik Cevap Kağıdı Önizleme — ${cover.bookletCode} Kitapçığı`}
         />
       </div>
 

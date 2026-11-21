@@ -22,7 +22,10 @@ import {
   ListChecks,
 } from 'lucide-react';
 import { GRADE_PROFILES } from '../data/curriculum';
+import { getLogoPreset } from '../data/logos';
 import {
+  BookletCode,
+  CoverColorThemeId,
   CoverConfig,
   DifficultyLevel,
   DynamicCurriculumOverride,
@@ -31,9 +34,17 @@ import {
   GradeLevelId,
   GradeProfile,
   Institution,
+  OpenEndedQuestion,
   PdfUploadStripOptions,
   PenaltyDivisor,
+  StudentBookletAssignment,
+  StudentRecord,
 } from '../types/academy';
+import {
+  BOOKLET_CODES,
+  COVER_COLOR_THEMES,
+  resolveCoverColorPalette,
+} from '../utils/bookletDistribution';
 import { buildAutoExamQuestions, selectCuratedQuestions } from '../utils/examAnalysis';
 import {
   buildDynamicMixedQuestions,
@@ -48,8 +59,10 @@ import {
   parseExamQuestionsFromRawText,
 } from '../utils/examPdfParser';
 import { filterGradeProfilesByInstitution } from '../utils/institutionCodes';
+import { BatchBookletPanel } from './BatchBookletPanel';
 import { Cover3DPreview } from './Cover3DPreview';
 import { QuestionVisualPreview } from './QuestionVisualPreview';
+import { TextbookExamPanel } from './TextbookExamPanel';
 
 interface ExamGeneratorViewProps {
   institution: Institution;
@@ -58,7 +71,21 @@ interface ExamGeneratorViewProps {
   penaltyDivisor?: PenaltyDivisor;
   onChangePenaltyDivisor?: (divisor: PenaltyDivisor) => void;
   questions: ExamQuestion[];
+  baseQuestions?: ExamQuestion[];
   cover: CoverConfig;
+  students?: StudentRecord[];
+  batchAssignments?: StudentBookletAssignment[];
+  onSetBatchAssignments?: (next: StudentBookletAssignment[]) => void;
+  onSelectBookletVariant?: (
+    code: BookletCode,
+    opts?: {
+      bookletNumber?: string;
+      studentName?: string;
+      studentNumber?: string;
+      classroom?: string;
+      autoSyncAnswerKey?: boolean;
+    }
+  ) => void;
   uploadedPdfName: string | null;
   uploadedPdfPageCount: number | null;
   pdfStripOptions: PdfUploadStripOptions;
@@ -79,6 +106,7 @@ interface ExamGeneratorViewProps {
   onDownloadSourceZip: () => Promise<void>;
   onOpenEditor?: () => void;
   onOpenOpenEnded?: () => void;
+  onApplyOpenEndedQuestions?: (questions: OpenEndedQuestion[]) => void;
 }
 
 async function fileToBase64(file: File): Promise<string> {
@@ -99,7 +127,12 @@ export function ExamGeneratorView({
   penaltyDivisor,
   onChangePenaltyDivisor,
   questions,
+  baseQuestions,
   cover,
+  students = [],
+  batchAssignments = [],
+  onSetBatchAssignments,
+  onSelectBookletVariant,
   uploadedPdfName,
   uploadedPdfPageCount,
   pdfStripOptions,
@@ -117,6 +150,7 @@ export function ExamGeneratorView({
   onDownloadSourceZip,
   onOpenEditor,
   onOpenOpenEnded,
+  onApplyOpenEndedQuestions,
 }: ExamGeneratorViewProps) {
   const allowedGradeProfiles = filterGradeProfilesByInstitution(GRADE_PROFILES, institution);
   const defaultQuestionTarget = gradeProfile.subjects.reduce((acc, s) => acc + s.questionCount, 0);
@@ -126,6 +160,7 @@ export function ExamGeneratorView({
   const [targetCount, setTargetCount] = useState<number>(defaultQuestionTarget);
   const [subjectScope, setSubjectScope] = useState<string>('Tümü');
   const [show20Picker, setShow20Picker] = useState<boolean>(false);
+  const [showTextbookPanel, setShowTextbookPanel] = useState<boolean>(false);
   const [pickedQuestionIds, setPickedQuestionIds] = useState<string[]>([]);
 
   // PDF Soru İşleyici state
@@ -771,6 +806,22 @@ export function ExamGeneratorView({
               <span>4. 10 Soruluk Açık Uçlu & Kağıt Analizi</span>
             </button>
           )}
+          <button
+            type="button"
+            onClick={() => {
+              setShowTextbookPanel(true);
+              window.setTimeout(() => {
+                document
+                  .getElementById('textbook-exam-studio-section')
+                  ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+              }, 60);
+            }}
+            data-testid="quick-open-textbook-panel-btn"
+            className="btn-3d px-3 py-1.5 rounded-lg text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer"
+          >
+            <BookOpenCheck className="w-3.5 h-3.5" aria-hidden="true" />
+            <span>5. Ders Kitabı PDF (Deneme / Yazılı Paneli)</span>
+          </button>
         </div>
       </div>
 
@@ -1822,17 +1873,67 @@ export function ExamGeneratorView({
               />
             </label>
             <label className="block text-xs font-semibold">
-              <span style={{ color: 'var(--text-secondary)' }}>Kitapçık Türü</span>
+              <span style={{ color: 'var(--text-secondary)' }}>Kitapçık Türü (A · B · C · D)</span>
               <select
+                data-testid="cover-booklet-code-select"
                 value={cover.bookletCode}
-                onChange={(e) =>
-                  onUpdateCover({ bookletCode: e.target.value as 'A' | 'B' })
-                }
-                className="mt-1 w-full rounded-lg px-3 py-2 text-sm surface-alt"
+                onChange={(e) => {
+                  const nextCode = e.target.value as BookletCode;
+                  if (onSelectBookletVariant) {
+                    onSelectBookletVariant(nextCode, { autoSyncAnswerKey: true });
+                  } else {
+                    onUpdateCover({ bookletCode: nextCode });
+                  }
+                }}
+                className="mt-1 w-full rounded-lg px-3 py-2 text-sm surface-alt font-bold"
               >
-                <option value="A">A Kitapçığı</option>
-                <option value="B">B Kitapçığı</option>
+                {BOOKLET_CODES.map((code) => (
+                  <option key={code} value={code}>
+                    {code} Kitapçığı (Otomatik Sıralı &amp; Kodlu)
+                  </option>
+                ))}
               </select>
+            </label>
+            <label className="block text-xs font-semibold">
+              <span style={{ color: 'var(--text-secondary)' }}>Kitapçık Numarası (6 Hane)</span>
+              <input
+                type="text"
+                maxLength={6}
+                data-testid="cover-booklet-number-input"
+                value={cover.bookletNumber ?? '050001'}
+                onChange={(e) =>
+                  onUpdateCover({ bookletNumber: e.target.value.replace(/\D/g, '').slice(0, 6) })
+                }
+                placeholder="050001"
+                className="mt-1 w-full rounded-lg px-3 py-2 text-sm surface-alt font-mono-num font-bold"
+              />
+            </label>
+            <label className="block text-xs font-semibold">
+              <span style={{ color: 'var(--text-secondary)' }}>Kapak &amp; Sayfa Grafik Renk Tasarımı</span>
+              <select
+                data-testid="cover-color-theme-select"
+                value={cover.coverColorThemeId ?? 'otomatik-abcd'}
+                onChange={(e) =>
+                  onUpdateCover({ coverColorThemeId: e.target.value as CoverColorThemeId })
+                }
+                className="mt-1 w-full rounded-lg px-3 py-2 text-sm surface-alt font-semibold"
+              >
+                {COVER_COLOR_THEMES.map((theme) => (
+                  <option key={theme.id} value={theme.id}>
+                    {theme.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="block text-xs font-semibold">
+              <span style={{ color: 'var(--text-secondary)' }}>Sınıf Başlığı (Her Sayfa Üstü)</span>
+              <input
+                type="text"
+                data-testid="cover-grade-label-input"
+                value={cover.gradeLabel ?? gradeProfile.shortLabel}
+                onChange={(e) => onUpdateCover({ gradeLabel: e.target.value })}
+                className="mt-1 w-full rounded-lg px-3 py-2 text-sm surface-alt"
+              />
             </label>
             <label className="block text-xs font-semibold">
               <span style={{ color: 'var(--text-secondary)' }}>Sınav Süresi (Dakika)</span>
@@ -1843,6 +1944,31 @@ export function ExamGeneratorView({
                 className="mt-1 w-full rounded-lg px-3 py-2 text-sm surface-alt font-mono-num"
               />
             </label>
+            <div className="block text-xs font-semibold">
+              <span style={{ color: 'var(--text-secondary)' }}>Aktif Renk Paleti Önizleme</span>
+              {(() => {
+                const pal = resolveCoverColorPalette(cover, getLogoPreset(cover.logoStyleId));
+                return (
+                  <div className="mt-1 surface-alt rounded-lg px-3 py-2 flex items-center justify-between gap-2">
+                    <span className="truncate font-bold">{pal.themeLabel}</span>
+                    <span className="flex items-center gap-1 shrink-0">
+                      <span
+                        className="w-4 h-4 rounded border border-white/50"
+                        style={{ backgroundColor: pal.secondaryColor }}
+                      />
+                      <span
+                        className="w-4 h-4 rounded border border-white/50"
+                        style={{ backgroundColor: pal.primaryColor }}
+                      />
+                      <span
+                        className="w-4 h-4 rounded border border-white/50"
+                        style={{ backgroundColor: pal.goldColor }}
+                      />
+                    </span>
+                  </div>
+                );
+              })()}
+            </div>
             <label className="block text-xs font-semibold sm:col-span-2">
               <span style={{ color: 'var(--text-secondary)' }}>
                 Çoğaltılamaz Güvenlik & Telif İbaresi
@@ -1903,6 +2029,76 @@ export function ExamGeneratorView({
           <Cover3DPreview cover={cover} />
         </div>
       </div>
+
+      {/* SINIF BAZLI ÇOKLU (50 ADET) A-B-C-D KİTAPÇIK & ÖĞRENCİ NUMARASI DAĞITIM PANELİ */}
+      <BatchBookletPanel
+        institution={institution}
+        gradeProfile={gradeProfile}
+        baseQuestions={baseQuestions ?? questions}
+        cover={cover}
+        students={students}
+        assignments={batchAssignments}
+        onSetAssignments={(next) => onSetBatchAssignments?.(next)}
+        onApplyAssignment={(row) => {
+          if (onSelectBookletVariant) {
+            onSelectBookletVariant(row.bookletCode, {
+              bookletNumber: row.bookletNumber,
+              studentName: row.studentName,
+              studentNumber: row.studentNumber8,
+              classroom: row.classroom,
+              autoSyncAnswerKey: true,
+            });
+          } else {
+            onUpdateCover({
+              bookletCode: row.bookletCode,
+              bookletNumber: row.bookletNumber,
+            });
+          }
+          setNotice(
+            `${row.studentName} (${row.classroom}) için ${row.bookletCode} Kitapçığı · No: ${row.bookletNumber} seçildi (kapak, optik ve cevap anahtarı eşlendi).`
+          );
+        }}
+        onSelectBookletCode={(code) => {
+          if (onSelectBookletVariant) {
+            onSelectBookletVariant(code, { autoSyncAnswerKey: true });
+          } else {
+            onUpdateCover({ bookletCode: code });
+          }
+        }}
+        onDownloadBookletPdf={onDownloadBookletPdf}
+        onDownloadOpticalPdf={onDownloadOpticalPdf}
+      />
+
+      {/* AŞAĞIDA AÇILIR PANEL: DERS KİTABINDAN (PDF) DENEME / YAZILI OLUŞTURMA STÜDYOSU */}
+      <TextbookExamPanel
+        isOpen={showTextbookPanel}
+        onToggleOpen={() => setShowTextbookPanel((prev) => !prev)}
+        gradeProfile={gradeProfile}
+        allowedGradeProfiles={allowedGradeProfiles}
+        onSelectGrade={onSelectGrade}
+        cover={cover}
+        existingQuestions={questions}
+        onApplyMcqQuestions={(generated, meta) => {
+          onUpdateQuestions(generated);
+          onUpdateCover({
+            examTitle: meta.examTitle,
+            subtitle: meta.subtitle,
+            questionCount: generated.length,
+          });
+          setNotice(
+            `${generated.length} soruluk ${meta.modeLabel} (${gradeProfile.shortLabel}) aktif kitapçığa uygulandı.`
+          );
+        }}
+        onApplyOpenEndedQuestions={(generated) => {
+          onApplyOpenEndedQuestions?.(generated);
+          setNotice(
+            `${generated.length} soruluk Açık Uçlu Yazılı Kağıdı oluşturuldu ve Açık Uçlu değerlendirme paneline aktarıldı.`
+          );
+        }}
+        onDownloadBookletPdf={onDownloadBookletPdf}
+        onOpenEditor={onOpenEditor}
+        onOpenOpenEnded={onOpenOpenEnded}
+      />
 
       {/* Generated Question Bank Preview */}
       <section className="surface-card rounded-xl p-5">

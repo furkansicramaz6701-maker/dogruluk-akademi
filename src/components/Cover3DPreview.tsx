@@ -2,6 +2,11 @@ import { useState } from 'react';
 import { Rotate3D, ShieldAlert, BookOpen, CheckSquare } from 'lucide-react';
 import { getLogoPreset } from '../data/logos';
 import { CoverConfig } from '../types/academy';
+import {
+  extractGradeLabelFromCover,
+  normalizeBookletNumber,
+  resolveCoverColorPalette,
+} from '../utils/bookletDistribution';
 import { Logo3D } from './Logo3D';
 import { FurkanDigitalSignature } from './FurkanDigitalSignature';
 
@@ -14,19 +19,28 @@ export function Cover3DPreview({ cover }: Cover3DPreviewProps) {
   const [angleX, setAngleX] = useState<number>(6);
   const [flipped, setFlipped] = useState<boolean>(false);
 
-  const preset = getLogoPreset(cover.logoStyleId);
+  const basePreset = getLogoPreset(cover.logoStyleId);
+  const palette = resolveCoverColorPalette(cover, basePreset);
+  const preset = {
+    ...basePreset,
+    primaryColor: palette.primaryColor,
+    secondaryColor: palette.secondaryColor,
+    goldColor: palette.goldColor,
+  };
+  const gradeLabel = extractGradeLabelFromCover(cover);
+  const bookletNum = cover.bookletNumber ? normalizeBookletNumber(cover.bookletNumber) : '';
   const showSample = Boolean(cover.isSampleDemo);
   const effectiveRotateY = flipped ? angleY + 180 : angleY;
 
   return (
-    <div className="surface-card rounded-xl p-5 flex flex-col gap-4">
+    <div className="surface-card rounded-xl p-5 flex flex-col gap-4" data-testid="cover-3d-preview">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2">
           <Rotate3D className="w-5 h-5" style={{ color: 'var(--accent-primary)' }} aria-hidden="true" />
           <div>
             <h3 className="text-base font-bold leading-tight">3D Renkli Kitapçık Kapak Önizleme</h3>
             <p className="text-xs" style={{ color: 'var(--text-secondary)' }}>
-              {cover.academyName} · {cover.signatureName} 3D İmzalı · {showSample ? 'Çoğaltılamaz & Örnektir' : 'Çoğaltılamaz · Resmi Yayın'}
+              {cover.bookletCode} Kitapçığı{bookletNum ? ` · No: ${bookletNum}` : ''} · {palette.themeLabel} · {cover.signatureName} 3D İmzalı
             </p>
           </div>
         </div>
@@ -58,7 +72,7 @@ export function Cover3DPreview({ cover }: Cover3DPreviewProps) {
             onClick={() => setFlipped((f) => !f)}
             className="btn-3d px-3 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer"
           >
-            {flipped ? 'Ön Kapağa Dön' : showSample ? 'Arka Sayfa / Örnektir' : 'Arka Sayfa / Kurallar'}
+            {flipped ? 'Ön Kapağa Dön' : 'Son Sayfa / İmza'}
           </button>
         </div>
       </div>
@@ -84,18 +98,18 @@ export function Cover3DPreview({ cover }: Cover3DPreviewProps) {
 
           {/* Front 3D Colorful Cover Face */}
           <div
-            className="absolute inset-0 bg-white text-slate-900 rounded-r-xl border-2 border-slate-300 shadow-2xl p-4 flex flex-col justify-between overflow-hidden"
-            style={{ backfaceVisibility: 'hidden' }}
+            className="absolute inset-0 bg-white text-slate-900 rounded-r-xl border-2 shadow-2xl p-4 flex flex-col justify-between overflow-hidden"
+            style={{ backfaceVisibility: 'hidden', borderColor: preset.primaryColor }}
           >
             {/* Colorful 3D Diagonal Accent Ribbons */}
             <div
               aria-hidden="true"
-              className="absolute -right-12 -top-10 w-52 h-52 rounded-full opacity-15 pointer-events-none"
+              className="absolute -right-12 -top-10 w-52 h-52 rounded-full opacity-20 pointer-events-none"
               style={{ background: `radial-gradient(circle, ${preset.primaryColor}, transparent)` }}
             />
             <div
               aria-hidden="true"
-              className="absolute -left-10 bottom-16 w-44 h-44 rounded-full opacity-15 pointer-events-none"
+              className="absolute -left-10 bottom-16 w-44 h-44 rounded-full opacity-20 pointer-events-none"
               style={{ background: `radial-gradient(circle, ${preset.goldColor}, transparent)` }}
             />
 
@@ -114,19 +128,25 @@ export function Cover3DPreview({ cover }: Cover3DPreviewProps) {
                     <div className="font-display font-extrabold text-xs sm:text-sm tracking-wide truncate">
                       {cover.academyName.toUpperCase()}
                     </div>
-                    <div className="text-[9.5px] text-amber-200 font-mono-num font-bold">
-                      KURUM KODU: {cover.institutionCode8 || '48291045'}
+                    <div className="text-[9.5px] text-amber-200 font-mono-num font-bold truncate">
+                      {gradeLabel.toUpperCase()} · KOD: {cover.institutionCode8 || '48291045'}
                     </div>
                   </div>
                 </div>
                 <div
+                  data-testid="cover-3d-booklet-badge"
                   className="bg-white text-slate-900 rounded-md px-2 py-1 text-center shrink-0 shadow"
                   style={{ borderBottom: `2px solid ${preset.primaryColor}` }}
                 >
-                  <div className="text-[7.5px] font-bold leading-none">KİTAPÇIK</div>
-                  <div className="font-display font-extrabold text-lg leading-tight">
+                  <div className="text-[7px] font-bold leading-none">KİTAPÇIK</div>
+                  <div className="font-display font-extrabold text-lg leading-tight" style={{ color: preset.secondaryColor }}>
                     {cover.bookletCode}
                   </div>
+                  {bookletNum && (
+                    <div className="text-[7.5px] font-mono-num font-bold leading-none" style={{ color: preset.primaryColor }}>
+                      #{bookletNum}
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -134,7 +154,7 @@ export function Cover3DPreview({ cover }: Cover3DPreviewProps) {
                 <h4 className="font-display font-extrabold text-sm sm:text-base text-slate-900 leading-snug">
                   {cover.examTitle}
                 </h4>
-                <p className="text-[11px] text-slate-600 mt-1">{cover.subtitle}</p>
+                <p className="text-[11px] text-slate-600 mt-1">{gradeLabel} · {cover.subtitle}</p>
               </div>
 
               {/* Colorful 3D Spec Strip */}
@@ -145,17 +165,17 @@ export function Cover3DPreview({ cover }: Cover3DPreviewProps) {
                 }}
               >
                 <div>
-                  <div className="text-[8.5px] font-semibold text-blue-100">SORU</div>
-                  <div className="text-xs font-mono-num font-extrabold">{cover.questionCount}</div>
+                  <div className="text-[8.5px] font-semibold text-blue-100">SORU / SINIF</div>
+                  <div className="text-[11px] font-mono-num font-extrabold">{cover.questionCount} · {gradeLabel}</div>
                 </div>
                 <div className="border-x border-white/25">
                   <div className="text-[8.5px] font-semibold text-blue-100">SÜRE</div>
                   <div className="text-xs font-mono-num font-extrabold">{cover.durationMinutes} dk</div>
                 </div>
                 <div>
-                  <div className="text-[8.5px] font-semibold text-blue-100">DURUM</div>
-                  <div className="text-[10.5px] font-extrabold text-amber-300">
-                    {showSample ? 'ÖRNEKTİR' : 'RESMİ'}
+                  <div className="text-[8.5px] font-semibold text-blue-100">KİTAPÇIK NO</div>
+                  <div className="text-[10.5px] font-mono-num font-extrabold text-amber-300">
+                    {bookletNum || (showSample ? 'ÖRNEKTİR' : 'RESMİ')}
                   </div>
                 </div>
               </div>
@@ -223,26 +243,27 @@ export function Cover3DPreview({ cover }: Cover3DPreviewProps) {
             </div>
           </div>
 
-          {/* Back Cover Face (Last Page "ÖRNEKTİR / ÇOĞALTILAMAZ") */}
+          {/* Back Cover Face (Last Page "İMZA & ONAY SAYFASI") */}
           <div
-            className="absolute inset-0 bg-slate-50 text-slate-900 rounded-l-xl border-2 border-slate-300 shadow-2xl p-5 flex flex-col justify-between"
+            className="absolute inset-0 bg-slate-50 text-slate-900 rounded-l-xl border-2 shadow-2xl p-5 flex flex-col justify-between"
             style={{
               backfaceVisibility: 'hidden',
               transform: 'rotateY(180deg)',
+              borderColor: preset.primaryColor,
             }}
           >
             <div>
               <div className="flex items-center justify-between gap-2 text-slate-900 font-display font-bold text-sm border-b border-slate-300 pb-2.5">
                 <div className="flex items-center gap-2">
                   <BookOpen className="w-4 h-4" style={{ color: preset.primaryColor }} aria-hidden="true" />
-                  <span>{showSample ? 'Son Sayfa · Örnektir & Kurallar' : 'Son Sayfa · Sınav Kuralları'}</span>
+                  <span>En Son Sayfa · İmza & Onay</span>
                 </div>
-                <span className="text-[10px] font-mono-num font-extrabold text-rose-700">
-                  {showSample ? 'ÖRNEKTİR' : 'RESMİ'}
+                <span className="text-[10px] font-mono-num font-extrabold" style={{ color: preset.primaryColor }}>
+                  {cover.bookletCode}{bookletNum ? ` #${bookletNum}` : ''}
                 </span>
               </div>
-              <ol className="mt-3 space-y-2 text-xs text-slate-700 leading-relaxed">
-                {cover.reminders.map((rem, i) => (
+              <ol className="mt-3 space-y-1.5 text-[11px] text-slate-700 leading-relaxed">
+                {cover.reminders.slice(0, 4).map((rem, i) => (
                   <li key={i}>
                     <strong>{i + 1}.</strong> {rem}
                   </li>
@@ -250,13 +271,32 @@ export function Cover3DPreview({ cover }: Cover3DPreviewProps) {
               </ol>
             </div>
 
-            <div className="border-2 border-rose-400 bg-rose-50 rounded-lg p-3 text-rose-900">
-              <div className="flex items-center gap-1.5 font-bold text-xs mb-1">
-                <ShieldAlert className="w-4 h-4" aria-hidden="true" />
+            <div className="rounded-lg border border-slate-200 bg-white p-2.5 flex items-center justify-between gap-2">
+              <div className="text-[10px] text-slate-600 space-y-1">
+                <div className="font-bold text-slate-900">Öğrenci / Gözetmen İmza</div>
+                <div>Ad Soyad: _______________</div>
+                <div>İmza: ____________________</div>
+              </div>
+              <FurkanDigitalSignature
+                signatureName={cover.signatureName}
+                signatureTitle={cover.signatureTitle}
+                institutionCode8={cover.institutionCode8 || '48291045'}
+                primaryColor={preset.primaryColor}
+                secondaryColor={preset.secondaryColor}
+                goldColor={preset.goldColor}
+                size="sm"
+                tone="paper"
+                showSealStamp={false}
+              />
+            </div>
+
+            <div className="border-2 border-rose-400 bg-rose-50 rounded-lg p-2.5 text-rose-900">
+              <div className="flex items-center gap-1.5 font-bold text-[11px] mb-0.5">
+                <ShieldAlert className="w-3.5 h-3.5" aria-hidden="true" />
                 <span>{showSample ? 'ÖRNEKTİR · İZİNSİZ ÇOĞALTILAMAZ' : 'RESMİ YAYIN · İZİNSİZ ÇOĞALTILAMAZ'}</span>
               </div>
-              <p className="text-[11px] leading-snug">
-                {cover.securityNotice}. Kurum Kodu: {cover.institutionCode8 || '48291045'}. Bu kitapçık {cover.signatureName} 3D dijital imzasıyla koruma altındadır.
+              <p className="text-[10px] leading-snug">
+                {cover.academyName} ({cover.institutionCode8 || '48291045'}) · {gradeLabel} · {cover.bookletCode} Kitapçığı.
               </p>
             </div>
           </div>

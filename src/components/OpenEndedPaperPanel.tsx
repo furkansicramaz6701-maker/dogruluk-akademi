@@ -37,6 +37,8 @@ interface OpenEndedPaperPanelProps {
   classroom: string;
   parentPhone?: string;
   latestAnalysis: OpenEndedPaperAnalysis | null;
+  externalQuestions?: OpenEndedQuestion[] | null;
+  onSyncQuestions?: (next: OpenEndedQuestion[]) => void;
   onSavePaperAnalysis: (result: OpenEndedPaperAnalysis) => void;
   onGoToReports?: () => void;
 }
@@ -60,12 +62,16 @@ export function OpenEndedPaperPanel({
   classroom,
   parentPhone,
   latestAnalysis,
+  externalQuestions = null,
+  onSyncQuestions,
   onSavePaperAnalysis,
   onGoToReports,
 }: OpenEndedPaperPanelProps) {
   const [selectedSubject, setSelectedSubject] = useState<string>('Tümü');
   const [questions, setQuestions] = useState<OpenEndedQuestion[]>(() =>
-    buildDefaultOpenEndedQuestions(gradeProfile, 10)
+    externalQuestions && externalQuestions.length > 0
+      ? externalQuestions
+      : buildDefaultOpenEndedQuestions(gradeProfile, 10)
   );
   const [rawQuestionsInput, setRawQuestionsInput] = useState<string>('');
   const [rawSolutionsInput, setRawSolutionsInput] = useState<string>('');
@@ -91,8 +97,12 @@ export function OpenEndedPaperPanel({
   const [parentMsgText, setParentMsgText] = useState<string>('');
 
   useEffect(() => {
+    if (externalQuestions && externalQuestions.length > 0) {
+      setQuestions(externalQuestions);
+      return;
+    }
     setQuestions(buildDefaultOpenEndedQuestions(gradeProfile, 10, selectedSubject));
-  }, [gradeProfile, selectedSubject]);
+  }, [gradeProfile, selectedSubject, externalQuestions]);
 
   useEffect(() => {
     if (parentPhone) setPhoneInput(parentPhone);
@@ -387,6 +397,7 @@ export function OpenEndedPaperPanel({
             onClick={() => {
               const fresh = buildDefaultOpenEndedQuestions(gradeProfile, 10, selectedSubject);
               setQuestions(fresh);
+              onSyncQuestions?.(fresh);
               setNotice(`${gradeProfile.shortLabel} için 10 soruluk açık uçlu set ve çözümleri yenilendi.`);
             }}
             className="btn-3d-secondary px-3.5 py-2 rounded-xl text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer"

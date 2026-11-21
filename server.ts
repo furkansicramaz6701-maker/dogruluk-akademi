@@ -188,6 +188,204 @@ ${textContent ? `\nDers Kitabı Metni:\n${String(textContent).slice(0, 24000)}` 
     }
   });
 
+  // 2A-1. Ders Kitabından Sınıf Bazlı Konu Başlıkları ve Soru Başlıkları Analizi
+  app.post('/api/textbook/analyze', async (req, res) => {
+    try {
+      const ai = getGeminiClient();
+      if (!ai) {
+        res.status(503).json({
+          error: 'GEMINI_API_KEY tanımlı değil. Yapay zeka analizi için sunucu anahtarı gerekir.',
+        });
+        return;
+      }
+
+      const {
+        gradeLabel = '5. Sınıf',
+        subject = 'Tümü',
+        fileName = 'Ders Kitabı',
+        textContent = '',
+        fileBase64,
+        fileMimeType,
+      } = req.body ?? {};
+
+      const parts: Array<{ text?: string; inlineData?: { mimeType: string; data: string } }> = [];
+      if (fileBase64 && fileMimeType) {
+        parts.push({
+          inlineData: {
+            mimeType: String(fileMimeType),
+            data: String(fileBase64),
+          },
+        });
+      }
+
+      parts.push({
+        text: `Eklenen ders kitabı içeriğini ("${fileName}") incele.
+Hedef Sınıf Düzeyi: "${gradeLabel}". Seçilen Ders: "${subject}".
+Kurallar:
+1. Kesinlikle "${gradeLabel}" dışındaki üst/alt sınıf veya ilgisiz sınav (TYT/AYT/LGS) terimlerini karıştırma.
+2. Kitaptaki ünite, bölüm ve kazanımlara göre 5 ile 12 arasında net "konu başlığı" (topics) çıkar.
+3. Öğretmenin sınav/deneme veya yazılı hazırlarken seçebileceği 5 ile 8 arasında "soru başlığı" (questionHeadings — örn. Kavram & Tanım Doğrulama, Günlük Yaşam Problemi, Paragraf & Anlam Analizi, Tablo/Grafik Yorumlama veya üniteye özgü soru başlıkları) öner.
+4. Kısa, anlaşılır bir özet (summary) ve tespit edilen ana dersi (detectedSubject) yaz.
+${textContent ? `\nDers Kitabı Metni:\n${String(textContent).slice(0, 28000)}` : ''}`,
+      });
+
+      const response = await ai.models.generateContent({
+        model: 'gemini-4-hydrogen',
+        contents: { parts },
+        config: {
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              summary: { type: Type.STRING },
+              detectedSubject: { type: Type.STRING },
+              topics: { type: Type.ARRAY, items: { type: Type.STRING } },
+              questionHeadings: { type: Type.ARRAY, items: { type: Type.STRING } },
+            },
+            required: ['summary', 'detectedSubject', 'topics', 'questionHeadings'],
+          },
+          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+        },
+      });
+
+      const parsed = JSON.parse((response.text ?? '{}').trim());
+      res.json(parsed);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Bilinmeyen hata';
+      res.status(500).json({ error: `Ders kitabı analiz edilirken hata oluştu: ${message}` });
+    }
+  });
+
+  // 2A-2. Ders Kitabından Konu Başlıkları ve Soru Başlıklarına Göre Deneme veya Yazılı Oluşturma
+  app.post('/api/textbook/generate-exam', async (req, res) => {
+    try {
+      const ai = getGeminiClient();
+      if (!ai) {
+        res.status(503).json({
+          error: 'GEMINI_API_KEY tanımlı değil. Yapay zeka soru üretimi için sunucu anahtarı gerekir.',
+        });
+        return;
+      }
+
+      const {
+        gradeLabel = '5. Sınıf',
+        subject = 'Matematik',
+        examKind = 'deneme',
+        count = 10,
+        optionCount = 4,
+        difficulty = 'dengeli',
+        topics = [],
+        questionHeadings = [],
+        textContent = '',
+        fileBase64,
+        fileMimeType,
+      } = req.body ?? {};
+
+      const safeCount = Math.min(40, Math.max(1, Number(count) || 10));
+      const safeTopics = Array.isArray(topics) ? topics.filter(Boolean).slice(0, 15) : [];
+      const safeHeadings = Array.isArray(questionHeadings) ? questionHeadings.filter(Boolean).slice(0, 12) : [];
+
+      const parts: Array<{ text?: string; inlineData?: { mimeType: string; data: string } }> = [];
+      if (fileBase64 && fileMimeType) {
+        parts.push({
+          inlineData: {
+            mimeType: String(fileMimeType),
+            data: String(fileBase64),
+          },
+        });
+      }
+
+      if (examKind === 'yazili-acik-uclu') {
+        parts.push({
+          text: `Eklenen ders kitabına ve öğretmenin belirttiği başlıklara dayanarak "${gradeLabel}" düzeyinde "${subject}" dersi için ${safeCount} adet AÇIK UÇLU (KLASİK YAZILI) soru üret.
+Kullanılacak Konu Başlıkları: ${safeTopics.join(', ') || subject}
+Kullanılacak Soru Başlıkları / Tarzları: ${safeHeadings.join(', ') || 'Kavram Açıklama, Uygulama Problemi'}
+Zorluk Profili: ${difficulty}.
+Her sorunun prompt metni başında köşeli parantez içinde soru başlığı (örn. [Günlük Yaşam Problemi]) yer alsın, toplam puan 100 olacak şekilde puan dağılımı yap, örnek çözüm (modelAnswer) ve anahtar kelimeler (keywords) ekle.
+${textContent ? `\nDers Kitabı Metni:\n${String(textContent).slice(0, 26000)}` : ''}`,
+        });
+
+        const response = await ai.models.generateContent({
+          model: 'gemini-4-hydrogen',
+          contents: { parts },
+          config: {
+            responseMimeType: 'application/json',
+            responseSchema: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  subject: { type: Type.STRING },
+                  topic: { type: Type.STRING },
+                  maxPoints: { type: Type.INTEGER },
+                  prompt: { type: Type.STRING },
+                  modelAnswer: { type: Type.STRING },
+                  keywords: { type: Type.ARRAY, items: { type: Type.STRING } },
+                },
+                required: ['subject', 'topic', 'maxPoints', 'prompt', 'modelAnswer', 'keywords'],
+              },
+            },
+            thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+          },
+        });
+
+        const openEndedQuestions = JSON.parse((response.text ?? '[]').trim());
+        res.json({ examKind, openEndedQuestions });
+        return;
+      }
+
+      const letters = optionCount === 4 ? ['A', 'B', 'C', 'D'] : ['A', 'B', 'C', 'D', 'E'];
+      const modeText =
+        examKind === 'yazili-test'
+          ? 'YAZILIYA HAZIRLIK ÇOKTAN SEÇMELİ TESTİ'
+          : 'SINIF BAZLI DENEME SINAVI';
+
+      parts.push({
+        text: `Eklenen ders kitabına ve öğretmenin belirttiği başlıklara dayanarak "${gradeLabel}" düzeyinde "${subject}" dersi için ${safeCount} adet ${modeText} sorusu üret.
+Kullanılacak Konu Başlıkları: ${safeTopics.join(', ') || subject}
+Kullanılacak Soru Başlıkları / Tarzları: ${safeHeadings.join(', ') || 'Kavram & Tanım Doğrulama'}
+Zorluk Profili: ${difficulty}. Her soruda kesinlikle ${letters.length} şık (${letters.join(', ')}) olmalıdır.
+Her soru kökünün başında seçilen soru başlığı [Soru Başlığı] formatında belirtilsin ve yalnızca "${gradeLabel}" seviyesine uygun olsun.
+${textContent ? `\nDers Kitabı Metni:\n${String(textContent).slice(0, 26000)}` : ''}`,
+      });
+
+      const response = await ai.models.generateContent({
+        model: 'gemini-4-hydrogen',
+        contents: { parts },
+        config: {
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                subject: { type: Type.STRING },
+                topic: { type: Type.STRING },
+                gainCode: { type: Type.STRING },
+                difficulty: { type: Type.STRING },
+                stem: { type: Type.STRING },
+                options: {
+                  type: Type.OBJECT,
+                  properties: Object.fromEntries(letters.map((l) => [l, { type: Type.STRING }])),
+                },
+                correctOption: { type: Type.STRING },
+                explanation: { type: Type.STRING },
+              },
+              required: ['subject', 'topic', 'difficulty', 'stem', 'options', 'correctOption', 'explanation'],
+            },
+          },
+          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+        },
+      });
+
+      const questions = JSON.parse((response.text ?? '[]').trim());
+      res.json({ examKind, questions });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Bilinmeyen hata';
+      res.status(500).json({ error: `Ders kitabından sınav oluşturulurken hata oluştu: ${message}` });
+    }
+  });
+
   // 2B. MEB Müfredat PDF'i Ekleyerek Aktif Müfredat & Dinamik Sorular Çıkarma
   app.post('/api/curriculum/from-meb-pdf', async (req, res) => {
     try {
