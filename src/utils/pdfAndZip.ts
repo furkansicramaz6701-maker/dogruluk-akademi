@@ -1,10 +1,12 @@
 import JSZip from 'jszip';
-import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
+import { PDFDocument, StandardFonts, degrees, rgb } from 'pdf-lib';
 import { getGradeProfile } from '../data/curriculum';
 import { getLogoPreset } from '../data/logos';
 import { ACADEMY_THEMES } from '../data/themes';
 import {
+  BookletCode,
   CoverConfig,
+  CoverLayoutStyleId,
   ExamAnalysisResult,
   ExamQuestion,
   GradeProfile,
@@ -18,17 +20,39 @@ import {
   WeeklyComparisonRow,
 } from '../types/academy';
 import {
+  BOOKLET_CODES,
+  buildAllBookletsAnswerKeyCsv,
+  buildBookletPdfFilename,
+  buildBookletVariantQuestions,
+  buildOpticalPdfFilename,
   extractGradeLabelFromCover,
   normalizeBookletNumber,
   resolveCoverColorPalette,
+  resolveCoverLayoutStyle,
 } from './bookletDistribution';
 import { computeKeptUploadedPdfIndices } from './examPdfParser';
+import {
+  canvasToBlobSafe,
+  dataUrlToUint8Array,
+  triggerDownload,
+  triggerStaggeredDownloads,
+  yieldToMainThread,
+} from './downloadHelpers';
 import { buildWeeklyComparisonWorkbookBlob, defaultClassroomForGrade } from './excelExport';
 import {
   buildParentInformationReportData,
   ParentReportData,
 } from './parentReportPdf';
+import {
+  buildWatermarkDisplayText,
+  computeCenteredRotatedPosition,
+  computeWatermarkPlacements,
+  drawCanvasWatermark,
+  resolvePdfWatermarkConfig,
+} from './pdfWatermark';
 import { NextStudySessionSummary } from './weeklyAnalysis';
+
+export { triggerDownload, triggerStaggeredDownloads };
 
 const A4_W = 1240;
 const A4_H = 1754;
@@ -296,9 +320,140 @@ function drawTop3MedalCanvas(
   ctx.restore();
 }
 
+function drawCoverLayoutGeometry(
+  ctx: CanvasRenderingContext2D,
+  layoutId: CoverLayoutStyleId,
+  preset: LogoPreset,
+  isBackCover = false
+) {
+  ctx.save();
+  if (layoutId === 'diyagonal-serit') {
+    ctx.globalAlpha = isBackCover ? 0.08 : 0.11;
+    ctx.fillStyle = preset.primaryColor;
+    ctx.beginPath();
+    ctx.moveTo(0, 290);
+    ctx.lineTo(A4_W, 110);
+    ctx.lineTo(A4_W, 380);
+    ctx.lineTo(0, 560);
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.fillStyle = preset.goldColor;
+    ctx.beginPath();
+    ctx.moveTo(0, A4_H - 360);
+    ctx.lineTo(A4_W, A4_H - 540);
+    ctx.lineTo(A4_W, A4_H - 250);
+    ctx.lineTo(0, A4_H - 90);
+    ctx.closePath();
+    ctx.fill();
+
+    // Angled top-right corner diamond accent
+    ctx.globalAlpha = 0.2;
+    ctx.fillStyle = preset.goldColor;
+    ctx.beginPath();
+    ctx.moveTo(A4_W - 240, 0);
+    ctx.lineTo(A4_W, 0);
+    ctx.lineTo(A4_W, 240);
+    ctx.closePath();
+    ctx.fill();
+  } else if (layoutId === 'geometrik-blok') {
+    // Architectural left vertical spine bar + gold inner stripe + geometric blocks
+    ctx.fillStyle = preset.primaryColor;
+    ctx.fillRect(0, 0, 32, A4_H);
+    ctx.fillStyle = preset.goldColor;
+    ctx.fillRect(32, 0, 8, A4_H);
+
+    ctx.globalAlpha = 0.1;
+    ctx.fillStyle = preset.primaryColor;
+    ctx.fillRect(A4_W - 220, 320, 220, 120);
+    ctx.fillStyle = preset.goldColor;
+    ctx.fillRect(A4_W - 300, A4_H - 360, 300, 140);
+  } else if (layoutId === 'akademik-kose') {
+    // 4-Corner Ceremonial Ribbon Triangles
+    ctx.globalAlpha = 0.85;
+    ctx.fillStyle = preset.secondaryColor;
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.lineTo(180, 0);
+    ctx.lineTo(0, 180);
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.fillStyle = preset.goldColor;
+    ctx.beginPath();
+    ctx.moveTo(A4_W, 0);
+    ctx.lineTo(A4_W - 180, 0);
+    ctx.lineTo(A4_W, 180);
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.fillStyle = preset.goldColor;
+    ctx.beginPath();
+    ctx.moveTo(0, A4_H);
+    ctx.lineTo(160, A4_H);
+    ctx.lineTo(0, A4_H - 160);
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.fillStyle = preset.secondaryColor;
+    ctx.beginPath();
+    ctx.moveTo(A4_W, A4_H);
+    ctx.lineTo(A4_W - 160, A4_H);
+    ctx.lineTo(A4_W, A4_H - 160);
+    ctx.closePath();
+    ctx.fill();
+  } else {
+    // Klasik Çerçeve subtle ribbons
+    ctx.globalAlpha = 0.08;
+    ctx.fillStyle = preset.primaryColor;
+    ctx.beginPath();
+    ctx.moveTo(0, 270);
+    ctx.lineTo(A4_W, 120);
+    ctx.lineTo(A4_W, 380);
+    ctx.lineTo(0, 520);
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.fillStyle = preset.goldColor;
+    ctx.beginPath();
+    ctx.moveTo(0, A4_H - 360);
+    ctx.lineTo(A4_W, A4_H - 500);
+    ctx.lineTo(A4_W, A4_H - 220);
+    ctx.lineTo(0, A4_H - 120);
+    ctx.closePath();
+    ctx.fill();
+  }
+  ctx.restore();
+
+  // Outer Institutional 3D Frame
+  ctx.strokeStyle = preset.secondaryColor;
+  ctx.lineWidth = layoutId === 'geometrik-blok' ? 5 : 8;
+  ctx.strokeRect(42, 42, A4_W - 84, A4_H - 84);
+  ctx.strokeStyle = preset.goldColor;
+  ctx.lineWidth = 3;
+  ctx.strokeRect(56, 56, A4_W - 112, A4_H - 112);
+}
+
+async function canvasToEncodedBytes(
+  canvas: HTMLCanvasElement,
+  mimeType: 'image/png' | 'image/jpeg' = 'image/png',
+  quality = 0.92
+): Promise<Uint8Array> {
+  const blob = await canvasToBlobSafe(canvas, mimeType, quality);
+  return new Uint8Array(await blob.arrayBuffer());
+}
+
 export async function renderCoverCanvasPng(cover: CoverConfig): Promise<Uint8Array> {
+  return renderCoverCanvasEncoded(cover, 'image/png');
+}
+
+async function renderCoverCanvasEncoded(
+  cover: CoverConfig,
+  mimeType: 'image/png' | 'image/jpeg'
+): Promise<Uint8Array> {
   const basePreset = getLogoPreset(cover.logoStyleId);
   const palette = resolveCoverColorPalette(cover, basePreset);
+  const layoutId = resolveCoverLayoutStyle(cover).id;
   const preset: LogoPreset = {
     ...basePreset,
     primaryColor: palette.primaryColor,
@@ -316,35 +471,7 @@ export async function renderCoverCanvasPng(cover: CoverConfig): Promise<Uint8Arr
   ctx.fillStyle = '#ffffff';
   ctx.fillRect(0, 0, A4_W, A4_H);
 
-  // Subtle Colorful 3D Geometric Corner Ribbons
-  ctx.save();
-  ctx.globalAlpha = 0.09;
-  ctx.fillStyle = preset.primaryColor;
-  ctx.beginPath();
-  ctx.moveTo(0, 270);
-  ctx.lineTo(A4_W, 120);
-  ctx.lineTo(A4_W, 380);
-  ctx.lineTo(0, 520);
-  ctx.closePath();
-  ctx.fill();
-
-  ctx.fillStyle = preset.goldColor;
-  ctx.beginPath();
-  ctx.moveTo(0, A4_H - 360);
-  ctx.lineTo(A4_W, A4_H - 500);
-  ctx.lineTo(A4_W, A4_H - 220);
-  ctx.lineTo(0, A4_H - 120);
-  ctx.closePath();
-  ctx.fill();
-  ctx.restore();
-
-  // Outer Institutional 3D Frame
-  ctx.strokeStyle = preset.secondaryColor;
-  ctx.lineWidth = 8;
-  ctx.strokeRect(42, 42, A4_W - 84, A4_H - 84);
-  ctx.strokeStyle = preset.goldColor;
-  ctx.lineWidth = 3;
-  ctx.strokeRect(56, 56, A4_W - 112, A4_H - 112);
+  drawCoverLayoutGeometry(ctx, layoutId, preset, false);
 
   // Colorful Gradient Header Band
   const hGrad = ctx.createLinearGradient(56, 56, A4_W - 56, 280);
@@ -543,10 +670,15 @@ export async function renderCoverCanvasPng(cover: CoverConfig): Promise<Uint8Arr
     A4_H - 84
   );
 
-  const blob = await new Promise<Blob>((resolve) =>
-    canvas.toBlob((b) => resolve(b!), 'image/png')
-  );
-  return new Uint8Array(await blob.arrayBuffer());
+  drawCanvasWatermark(ctx, A4_W, A4_H, cover.watermark, {
+    colorHex: preset.secondaryColor,
+    isSampleDemo: showSampleStamp,
+    isCoverOrBack: true,
+    headerY: 22,
+    footerY: A4_H - 21,
+  });
+
+  return canvasToEncodedBytes(canvas, mimeType, 0.92);
 }
 
 async function loadCanvasImage(dataUrl: string): Promise<HTMLImageElement | null> {
@@ -740,8 +872,16 @@ async function drawQuestionVisualOnCanvas(
 export async function renderBrandedBackCoverCanvasPng(
   cover: CoverConfig
 ): Promise<Uint8Array> {
+  return renderBrandedBackCoverCanvasEncoded(cover, 'image/png');
+}
+
+async function renderBrandedBackCoverCanvasEncoded(
+  cover: CoverConfig,
+  mimeType: 'image/png' | 'image/jpeg'
+): Promise<Uint8Array> {
   const basePreset = getLogoPreset(cover.logoStyleId);
   const palette = resolveCoverColorPalette(cover, basePreset);
+  const layoutId = resolveCoverLayoutStyle(cover).id;
   const preset: LogoPreset = {
     ...basePreset,
     primaryColor: palette.primaryColor,
@@ -760,26 +900,7 @@ export async function renderBrandedBackCoverCanvasPng(
   ctx.fillStyle = '#f8fafc';
   ctx.fillRect(0, 0, A4_W, A4_H);
 
-  // Graphical corner accents matching cover color theme
-  ctx.save();
-  ctx.globalAlpha = 0.08;
-  ctx.fillStyle = preset.primaryColor;
-  ctx.beginPath();
-  ctx.moveTo(0, A4_H - 420);
-  ctx.lineTo(A4_W, A4_H - 640);
-  ctx.lineTo(A4_W, A4_H - 220);
-  ctx.lineTo(0, A4_H - 80);
-  ctx.closePath();
-  ctx.fill();
-  ctx.restore();
-
-  // Outer institutional frame
-  ctx.strokeStyle = preset.secondaryColor;
-  ctx.lineWidth = 8;
-  ctx.strokeRect(42, 42, A4_W - 84, A4_H - 84);
-  ctx.strokeStyle = preset.goldColor;
-  ctx.lineWidth = 3;
-  ctx.strokeRect(56, 56, A4_W - 112, A4_H - 112);
+  drawCoverLayoutGeometry(ctx, layoutId, preset, true);
 
   // Top Header Strip
   const topGrad = ctx.createLinearGradient(56, 56, A4_W - 56, 220);
@@ -917,18 +1038,26 @@ export async function renderBrandedBackCoverCanvasPng(
     A4_H - 84
   );
 
-  const blob = await new Promise<Blob>((resolve) =>
-    canvas.toBlob((b) => resolve(b!), 'image/png')
-  );
-  return new Uint8Array(await blob.arrayBuffer());
+  drawCanvasWatermark(ctx, A4_W, A4_H, cover.watermark, {
+    colorHex: preset.secondaryColor,
+    isSampleDemo: showSampleStamp,
+    isCoverOrBack: true,
+    headerY: 22,
+    footerY: A4_H - 21,
+  });
+
+  return canvasToEncodedBytes(canvas, mimeType, 0.92);
 }
 
-async function renderQuestionsPagesPng(
+async function renderQuestionsPagesEncoded(
   questions: ExamQuestion[],
-  cover: CoverConfig
+  cover: CoverConfig,
+  mimeType: 'image/png' | 'image/jpeg',
+  imageQuality = 0.9
 ): Promise<Uint8Array[]> {
   const basePreset = getLogoPreset(cover.logoStyleId);
   const palette = resolveCoverColorPalette(cover, basePreset);
+  const layoutId = resolveCoverLayoutStyle(cover).id;
   const preset: LogoPreset = {
     ...basePreset,
     primaryColor: palette.primaryColor,
@@ -954,14 +1083,14 @@ async function renderQuestionsPagesPng(
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(0, 0, A4_W, A4_H);
 
-    // Graphical Side & Corner Accent Shapes on EVERY PAGE
+    // Graphical Side & Corner Accent Shapes on EVERY PAGE matching layoutId
     ctx.save();
     ctx.fillStyle = preset.primaryColor;
-    ctx.globalAlpha = 0.85;
-    ctx.fillRect(28, 36, 10, A4_H - 72);
+    ctx.globalAlpha = layoutId === 'geometrik-blok' ? 0.95 : 0.85;
+    ctx.fillRect(28, 36, layoutId === 'geometrik-blok' ? 14 : 10, A4_H - 72);
     ctx.fillStyle = preset.goldColor;
-    ctx.fillRect(28, 36, 10, 140);
-    ctx.globalAlpha = 0.06;
+    ctx.fillRect(28, 36, layoutId === 'geometrik-blok' ? 14 : 10, 140);
+    ctx.globalAlpha = layoutId === 'diyagonal-serit' ? 0.1 : 0.06;
     ctx.fillStyle = preset.primaryColor;
     ctx.beginPath();
     ctx.moveTo(A4_W - 260, 0);
@@ -969,6 +1098,16 @@ async function renderQuestionsPagesPng(
     ctx.lineTo(A4_W, 240);
     ctx.closePath();
     ctx.fill();
+    if (layoutId === 'akademik-kose') {
+      ctx.globalAlpha = 0.55;
+      ctx.fillStyle = preset.goldColor;
+      ctx.beginPath();
+      ctx.moveTo(0, A4_H);
+      ctx.lineTo(90, A4_H);
+      ctx.lineTo(0, A4_H - 90);
+      ctx.closePath();
+      ctx.fill();
+    }
     ctx.restore();
 
     // Every-Page Graphical Header Banner: Sınıf + Kitapçık Adı + Kitapçık No + Deneme İsmi
@@ -1013,22 +1152,15 @@ async function renderQuestionsPagesPng(
     ctx.font = '700 14px "JetBrains Mono", monospace';
     ctx.fillText(`${gradeLabel} · Sayfa ${pageIndex} / ${totalPages}`, A4_W - 88, 97);
 
-    // Subtle Diagonal Anti-Duplication Watermark on EVERY PAGE
+    // Configurable Watermark on EVERY Question Page
     const showSampleStamp = Boolean(cover.isSampleDemo);
-    ctx.save();
-    ctx.translate(A4_W / 2, A4_H / 2);
-    ctx.rotate(-0.55);
-    ctx.fillStyle = 'rgba(15, 39, 71, 0.042)';
-    ctx.font = '800 66px "Plus Jakarta Sans", sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText(
-      showSampleStamp
-        ? `${cover.academyName.toUpperCase()} · ÇOĞALTILAMAZ · ÖRNEKTİR`
-        : `${cover.academyName.toUpperCase()} · ${cover.bookletCode} KİTAPÇIĞI`,
-      0,
-      0
-    );
-    ctx.restore();
+    drawCanvasWatermark(ctx, A4_W, A4_H, cover.watermark, {
+      colorHex: preset.secondaryColor,
+      isSampleDemo: showSampleStamp,
+      isCoverOrBack: false,
+      headerY: 19,
+      footerY: A4_H - 21,
+    });
 
     // Center dividing line
     ctx.strokeStyle = '#cbd5e1';
@@ -1132,10 +1264,8 @@ async function renderQuestionsPagesPng(
       A4_H - 52
     );
 
-    const blob = await new Promise<Blob>((resolve) =>
-      canvas.toBlob((b) => resolve(b!), 'image/png')
-    );
-    pages.push(new Uint8Array(await blob.arrayBuffer()));
+    pages.push(await canvasToEncodedBytes(canvas, mimeType, imageQuality));
+    await yieldToMainThread();
   }
 
   return pages;
@@ -1149,25 +1279,28 @@ export async function generateBookletPdf(
     stripFrontCover: true,
     stripBackCover: true,
     appendBrandedBackPage: true,
-  }
+  },
+  imageQuality = 0.9
 ): Promise<Uint8Array> {
-  const coverPng = await renderCoverCanvasPng(cover);
+  const coverJpg = await renderCoverCanvasEncoded(cover, 'image/jpeg');
   const shouldIncludeSignatureLastPage =
     uploadedPdfBytes && uploadedPdfBytes.byteLength > 0
       ? stripOptions.appendBrandedBackPage
       : true;
-  const backCoverPng = shouldIncludeSignatureLastPage
-    ? await renderBrandedBackCoverCanvasPng(cover)
+  const backCoverJpg = shouldIncludeSignatureLastPage
+    ? await renderBrandedBackCoverCanvasEncoded(cover, 'image/jpeg')
     : null;
   const gradeLabel = extractGradeLabelFromCover(cover);
   const bookletNum = cover.bookletNumber ? normalizeBookletNumber(cover.bookletNumber) : '';
 
   if (uploadedPdfBytes && uploadedPdfBytes.byteLength > 0) {
-    const loadedPdf = await PDFDocument.load(uploadedPdfBytes);
+    const loadedPdf = await PDFDocument.load(uploadedPdfBytes, {
+      ignoreEncryption: true,
+    });
     const outPdf = await PDFDocument.create();
     const helvetica = await outPdf.embedFont(StandardFonts.HelveticaBold);
 
-    const coverImg = await outPdf.embedPng(coverPng);
+    const coverImg = await outPdf.embedJpg(coverJpg);
     const coverPage = outPdf.addPage([595.28, 841.89]);
     coverPage.drawImage(coverImg, { x: 0, y: 0, width: 595.28, height: 841.89 });
 
@@ -1176,23 +1309,52 @@ export async function generateBookletPdf(
     const copiedPages = await outPdf.copyPages(loadedPdf, keptIndices);
     const totalCopied = copiedPages.length;
     const showSampleStamp = Boolean(cover.isSampleDemo);
+    const watermarkCfg = resolvePdfWatermarkConfig(cover.watermark);
+    const basePreset = getLogoPreset(cover.logoStyleId);
+    const palette = resolveCoverColorPalette(cover, basePreset);
+
+    let watermarkOverlayImg: Awaited<ReturnType<typeof outPdf.embedPng>> | null = null;
+    if (watermarkCfg.enabled && typeof document !== 'undefined') {
+      try {
+        const wmCanvas = document.createElement('canvas');
+        wmCanvas.width = A4_W;
+        wmCanvas.height = A4_H;
+        const wmCtx = wmCanvas.getContext('2d');
+        if (wmCtx) {
+          wmCtx.clearRect(0, 0, A4_W, A4_H);
+          drawCanvasWatermark(wmCtx, A4_W, A4_H, watermarkCfg, {
+            colorHex: palette.secondaryColor,
+            isSampleDemo: showSampleStamp,
+            isCoverOrBack: false,
+            headerY: 74,
+            footerY: A4_H - 64,
+          });
+          const wmPngBytes = await canvasToEncodedBytes(wmCanvas, 'image/png');
+          watermarkOverlayImg = await outPdf.embedPng(wmPngBytes);
+        }
+      } catch {
+        watermarkOverlayImg = null;
+      }
+    }
 
     copiedPages.forEach((p, idx) => {
       const { width, height } = p.getSize();
       const isLast = idx === totalCopied - 1;
+      const topMaskH = watermarkCfg.stripExistingMargins ? 54 : 30;
+      const bottomMaskH = watermarkCfg.stripExistingMargins ? 46 : 24;
       // Mask top & bottom margins lightly so external institution/publisher headers don't clash
       p.drawRectangle({
         x: 0,
-        y: height - 30,
+        y: height - topMaskH,
         width,
-        height: 30,
-        color: rgb(0.96, 0.98, 1),
+        height: topMaskH,
+        color: watermarkCfg.stripExistingMargins ? rgb(1, 1, 1) : rgb(0.96, 0.98, 1),
       });
       p.drawRectangle({
         x: 0,
         y: 0,
         width,
-        height: 24,
+        height: bottomMaskH,
         color: rgb(1, 1, 1),
       });
       // Top Graphical Header Strip + Bottom Security Notice on every page
@@ -1222,13 +1384,70 @@ export async function generateBookletPdf(
           color: rgb(0.62, 0.08, 0.22),
         }
       );
+
+      if (watermarkCfg.enabled) {
+        if (watermarkOverlayImg) {
+          p.drawImage(watermarkOverlayImg, { x: 0, y: 0, width, height });
+        } else {
+          const wmText = toAsciiSafe(
+            buildWatermarkDisplayText(watermarkCfg, { isSampleDemo: showSampleStamp })
+          );
+          const { drawBackground, drawHeaderFooter } = computeWatermarkPlacements(
+            watermarkCfg.placement
+          );
+          const fontScale = watermarkCfg.fontScale ?? 1;
+          const pdfAngle = -(watermarkCfg.angleDeg ?? -32);
+          if (drawBackground) {
+            const diagSize = Math.round(30 * fontScale);
+            const tw = helvetica.widthOfTextAtSize(wmText, diagSize);
+            const pos = computeCenteredRotatedPosition({
+              centerX: width / 2,
+              centerY: height / 2,
+              textWidth: tw,
+              textHeight: diagSize * 0.72,
+              angleDeg: pdfAngle,
+            });
+            p.drawText(wmText, {
+              x: pos.x,
+              y: pos.y,
+              size: diagSize,
+              font: helvetica,
+              color: rgb(0.06, 0.15, 0.28),
+              opacity: watermarkCfg.opacity,
+              rotate: degrees(pdfAngle),
+            });
+          }
+          if (drawHeaderFooter) {
+            const hfSize = Math.max(7, Math.round(8.5 * fontScale * 10) / 10);
+            const tw = helvetica.widthOfTextAtSize(wmText, hfSize);
+            const cx = Math.max(24, (width - tw) / 2);
+            p.drawText(wmText, {
+              x: cx,
+              y: height - 42,
+              size: hfSize,
+              font: helvetica,
+              color: rgb(0.06, 0.15, 0.28),
+              opacity: watermarkCfg.opacity,
+            });
+            p.drawText(wmText, {
+              x: cx,
+              y: 30,
+              size: hfSize,
+              font: helvetica,
+              color: rgb(0.06, 0.15, 0.28),
+              opacity: watermarkCfg.opacity,
+            });
+          }
+        }
+      }
+
       if (width > 120) {
         outPdf.addPage(p);
       }
     });
 
-    if (backCoverPng) {
-      const backImg = await outPdf.embedPng(backCoverPng);
+    if (backCoverJpg) {
+      const backImg = await outPdf.embedJpg(backCoverJpg);
       const backPage = outPdf.addPage([595.28, 841.89]);
       backPage.drawImage(backImg, { x: 0, y: 0, width: 595.28, height: 841.89 });
     }
@@ -1237,24 +1456,66 @@ export async function generateBookletPdf(
   }
 
   const pdfDoc = await PDFDocument.create();
-  const coverImg = await pdfDoc.embedPng(coverPng);
+  const coverImg = await pdfDoc.embedJpg(coverJpg);
   const coverPage = pdfDoc.addPage([595.28, 841.89]);
   coverPage.drawImage(coverImg, { x: 0, y: 0, width: 595.28, height: 841.89 });
 
-  const questionPagePngs = await renderQuestionsPagesPng(questions, cover);
-  for (const pngBytes of questionPagePngs) {
-    const img = await pdfDoc.embedPng(pngBytes);
+  const questionPageJpgs = await renderQuestionsPagesEncoded(
+    questions,
+    cover,
+    'image/jpeg',
+    imageQuality
+  );
+  for (const jpgBytes of questionPageJpgs) {
+    const img = await pdfDoc.embedJpg(jpgBytes);
     const page = pdfDoc.addPage([595.28, 841.89]);
     page.drawImage(img, { x: 0, y: 0, width: 595.28, height: 841.89 });
   }
 
-  if (backCoverPng) {
-    const backImg = await pdfDoc.embedPng(backCoverPng);
+  if (backCoverJpg) {
+    const backImg = await pdfDoc.embedJpg(backCoverJpg);
     const backPage = pdfDoc.addPage([595.28, 841.89]);
     backPage.drawImage(backImg, { x: 0, y: 0, width: 595.28, height: 841.89 });
   }
 
   return pdfDoc.save();
+}
+
+export async function generateAllBookletsZip(params: {
+  cover: CoverConfig;
+  baseQuestions: ExamQuestion[];
+  orderSeed?: number;
+  uploadedPdfBytes?: Uint8Array | null;
+  pdfStripOptions?: PdfUploadStripOptions;
+}): Promise<Blob> {
+  const zip = new JSZip();
+  const orderSeed = params.orderSeed ?? 0;
+
+  for (const code of BOOKLET_CODES) {
+    const variantQuestions = buildBookletVariantQuestions(params.baseQuestions, code, orderSeed);
+    const variantCover: CoverConfig = {
+      ...params.cover,
+      bookletCode: code,
+      questionCount: variantQuestions.length || params.cover.questionCount,
+    };
+    const pdfBytes = await generateBookletPdf(
+      variantCover,
+      variantQuestions,
+      params.uploadedPdfBytes,
+      params.pdfStripOptions,
+      0.84
+    );
+    const pdfName = buildBookletPdfFilename(variantCover, code);
+    zip.file(pdfName, pdfBytes);
+    await yieldToMainThread();
+  }
+
+  zip.file(
+    '00_ABCD_Cevap_Anahtari_Karsilastirma.csv',
+    buildAllBookletsAnswerKeyCsv(params.baseQuestions, orderSeed)
+  );
+
+  return zip.generateAsync({ type: 'blob' });
 }
 
 export interface OpticalSheetRenderOptions {
@@ -1613,16 +1874,117 @@ export async function generateOpticalSheetPdf(
     ...extra,
   });
 
-  const blob = await new Promise<Blob>((resolve) =>
-    canvas.toBlob((b) => resolve(b!), 'image/png')
-  );
-  const pngBytes = new Uint8Array(await blob.arrayBuffer());
-
+  const jpgBytes = await canvasToEncodedBytes(canvas, 'image/jpeg', 0.92);
   const pdfDoc = await PDFDocument.create();
-  const img = await pdfDoc.embedPng(pngBytes);
+  const img = await pdfDoc.embedJpg(jpgBytes);
   const page = pdfDoc.addPage([595.28, 841.89]);
   page.drawImage(img, { x: 0, y: 0, width: 595.28, height: 841.89 });
   return pdfDoc.save();
+}
+
+export interface MultiOpticalEntry {
+  bookletCode: BookletCode;
+  bookletNumber?: string;
+  studentName?: string;
+  studentNumber8?: string;
+  classroom?: string;
+}
+
+export async function generateMultiBookletOpticalPdf(params: {
+  cover: CoverConfig;
+  totalQuestions?: number;
+  optionCount?: 4 | 5;
+  gradeProfile?: GradeProfile;
+  institutionCode8?: string;
+  studentName?: string;
+  studentNumber8?: string;
+  classroom?: string;
+  entries?: MultiOpticalEntry[];
+}): Promise<Uint8Array> {
+  const entries: MultiOpticalEntry[] =
+    params.entries && params.entries.length > 0
+      ? params.entries
+      : BOOKLET_CODES.map((code, idx) => ({
+          bookletCode: code,
+          bookletNumber: params.cover.bookletNumber
+            ? normalizeBookletNumber(params.cover.bookletNumber, idx + 1)
+            : normalizeBookletNumber(undefined, idx + 1),
+          studentName: params.studentName,
+          studentNumber8: params.studentNumber8,
+          classroom: params.classroom,
+        }));
+
+  const pdfDoc = await PDFDocument.create();
+  const canvas = document.createElement('canvas');
+  const totalQ = Math.max(params.totalQuestions ?? 120, 20);
+  const optCount = params.optionCount ?? params.gradeProfile?.optionCount ?? 5;
+
+  for (const entry of entries) {
+    drawOpticalFormCanvas(canvas, {
+      cover: {
+        ...params.cover,
+        bookletCode: entry.bookletCode,
+        bookletNumber: entry.bookletNumber ?? params.cover.bookletNumber,
+      },
+      gradeProfile: params.gradeProfile,
+      studentName: entry.studentName ?? params.studentName ?? '................................',
+      studentNumber8: entry.studentNumber8 ?? params.studentNumber8 ?? '00000000',
+      institutionCode8: params.institutionCode8 || params.cover.institutionCode8,
+      classroom: entry.classroom ?? params.classroom,
+      totalQuestions: totalQ,
+      optionCount: optCount,
+    });
+    const jpgBytes = await canvasToEncodedBytes(canvas, 'image/jpeg', 0.9);
+    const img = await pdfDoc.embedJpg(jpgBytes);
+    const page = pdfDoc.addPage([595.28, 841.89]);
+    page.drawImage(img, { x: 0, y: 0, width: 595.28, height: 841.89 });
+    await yieldToMainThread();
+  }
+
+  return pdfDoc.save();
+}
+
+export async function generateAllOpticalFormsZip(params: {
+  cover: CoverConfig;
+  totalQuestions?: number;
+  optionCount?: 4 | 5;
+  gradeProfile?: GradeProfile;
+  institutionCode8?: string;
+  studentName?: string;
+  studentNumber8?: string;
+  classroom?: string;
+  entries?: MultiOpticalEntry[];
+}): Promise<Blob> {
+  const zip = new JSZip();
+  const totalQ = Math.max(params.totalQuestions ?? 120, 20);
+  const optCount = params.optionCount ?? params.gradeProfile?.optionCount ?? 5;
+
+  for (const code of BOOKLET_CODES) {
+    const variantCover: CoverConfig = {
+      ...params.cover,
+      bookletCode: code,
+    };
+    const pdfBytes = await generateOpticalSheetPdf(variantCover, totalQ, optCount, {
+      gradeProfile: params.gradeProfile,
+      studentName: params.studentName,
+      studentNumber8: params.studentNumber8,
+      institutionCode8: params.institutionCode8 || params.cover.institutionCode8,
+      classroom: params.classroom,
+    });
+    const fileName = buildOpticalPdfFilename(
+      variantCover,
+      code,
+      variantCover.bookletNumber,
+      params.studentNumber8
+    );
+    zip.file(fileName, pdfBytes);
+    await yieldToMainThread();
+  }
+
+  const combinedPdf = await generateMultiBookletOpticalPdf(params);
+  zip.file('00_Tum_ABCD_Optik_Formlari.pdf', combinedPdf);
+
+  return zip.generateAsync({ type: 'blob' });
 }
 
 export function buildStandaloneHtmlReport(
@@ -1903,27 +2265,11 @@ async function renderPosterSummaryPng(
     1480
   );
 
-  const blob = await new Promise<Blob>((resolve) =>
-    canvas.toBlob((b) => resolve(b!), 'image/png')
-  );
-  return new Uint8Array(await blob.arrayBuffer());
-}
-
-function dataUrlToUint8Array(dataUrl: string): Uint8Array {
-  const base64 = dataUrl.split(',')[1] || '';
-  const bin = atob(base64);
-  const bytes = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) {
-    bytes[i] = bin.charCodeAt(i);
-  }
-  return bytes;
+  return canvasToEncodedBytes(canvas, 'image/png');
 }
 
 async function canvasToPngBytes(canvas: HTMLCanvasElement): Promise<Uint8Array> {
-  const blob = await new Promise<Blob>((resolve) =>
-    canvas.toBlob((b) => resolve(b!), 'image/png')
-  );
-  return new Uint8Array(await blob.arrayBuffer());
+  return canvasToEncodedBytes(canvas, 'image/png');
 }
 
 async function drawQrBadgeOnCanvas(
@@ -2774,6 +3120,8 @@ export async function generateStudentsListPdf(
 export async function generateCompleteSystemZip(params: {
   cover: CoverConfig;
   questions: ExamQuestion[];
+  baseQuestions?: ExamQuestion[];
+  orderSeed?: number;
   analysis: ExamAnalysisResult;
   uploadedPdfBytes?: Uint8Array | null;
   pdfStripOptions?: PdfUploadStripOptions;
@@ -2784,6 +3132,8 @@ export async function generateCompleteSystemZip(params: {
   classroom?: string;
 }): Promise<Blob> {
   const zip = new JSZip();
+  const sourceBase = params.baseQuestions && params.baseQuestions.length > 0 ? params.baseQuestions : params.questions;
+  const orderSeed = params.orderSeed ?? 0;
 
   const bookletPdf = await generateBookletPdf(
     params.cover,
@@ -2829,12 +3179,53 @@ export async function generateCompleteSystemZip(params: {
 
   zip.file('01_Dogruluk_Akademi_Panel.html', buildStandalonePrototypeHtml(params.analysis, params.cover, params.questions));
   zip.file('02_Deneme_Kitapcigi_Furkan_Imzali.pdf', bookletPdf);
+  for (const code of BOOKLET_CODES) {
+    if (code === params.cover.bookletCode) {
+      zip.file(`Kitapciklar/${code}_Kitapcigi.pdf`, bookletPdf);
+    } else {
+      const varQ = buildBookletVariantQuestions(sourceBase, code, orderSeed);
+      const varPdf = await generateBookletPdf(
+        {
+          ...params.cover,
+          bookletCode: code,
+          questionCount: varQ.length || params.cover.questionCount,
+        },
+        varQ,
+        params.uploadedPdfBytes,
+        params.pdfStripOptions,
+        0.84
+      );
+      zip.file(`Kitapciklar/${code}_Kitapcigi.pdf`, varPdf);
+    }
+    await yieldToMainThread();
+  }
   zip.file('03_Optik_Form_Sablonu.pdf', opticalPdf);
+  for (const code of BOOKLET_CODES) {
+    if (code === params.cover.bookletCode) {
+      zip.file(`Optik_Formlar/Optik_${code}.pdf`, opticalPdf);
+    } else {
+      const optPdf = await generateOpticalSheetPdf(
+        { ...params.cover, bookletCode: code },
+        Math.max(params.questions.length, 120),
+        params.optionCount,
+        {
+          gradeProfile: params.gradeProfile,
+          studentName: params.studentName || params.analysis.studentName,
+          studentNumber8: params.studentNumber8 || params.analysis.studentNumber,
+          institutionCode8: params.cover.institutionCode8,
+          classroom: params.classroom || params.analysis.classroom,
+        }
+      );
+      zip.file(`Optik_Formlar/Optik_${code}.pdf`, optPdf);
+    }
+    await yieldToMainThread();
+  }
   zip.file(
     '04_Cevap_Anahtari_ve_Sorular.json',
     JSON.stringify({ cover: params.cover, questions: params.questions, analysis: params.analysis }, null, 2)
   );
   zip.file('05_Cevap_Anahtari.csv', '\uFEFF' + csvRows);
+  zip.file('05b_ABCD_Cevap_Anahtarlari.csv', buildAllBookletsAnswerKeyCsv(sourceBase, orderSeed));
   zip.file('06_5_Cesit_Analiz_Karnesi.html', buildStandaloneHtmlReport(params.analysis, params.cover));
   zip.file('07_Konu_Kazanim_Matrisi.csv', '\uFEFF' + topicMatrixCsv);
   zip.file('08_Dogruluk_Akademi_3D_Afis.png', posterPng);
@@ -2850,10 +3241,10 @@ Güvenlik: ${params.cover.isSampleDemo ? `${params.cover.securityNotice} · ÖRN
 
 Paket İçeriği:
 1. 01_Dogruluk_Akademi_Panel.html : 10 temalı taşınabilir HTML yönetim paneli
-2. 02_Deneme_Kitapcigi_Furkan_Imzali.pdf : 3D renkli kapaklı, her sayfada logolu ve son sayfası ÖRNEKTİR damgalı PDF
+2. 02_Deneme_Kitapcigi_Furkan_Imzali.pdf + Kitapciklar/{A,B,C,D}_Kitapcigi.pdf : Tüm A-B-C-D kitapçık PDF'leri
 3. 03_Optik_Form_Sablonu.pdf : Kurum kodu & 8 haneli öğrenci no kodlamalı pembe/magenta OMR optik form
 4. 04_Cevap_Anahtari_ve_Sorular.json : Yapılandırılmış soru bankası ve analiz verisi
-5. 05_Cevap_Anahtari.csv : Excel uyumlu cevap anahtarı tablosu
+5. 05_Cevap_Anahtari.csv & 05b_ABCD_Cevap_Anahtarlari.csv : Excel uyumlu A-B-C-D cevap anahtarı tabloları
 6. 06_5_Cesit_Analiz_Karnesi.html : Yazdırılabilir 5 çeşit karne ve Konu Kazanım Matrisi
 7. 07_Konu_Kazanim_Matrisi.csv : Konu bazlı kazanım başarı yüzdeleri tablosu (Excel uyumlu)
 8. 08_Dogruluk_Akademi_3D_Afis.png : Yüksek çözünürlüklü kurumsal duyuru afişi
@@ -2862,17 +3253,6 @@ Paket İçeriği:
   );
 
   return zip.generateAsync({ type: 'blob' });
-}
-
-export function triggerDownload(blob: Blob, filename: string) {
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 /**
@@ -3347,7 +3727,7 @@ export async function generateAchievementBadgePng(params: {
   ctx.font = '700 16px "DM Sans", sans-serif';
   ctx.fillText(`${cover.signatureName} (${cover.signatureTitle}) · ${academyName}`, 74, 684);
 
-  return new Promise<Blob>((resolve) => canvas.toBlob((b) => resolve(b!), 'image/png'));
+  return canvasToBlobSafe(canvas, 'image/png');
 }
 
 export async function generateOpenEndedExamPdf(params: {
@@ -3446,12 +3826,19 @@ export async function generateOpenEndedExamPdf(params: {
       A4_H - 42
     );
 
-    const pngBytes = await new Promise<ArrayBuffer>((resolve) =>
-      canvas.toBlob((blob) => blob!.arrayBuffer().then(resolve), 'image/png')
-    );
+    drawCanvasWatermark(ctx, A4_W, A4_H, cover.watermark, {
+      colorHex: preset.secondaryColor,
+      isSampleDemo: Boolean(cover.isSampleDemo),
+      isCoverOrBack: false,
+      headerY: 138,
+      footerY: A4_H - 18,
+    });
+
+    const pngBytes = await canvasToEncodedBytes(canvas, 'image/png');
     const img = await pdfDoc.embedPng(pngBytes);
     const page = pdfDoc.addPage([595.28, 841.89]);
     page.drawImage(img, { x: 0, y: 0, width: 595.28, height: 841.89 });
+    await yieldToMainThread();
   };
 
   let pNum = 1;

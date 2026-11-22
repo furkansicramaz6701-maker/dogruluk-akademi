@@ -39,6 +39,8 @@ import {
   RecommendationCategory,
   SmartRecommendation,
   StudentRecord,
+  WeeklyQuestionPreset,
+  WeeklyStudentScore,
 } from '../types/academy';
 import { formatPenaltyRuleLabel } from '../utils/examAnalysis';
 import {
@@ -56,6 +58,7 @@ import { InstitutionStudentManager } from './InstitutionStudentManager';
 import { Logo3D } from './Logo3D';
 import { NetProgressionChart } from './NetProgressionChart';
 import { ThemeSelector } from './ThemeSelector';
+import { WeeklyPerformanceComparison } from './WeeklyPerformanceComparison';
 
 interface DashboardViewProps {
   gradeProfile: GradeProfile;
@@ -103,6 +106,9 @@ interface DashboardViewProps {
   onNavigate: (tab: ActiveTab) => void;
   onDownloadZip: () => void;
   onDownloadSourceZip: () => void;
+  weeklyEntries?: WeeklyStudentScore[];
+  weeklyQuestionCount?: WeeklyQuestionPreset;
+  isPrivateAdminMode?: boolean;
 }
 
 async function fileToBase64(file: File): Promise<string> {
@@ -153,6 +159,9 @@ export function DashboardView({
   onNavigate,
   onDownloadZip,
   onDownloadSourceZip,
+  weeklyEntries,
+  weeklyQuestionCount = 50,
+  isPrivateAdminMode = false,
 }: DashboardViewProps) {
   const [recCategory, setRecCategory] = useState<'Tümü' | RecommendationCategory>('Tümü');
   const [demoAreaOpen, setDemoAreaOpen] = useState(false);
@@ -282,6 +291,30 @@ export function DashboardView({
 
   return (
     <div className="space-y-6">
+      {isPrivateAdminMode && (
+        <section
+          data-testid="dogruluk-private-admin-banner"
+          aria-label="Doğruluk Akademi Özel Yönetici Paneli"
+          className="surface-card rounded-xl p-4 sm:p-5 border-l-4 flex flex-wrap items-center justify-between gap-3"
+          style={{ borderLeftColor: 'var(--accent-primary)' }}
+        >
+          <div className="space-y-0.5 min-w-0">
+            <div className="text-xs font-extrabold uppercase tracking-wider" style={{ color: 'var(--accent-primary)' }}>
+              Sadece Doğruluk Akademi · Özel Yönetici Paneli
+            </div>
+            <h2 className="text-base sm:text-lg font-extrabold tracking-tight truncate">
+              Doğruluk Akademi Merkez Yönetim Alanı ({activeInstitution.code8})
+            </h2>
+            <p className="text-xs" style={{ color: 'var(--text-secondary)' }}>
+              Bu panel yalnızca Doğruluk Akademi’ye özeldir; diğer okullar ve dış kurumlar kendi bağımsız Kurum Girişi alanından erişir.
+            </p>
+          </div>
+          <span className="surface-alt px-3 py-1.5 rounded-lg text-xs font-mono-num font-bold shrink-0">
+            Özel Panel · Doğruluk Akademi
+          </span>
+        </section>
+      )}
+
       {/* Top 4-Column KPI Strip — Clean Natural Overview (Zero Forced Fake Sample Numbers) */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4" data-testid="dashboard-kpi-strip">
         <div className="surface-card rounded-xl p-5">
@@ -556,6 +589,17 @@ export function DashboardView({
         showTurkeyBenchmark={false}
       />
 
+      {/* Haftalık Performans Karşılaştırması (KTS-1 vs KTS-2 Trendline) */}
+      <WeeklyPerformanceComparison
+        activeInstitution={activeInstitution}
+        gradeProfile={gradeProfile}
+        penaltyDivisor={penaltyDivisor}
+        students={students}
+        weeklyEntries={weeklyEntries}
+        weeklyQuestionCount={weeklyQuestionCount}
+        onOpenWeeklyList={() => onNavigate('weekly')}
+      />
+
       {/* Grade Selector (Filtered cleanly by Kurum Yetki Kapsamı!) */}
       <section aria-labelledby="grade-selector-title" className="surface-card rounded-xl p-5">
         <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
@@ -607,7 +651,7 @@ export function DashboardView({
 
       {/* Kurum Girişi (8 Hane) + Manuel Kurum & Öğrenci Ekleme + Excel/PDF */}
       <InstitutionStudentManager
-        institutions={institutions}
+        institutions={isPrivateAdminMode ? [activeInstitution] : institutions}
         activeInstitution={activeInstitution}
         students={students}
         activeStudentNumber8={activeStudentNumber8}
@@ -622,17 +666,19 @@ export function DashboardView({
         onBulkAddStudents={onBulkAddStudents}
         onSelectStudent={onSelectStudent}
         onDownloadStudentReportPdf={onDownloadStudentReportPdf}
+        isPrivateAdminMode={isPrivateAdminMode}
       />
 
       {/* Kurum Yetki Paneli (Rol, Durum, Kota, Sınıf Kapsamları, 8 Modül Yetkisi) */}
       <InstitutionAuthPanel
-        institutions={institutions}
+        institutions={isPrivateAdminMode ? [activeInstitution] : institutions}
         activeInstitution={activeInstitution}
         students={students}
         onSelectInstitution={onSelectInstitution}
         onUpdatePermissions={onUpdateInstitutionPermissions}
         onUpdateInstitution={onUpdateInstitution}
         onDeleteInstitution={onDeleteInstitution}
+        isPrivateAdminMode={isPrivateAdminMode}
       />
 
       {/* 5 Başlık & 3D Logo Seçeneği */}
@@ -1035,7 +1081,7 @@ export function DashboardView({
                     </div>
                     <div className="text-sm font-bold">{demo.fullName}</div>
                     <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>
-                      {demo.institutionName} · {demo.classroom}
+                      {(isPrivateAdminMode ? activeInstitution.name : demo.institutionName)} · {demo.classroom}
                     </div>
                   </div>
                   <button

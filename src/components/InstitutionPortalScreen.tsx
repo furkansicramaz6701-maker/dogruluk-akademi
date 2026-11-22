@@ -25,6 +25,7 @@ import {
   createDefaultPermissions,
   generate8DigitInstitutionCode,
   normalizeInstitutionKey,
+  resolvePrimaryAdminInstitution,
 } from '../utils/institutionCodes';
 import { Logo3D } from './Logo3D';
 
@@ -70,6 +71,10 @@ export function InstitutionPortalScreen({
   const [newPassword, setNewPassword] = useState<string>('');
 
   const preset = getLogoPreset(activeLogoId);
+  const primaryAdminInst = useMemo(
+    () => resolvePrimaryAdminInstitution(institutions),
+    [institutions]
+  );
   const existingCodes = useMemo(() => new Set(institutions.map((i) => i.code8)), [institutions]);
 
   const duplicateExisting = useMemo(() => {
@@ -254,12 +259,12 @@ export function InstitutionPortalScreen({
             {portalMode === 'institution' && (
               <button
                 type="button"
-                onClick={() => onEnterInstitution(activeInstitution, 'admin')}
+                onClick={() => onEnterInstitution(primaryAdminInst, 'admin')}
                 data-testid="portal-admin-enter-btn"
                 className="btn-3d px-4 py-3 rounded-xl text-xs font-bold inline-flex items-center justify-center gap-2 whitespace-nowrap cursor-pointer"
               >
                 <Unlock className="w-4 h-4" aria-hidden="true" />
-                <span>Yönetici Girişi · Ana Panel (Şifresiz)</span>
+                <span>Doğruluk Akademi Yönetici Paneli (Şifresiz)</span>
               </button>
             )}
             <button
@@ -286,15 +291,15 @@ export function InstitutionPortalScreen({
                 <span>Şifre Gerektirmeyen Ana Panel Girişi</span>
               </div>
               <h2 id="portal-admin-title" className="text-xl sm:text-2xl font-extrabold tracking-tight">
-                Doğruluk Akademi Yönetici Girişi
+                Doğruluk Akademi Özel Yönetici Paneli
               </h2>
               <p className="text-xs sm:text-sm leading-relaxed" style={{ color: 'var(--text-secondary)' }}>
-                Ana panel yönetici girişi için parola girmenize gerek yoktur. Kurum ekleme, 3–5. sınıf doğru-yanlış götürme ayarları, PDF soru işleyici, deneme editörü, optik okuma ve 10 soruluk açık uçlu analiz modüllerinin tamamına şifresiz geçiş yapın.
+                Bu giriş yalnızca <strong>Doğruluk Akademi</strong> yönetim ekibine özeldir (parola istemez). Diğer okullar ve dış kurumlar sol sekmedeki <strong>Kurum Girişi</strong> alanından kendi kurum kodu ve şifresiyle ayrı oturum açar.
               </p>
               <div className="pt-1 flex flex-wrap items-center gap-2 text-xs" style={{ color: 'var(--text-secondary)' }}>
-                <span>Kayıtlı kurum: <strong>{institutions.length}</strong></span>
+                <span>Özel Panel Kurumu: <strong>{primaryAdminInst.name}</strong></span>
                 <span>·</span>
-                <span>Aktif hedef kurum: <strong>{selectedInst.name}</strong></span>
+                <span className="font-mono-num">Kod: <strong>{primaryAdminInst.code8}</strong></span>
               </div>
             </div>
 
@@ -304,25 +309,25 @@ export function InstitutionPortalScreen({
                 <div>
                   <div className="text-sm font-extrabold">{preset.headerTitle}</div>
                   <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>
-                    Yönetici Ana Paneli · Şifresiz Yetki
+                    Doğruluk Akademi Özel Yönetici Paneli · Şifresiz
                   </div>
                 </div>
               </div>
               <button
                 type="button"
-                onClick={() => onEnterInstitution(selectedInst, 'admin')}
+                onClick={() => onEnterInstitution(primaryAdminInst, 'admin')}
                 data-testid="portal-admin-enter-btn"
                 className="btn-3d w-full py-3.5 px-4 rounded-xl text-sm font-bold inline-flex items-center justify-center gap-2 cursor-pointer"
               >
                 <Unlock className="w-4 h-4" aria-hidden="true" />
-                <span>Ana Panele Şifresiz Giriş Yap</span>
+                <span>Doğruluk Akademi Özel Paneline Gir</span>
               </button>
               <button
                 type="button"
                 onClick={() => setPortalMode('institution')}
                 className="btn-3d-secondary w-full py-2.5 px-4 rounded-xl text-xs font-bold cursor-pointer"
               >
-                Kurum Kodu ile Kurum Girişine Geç
+                Diğer Kurumlar İçin Kurum Girişine Geç
               </button>
             </div>
           </section>

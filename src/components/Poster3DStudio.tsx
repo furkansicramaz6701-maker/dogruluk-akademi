@@ -14,6 +14,7 @@ import {
   Trophy,
 } from 'lucide-react';
 import { CoverConfig, ExamAnalysisResult, GradeProfile } from '../types/academy';
+import { canvasToBlobSafe } from '../utils/downloadHelpers';
 import { triggerDownload } from '../utils/pdfAndZip';
 import { buildGradeAppropriateSubtitle } from '../utils/weeklyAnalysis';
 import { Logo3D } from './Logo3D';
@@ -79,6 +80,7 @@ export function Poster3DStudio({
   const [tiltY, setTiltY] = useState<number>(-8);
   const [tiltX, setTiltX] = useState<number>(5);
   const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
 
   useEffect(() => {
     setSubheadline(buildGradeAppropriateSubtitle(gradeProfile));
@@ -389,10 +391,15 @@ export function Poster3DStudio({
         H - 96
       );
 
-      const blob = await new Promise<Blob>((resolve) =>
-        canvas.toBlob((b) => resolve(b!), 'image/png')
-      );
+      const blob = await canvasToBlobSafe(canvas, 'image/png');
+      setExportError(null);
       triggerDownload(blob, `Dogruluk-Akademi-3D-Afis-${template}.png`);
+    } catch (err) {
+      setExportError(
+        err instanceof Error
+          ? `Afiş PNG oluşturulamadı: ${err.message}`
+          : 'Afiş PNG indirilirken bir hata oluştu.'
+      );
     } finally {
       setExporting(false);
     }
@@ -420,6 +427,11 @@ export function Poster3DStudio({
           <span>{exporting ? 'Afiş Oluşturuluyor...' : 'Yüksek Çözünürlüklü Afişi İndir (PNG)'}</span>
         </button>
       </div>
+      {exportError && (
+        <div className="rounded-xl px-4 py-2.5 text-xs font-bold bg-rose-50 text-rose-800 border border-rose-200">
+          {exportError}
+        </div>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
         {/* Left: Controls */}

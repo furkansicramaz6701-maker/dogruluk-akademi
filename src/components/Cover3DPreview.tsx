@@ -6,7 +6,13 @@ import {
   extractGradeLabelFromCover,
   normalizeBookletNumber,
   resolveCoverColorPalette,
+  resolveCoverLayoutStyle,
 } from '../utils/bookletDistribution';
+import {
+  buildWatermarkDisplayText,
+  computeWatermarkPlacements,
+  resolvePdfWatermarkConfig,
+} from '../utils/pdfWatermark';
 import { Logo3D } from './Logo3D';
 import { FurkanDigitalSignature } from './FurkanDigitalSignature';
 
@@ -21,6 +27,8 @@ export function Cover3DPreview({ cover }: Cover3DPreviewProps) {
 
   const basePreset = getLogoPreset(cover.logoStyleId);
   const palette = resolveCoverColorPalette(cover, basePreset);
+  const layoutOption = resolveCoverLayoutStyle(cover);
+  const layoutId = layoutOption.id;
   const preset = {
     ...basePreset,
     primaryColor: palette.primaryColor,
@@ -31,16 +39,28 @@ export function Cover3DPreview({ cover }: Cover3DPreviewProps) {
   const bookletNum = cover.bookletNumber ? normalizeBookletNumber(cover.bookletNumber) : '';
   const showSample = Boolean(cover.isSampleDemo);
   const effectiveRotateY = flipped ? angleY + 180 : angleY;
+  const watermarkCfg = resolvePdfWatermarkConfig(cover.watermark);
+  const watermarkPlaces = computeWatermarkPlacements(watermarkCfg.placement);
+  const watermarkText = buildWatermarkDisplayText(watermarkCfg, {
+    isSampleDemo: showSample,
+  });
+  const showCoverWatermark = watermarkCfg.enabled && watermarkCfg.includeCoverAndBack;
 
   return (
-    <div className="surface-card rounded-xl p-5 flex flex-col gap-4" data-testid="cover-3d-preview">
+    <div
+      className="surface-card rounded-xl p-5 flex flex-col gap-4"
+      data-testid="cover-3d-preview"
+      data-cover-layout={layoutId}
+      data-cover-palette={cover.coverColorThemeId ?? 'otomatik-abcd'}
+      data-cover-primary={palette.primaryColor}
+    >
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2">
           <Rotate3D className="w-5 h-5" style={{ color: 'var(--accent-primary)' }} aria-hidden="true" />
           <div>
             <h3 className="text-base font-bold leading-tight">3D Renkli Kitapçık Kapak Önizleme</h3>
             <p className="text-xs" style={{ color: 'var(--text-secondary)' }}>
-              {cover.bookletCode} Kitapçığı{bookletNum ? ` · No: ${bookletNum}` : ''} · {palette.themeLabel} · {cover.signatureName} 3D İmzalı
+              {cover.bookletCode} Kitapçığı{bookletNum ? ` · No: ${bookletNum}` : ''} · {palette.themeLabel} · {layoutOption.name} · {cover.signatureName} 3D İmzalı
             </p>
           </div>
         </div>
@@ -98,20 +118,101 @@ export function Cover3DPreview({ cover }: Cover3DPreviewProps) {
 
           {/* Front 3D Colorful Cover Face */}
           <div
-            className="absolute inset-0 bg-white text-slate-900 rounded-r-xl border-2 shadow-2xl p-4 flex flex-col justify-between overflow-hidden"
+            className={`absolute inset-0 bg-white text-slate-900 rounded-r-xl border-2 shadow-2xl p-4 flex flex-col justify-between overflow-hidden ${
+              layoutId === 'geometrik-blok' ? 'pl-6' : ''
+            }`}
             style={{ backfaceVisibility: 'hidden', borderColor: preset.primaryColor }}
           >
-            {/* Colorful 3D Diagonal Accent Ribbons */}
-            <div
-              aria-hidden="true"
-              className="absolute -right-12 -top-10 w-52 h-52 rounded-full opacity-20 pointer-events-none"
-              style={{ background: `radial-gradient(circle, ${preset.primaryColor}, transparent)` }}
-            />
-            <div
-              aria-hidden="true"
-              className="absolute -left-10 bottom-16 w-44 h-44 rounded-full opacity-20 pointer-events-none"
-              style={{ background: `radial-gradient(circle, ${preset.goldColor}, transparent)` }}
-            />
+            {/* Layout-Specific Graphical Background Layers */}
+            {layoutId === 'klasik-cerceve' && (
+              <>
+                <div
+                  aria-hidden="true"
+                  className="absolute inset-2 rounded-lg border pointer-events-none opacity-65"
+                  style={{ borderColor: preset.goldColor }}
+                />
+                <div
+                  aria-hidden="true"
+                  className="absolute -right-12 -top-10 w-52 h-52 rounded-full opacity-18 pointer-events-none"
+                  style={{ background: `radial-gradient(circle, ${preset.primaryColor}, transparent)` }}
+                />
+                <div
+                  aria-hidden="true"
+                  className="absolute -left-10 bottom-16 w-44 h-44 rounded-full opacity-18 pointer-events-none"
+                  style={{ background: `radial-gradient(circle, ${preset.goldColor}, transparent)` }}
+                />
+              </>
+            )}
+
+            {layoutId === 'diyagonal-serit' && (
+              <>
+                <div
+                  aria-hidden="true"
+                  className="absolute -left-14 top-28 w-[140%] h-20 -rotate-12 opacity-12 pointer-events-none"
+                  style={{ background: `linear-gradient(90deg, ${preset.secondaryColor}, ${preset.primaryColor})` }}
+                />
+                <div
+                  aria-hidden="true"
+                  className="absolute -right-14 bottom-20 w-[130%] h-14 -rotate-12 opacity-20 pointer-events-none"
+                  style={{ background: `linear-gradient(90deg, ${preset.goldColor}, ${preset.primaryColor})` }}
+                />
+                <div
+                  aria-hidden="true"
+                  className="absolute -top-6 -right-6 w-24 h-24 rotate-45 opacity-25 pointer-events-none"
+                  style={{ backgroundColor: preset.goldColor }}
+                />
+              </>
+            )}
+
+            {layoutId === 'geometrik-blok' && (
+              <>
+                <div
+                  aria-hidden="true"
+                  className="absolute top-0 bottom-0 left-0 w-3 pointer-events-none"
+                  style={{ background: `linear-gradient(180deg, ${preset.secondaryColor}, ${preset.primaryColor})` }}
+                />
+                <div
+                  aria-hidden="true"
+                  className="absolute top-0 bottom-0 left-3 w-1 pointer-events-none"
+                  style={{ backgroundColor: preset.goldColor }}
+                />
+                <div
+                  aria-hidden="true"
+                  className="absolute top-28 right-0 w-16 h-8 opacity-15 pointer-events-none"
+                  style={{ backgroundColor: preset.primaryColor }}
+                />
+                <div
+                  aria-hidden="true"
+                  className="absolute bottom-24 right-0 w-24 h-12 opacity-15 pointer-events-none"
+                  style={{ backgroundColor: preset.goldColor }}
+                />
+              </>
+            )}
+
+            {layoutId === 'akademik-kose' && (
+              <>
+                <div
+                  aria-hidden="true"
+                  className="absolute top-0 left-0 w-0 h-0 border-t-[44px] border-r-[44px] border-r-transparent opacity-85 pointer-events-none"
+                  style={{ borderTopColor: preset.secondaryColor }}
+                />
+                <div
+                  aria-hidden="true"
+                  className="absolute top-0 right-0 w-0 h-0 border-t-[44px] border-l-[44px] border-l-transparent opacity-85 pointer-events-none"
+                  style={{ borderTopColor: preset.goldColor }}
+                />
+                <div
+                  aria-hidden="true"
+                  className="absolute bottom-0 left-0 w-0 h-0 border-b-[40px] border-r-[40px] border-r-transparent opacity-85 pointer-events-none"
+                  style={{ borderBottomColor: preset.goldColor }}
+                />
+                <div
+                  aria-hidden="true"
+                  className="absolute bottom-0 right-0 w-0 h-0 border-b-[40px] border-l-[40px] border-l-transparent opacity-85 pointer-events-none"
+                  style={{ borderBottomColor: preset.secondaryColor }}
+                />
+              </>
+            )}
 
             {/* Header Band */}
             <div className="relative z-10">
@@ -155,6 +256,13 @@ export function Cover3DPreview({ cover }: Cover3DPreviewProps) {
                   {cover.examTitle}
                 </h4>
                 <p className="text-[11px] text-slate-600 mt-1">{gradeLabel} · {cover.subtitle}</p>
+                {layoutId === 'akademik-kose' && (
+                  <div className="flex items-center justify-center gap-2 mt-1.5" aria-hidden="true">
+                    <span className="h-0.5 w-10 rounded-full" style={{ backgroundColor: preset.goldColor }} />
+                    <span className="w-2 h-2 rotate-45" style={{ backgroundColor: preset.primaryColor }} />
+                    <span className="h-0.5 w-10 rounded-full" style={{ backgroundColor: preset.goldColor }} />
+                  </div>
+                )}
               </div>
 
               {/* Colorful 3D Spec Strip */}
@@ -241,17 +349,91 @@ export function Cover3DPreview({ cover }: Cover3DPreviewProps) {
                 {cover.securityNotice}
               </div>
             </div>
+
+            {showCoverWatermark && (
+              <div
+                aria-hidden="true"
+                data-testid="cover-3d-watermark-preview"
+                className="absolute inset-0 z-20 pointer-events-none flex items-center justify-center overflow-hidden"
+              >
+                {watermarkPlaces.drawHeaderFooter && (
+                  <>
+                    <div
+                      className="absolute top-1.5 inset-x-4 text-center font-extrabold tracking-wide truncate"
+                      style={{
+                        opacity: watermarkCfg.opacity,
+                        color: watermarkCfg.colorHex || preset.secondaryColor,
+                        fontSize: `${Math.max(6.5, Math.round(7.5 * (watermarkCfg.fontScale ?? 1) * 10) / 10)}px`,
+                      }}
+                    >
+                      {watermarkText}
+                    </div>
+                    <div
+                      className="absolute bottom-1.5 inset-x-4 text-center font-extrabold tracking-wide truncate"
+                      style={{
+                        opacity: watermarkCfg.opacity,
+                        color: watermarkCfg.colorHex || preset.secondaryColor,
+                        fontSize: `${Math.max(6.5, Math.round(7.5 * (watermarkCfg.fontScale ?? 1) * 10) / 10)}px`,
+                      }}
+                    >
+                      {watermarkText}
+                    </div>
+                  </>
+                )}
+                {watermarkPlaces.drawBackground && (
+                  <div
+                    className="font-extrabold tracking-wider whitespace-nowrap text-center px-2"
+                    style={{
+                      opacity: watermarkCfg.opacity,
+                      color: watermarkCfg.colorHex || preset.secondaryColor,
+                      fontSize: `${Math.round(14 * (watermarkCfg.fontScale ?? 1))}px`,
+                      transform: `rotate(${watermarkCfg.angleDeg ?? -32}deg)`,
+                    }}
+                  >
+                    {watermarkText}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Back Cover Face (Last Page "İMZA & ONAY SAYFASI") */}
           <div
-            className="absolute inset-0 bg-slate-50 text-slate-900 rounded-l-xl border-2 shadow-2xl p-5 flex flex-col justify-between"
+            className="absolute inset-0 bg-slate-50 text-slate-900 rounded-l-xl border-2 shadow-2xl p-5 flex flex-col justify-between overflow-hidden"
             style={{
               backfaceVisibility: 'hidden',
               transform: 'rotateY(180deg)',
               borderColor: preset.primaryColor,
             }}
           >
+            {layoutId === 'geometrik-blok' && (
+              <div
+                aria-hidden="true"
+                className="absolute top-0 bottom-0 right-0 w-2.5 pointer-events-none"
+                style={{ background: `linear-gradient(180deg, ${preset.primaryColor}, ${preset.goldColor})` }}
+              />
+            )}
+            {layoutId === 'diyagonal-serit' && (
+              <div
+                aria-hidden="true"
+                className="absolute -left-10 bottom-20 w-[130%] h-12 -rotate-12 opacity-15 pointer-events-none"
+                style={{ backgroundColor: preset.primaryColor }}
+              />
+            )}
+            {layoutId === 'akademik-kose' && (
+              <>
+                <div
+                  aria-hidden="true"
+                  className="absolute top-0 right-0 w-0 h-0 border-t-[32px] border-l-[32px] border-l-transparent opacity-80 pointer-events-none"
+                  style={{ borderTopColor: preset.goldColor }}
+                />
+                <div
+                  aria-hidden="true"
+                  className="absolute bottom-0 left-0 w-0 h-0 border-b-[32px] border-r-[32px] border-r-transparent opacity-80 pointer-events-none"
+                  style={{ borderBottomColor: preset.secondaryColor }}
+                />
+              </>
+            )}
             <div>
               <div className="flex items-center justify-between gap-2 text-slate-900 font-display font-bold text-sm border-b border-slate-300 pb-2.5">
                 <div className="flex items-center gap-2">
@@ -299,6 +481,51 @@ export function Cover3DPreview({ cover }: Cover3DPreviewProps) {
                 {cover.academyName} ({cover.institutionCode8 || '48291045'}) · {gradeLabel} · {cover.bookletCode} Kitapçığı.
               </p>
             </div>
+
+            {showCoverWatermark && (
+              <div
+                aria-hidden="true"
+                className="absolute inset-0 z-20 pointer-events-none flex items-center justify-center overflow-hidden"
+              >
+                {watermarkPlaces.drawHeaderFooter && (
+                  <>
+                    <div
+                      className="absolute top-1.5 inset-x-4 text-center font-extrabold tracking-wide truncate"
+                      style={{
+                        opacity: watermarkCfg.opacity,
+                        color: watermarkCfg.colorHex || preset.secondaryColor,
+                        fontSize: `${Math.max(6.5, Math.round(7.5 * (watermarkCfg.fontScale ?? 1) * 10) / 10)}px`,
+                      }}
+                    >
+                      {watermarkText}
+                    </div>
+                    <div
+                      className="absolute bottom-1.5 inset-x-4 text-center font-extrabold tracking-wide truncate"
+                      style={{
+                        opacity: watermarkCfg.opacity,
+                        color: watermarkCfg.colorHex || preset.secondaryColor,
+                        fontSize: `${Math.max(6.5, Math.round(7.5 * (watermarkCfg.fontScale ?? 1) * 10) / 10)}px`,
+                      }}
+                    >
+                      {watermarkText}
+                    </div>
+                  </>
+                )}
+                {watermarkPlaces.drawBackground && (
+                  <div
+                    className="font-extrabold tracking-wider whitespace-nowrap text-center px-2"
+                    style={{
+                      opacity: watermarkCfg.opacity,
+                      color: watermarkCfg.colorHex || preset.secondaryColor,
+                      fontSize: `${Math.round(14 * (watermarkCfg.fontScale ?? 1))}px`,
+                      transform: `rotate(${watermarkCfg.angleDeg ?? -32}deg)`,
+                    }}
+                  >
+                    {watermarkText}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         </div>
       </div>

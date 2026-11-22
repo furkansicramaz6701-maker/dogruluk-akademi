@@ -5,6 +5,7 @@ import {
   generate8DigitInstitutionCode,
   generate8DigitStudentNumber,
 } from './institutionCodes';
+import { normalizeTurkishSlug, triggerDownload } from './downloadHelpers';
 
 export interface InstitutionExportRow {
   'Kurum Kodu (8 Hane)': string;
@@ -272,7 +273,11 @@ export function exportInstitutionsToXlsx(
     XLSX.utils.book_append_sheet(wb, stuSheet, 'Tum Ogrenciler');
   }
 
-  XLSX.writeFile(wb, 'Dogruluk-Akademi-Kurumlar.xlsx');
+  const out = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+  const blob = new Blob([out], {
+    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  });
+  triggerDownload(blob, 'Dogruluk-Akademi-Kurumlar.xlsx');
 }
 
 export function exportStudentsToXlsx(
@@ -293,7 +298,11 @@ export function exportStudentsToXlsx(
     { wch: 14 },
   ];
   XLSX.utils.book_append_sheet(wb, ws, 'Ogrenciler');
-  XLSX.writeFile(wb, `Ogrenciler-${activeInstitution.code8}.xlsx`);
+  const out = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+  const blob = new Blob([out], {
+    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  });
+  triggerDownload(blob, `Ogrenciler-${activeInstitution.code8}.xlsx`);
 }
 
 export function buildWeeklyComparisonWorkbookBlob(params: {
@@ -383,13 +392,7 @@ export function exportWeeklyComparisonToXlsx(params: {
   gradeLabel: string;
 }): Blob {
   const blob = buildWeeklyComparisonWorkbookBlob(params);
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `Haftalik-Liste-Analizi-${params.kts1Name.replace(/[^a-zA-Z0-9]+/g, '-')}.xlsx`;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  const ktsSlug = normalizeTurkishSlug(params.kts1Name, 'kts-1');
+  triggerDownload(blob, `Haftalik-Liste-Analizi-${ktsSlug}.xlsx`);
   return blob;
 }

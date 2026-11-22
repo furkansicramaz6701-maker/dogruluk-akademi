@@ -38,6 +38,8 @@ import {
   DynamicCurriculumOverride,
   EducationCalendarEvent,
   ExamQuestion,
+  ExamSourceMode,
+  ExternalPublisherExamConfig,
   GradeLevelId,
   Institution,
   InstitutionPermissions,
@@ -45,16 +47,29 @@ import {
   OpenEndedPaperAnalysis,
   OpenEndedQuestion,
   PdfUploadStripOptions,
+  PdfWatermarkPlacement,
+  PdfWatermarkPreset,
   PenaltyDivisor,
   SmartRecommendation,
   StudentBookletAssignment,
   StudentRecord,
   TopicGapMetric,
+  WeeklyQuestionPreset,
+  WeeklyStudentScore,
 } from './types/academy';
 import {
+  assignBookletsToRegisteredStudents,
+  BOOKLET_CODES,
+  buildAllBookletsZipFilename,
+  buildAnswerKeysForAllBooklets,
   buildAnswerKeyString,
+  buildBookletPdfFilename,
   buildBookletVariantQuestions,
+  buildOpticalPdfFilename,
   defaultStartBookletNumberForGrade,
+  normalizeBookletNumber,
+  resolveActiveAnswerKeyByMode,
+  syncBookletVariantsAndOpticalKeys,
 } from './utils/bookletDistribution';
 import {
   buildAutoExamQuestions,
@@ -74,18 +89,33 @@ import {
   filterGradeProfilesByInstitution,
   isGradeAllowedForInstitution,
   normalizeInstitution,
+  resolvePrimaryAdminInstitution,
   updateInstitutionRecord,
   upsertInstitutionList,
 } from './utils/institutionCodes';
 import {
   buildWeeklyPcStandaloneHtml,
+  generateAllBookletsZip,
+  generateAllOpticalFormsZip,
   generateBookletPdf,
   generateCompleteSystemZip,
+  generateMultiBookletOpticalPdf,
   generateOpticalSheetPdf,
   generateStudentReportCardPdf,
   generateWeeklyRankingPdf,
   triggerDownload,
 } from './utils/pdfAndZip';
+import {
+  buildStudentReportPdfFilename,
+  uint8ArrayToPdfBlob,
+} from './utils/downloadHelpers';
+import {
+  DEFAULT_PDF_WATERMARK_CONFIG,
+  DEFAULT_WATERMARK_PRESETS,
+  deleteWatermarkPreset as removeWatermarkPresetFromList,
+  ensureWatermarkPresetList,
+  upsertWatermarkPreset,
+} from './utils/pdfWatermark';
 import { buildWeeklyComparisonWorkbookBlob, defaultClassroomForGrade } from './utils/excelExport';
 import {
   buildRemedialCalendarEvent,
@@ -216,9 +246,22 @@ export default function App() {
     }));
   });
 
-  const activeInstitution = useMemo(
-    () => institutions.find((i) => i.id === activeInstitutionId) ?? institutions[0],
-    [institutions, activeInstitutionId]
+  const primaryAdminInstitution = useMemo(
+    () => resolvePrimaryAdminInstitution(institutions),
+    [institutions]
+  );
+
+  const activeInstitution = useMemo(() => {
+    if (loginMode === 'admin') {
+      return primaryAdminInstitution;
+    }
+    return institutions.find((i) => i.id === activeInstitutionId) ?? primaryAdminInstitution;
+  }, [loginMode, institutions, activeInstitutionId, primaryAdminInstitution]);
+
+  const [watermarkPresets, setWatermarkPresets] = useState<PdfWatermarkPreset[]>(() =>
+    ensureWatermarkPresetList(
+      readStorageJson<PdfWatermarkPreset[]>('da_watermark_presets_v1', DEFAULT_WATERMARK_PRESETS)
+    )
   );
 
   const activeLogoPreset = useMemo(() => getLogoPreset(activeLogoId), [activeLogoId]);
@@ -228,7 +271,14 @@ export default function App() {
     buildAutoExamQuestions('5', 'dengeli')
   );
   const [questions, setQuestions] = useState<ExamQuestion[]>(baseExamQuestions);
+  const [bookletOrderSeed, setBookletOrderSeed] = useState<number>(0);
   const [batchAssignments, setBatchAssignments] = useState<StudentBookletAssignment[]>([]);
+  const [examSourceMode, setExamSourceMode] = useState<ExamSourceMode>('kurum');
+  const [externalPublisherConfig, setExternalPublisherConfig] = useState<ExternalPublisherExamConfig>({
+    publisherName: '',
+    examTitle: '',
+    answerKeys: { A: '', B: '', C: '', D: '' },
+  });
 
   const [studentAnswersRaw, setStudentAnswersRaw] = useState<string>('');
   const [answerKeyRaw, setAnswerKeyRaw] = useState<string>(() =>
@@ -252,6 +302,8 @@ export default function App() {
     bookletCode: 'A',
     bookletNumber: '050001',
     coverColorThemeId: 'otomatik-abcd',
+    coverLayoutId: 'klasik-cerceve',
+    watermark: { ...DEFAULT_PDF_WATERMARK_CONFIG },
     signatureName: 'Furkan',
     signatureTitle: 'Kurucu & Eğitim Koordinatörü',
     securityNotice:
@@ -276,6 +328,17 @@ export default function App() {
     const saved = readStorageJson<EducationCalendarEvent[]>('da_calendar_events_v1', []);
     return Array.isArray(saved) ? saved : [];
   });
+
+  const [weeklyEntriesByInst, setWeeklyEntriesByInst] = useState<
+    Record<string, WeeklyStudentScore[]>
+  >(() => {
+    const saved = readStorageJson<Record<string, WeeklyStudentScore[]>>(
+      'da_weekly_entries_v1',
+      {}
+    );
+    return saved && typeof saved === 'object' && !Array.isArray(saved) ? saved : {};
+  });
+  const [weeklyQuestionCount, setWeeklyQuestionCount] = useState<WeeklyQuestionPreset>(50);
 
   const [cascadeEnabled, setCascadeEnabled] = useState<boolean>(true);
   const [exportBusy, setExportBusy] = useState(false);
@@ -334,10 +397,20 @@ export default function App() {
       window.localStorage.setItem('da_active_inst_v1', activeInstitutionId);
       window.localStorage.setItem('da_students_v1', JSON.stringify(students));
       window.localStorage.setItem('da_calendar_events_v1', JSON.stringify(calendarEvents));
+      window.localStorage.setItem('da_weekly_entries_v1', JSON.stringify(weeklyEntriesByInst));
+      window.localStorage.setItem('da_watermark_presets_v1', JSON.stringify(watermarkPresets));
     } catch {
       // Ignore storage quota errors
     }
-  }, [activeLogoId, institutions, activeInstitutionId, students, calendarEvents]);
+  }, [
+    activeLogoId,
+    institutions,
+    activeInstitutionId,
+    students,
+    calendarEvents,
+    weeklyEntriesByInst,
+    watermarkPresets,
+  ]);
 
   // Apply selected theme CSS variables and dark class on <html>
   useEffect(() => {
@@ -539,7 +612,12 @@ export default function App() {
       return;
     }
     const nextQuestions = buildAutoExamQuestions(targetGradeId, 'dengeli');
-    const variantQuestions = buildBookletVariantQuestions(nextQuestions, cover.bookletCode);
+    const synced = syncBookletVariantsAndOpticalKeys(
+      nextQuestions,
+      cover.bookletCode,
+      bookletOrderSeed
+    );
+    const variantQuestions = synced.activeQuestions;
     const nextStartNum = String(defaultStartBookletNumberForGrade(targetGradeId)).padStart(6, '0');
     setGradeId(targetGradeId);
     setMebOverride(null);
@@ -552,7 +630,7 @@ export default function App() {
       setStudentAnswersRaw('');
       setHasLiveAnalysis(false);
     }
-    setAnswerKeyRaw(buildAnswerKeyString(variantQuestions));
+    setAnswerKeyRaw(synced.activeAnswerKey);
     setAiCoachSummary(undefined);
     setCover((prev) => ({
       ...prev,
@@ -733,49 +811,95 @@ export default function App() {
   };
 
   const handleAddStudent = (stu: StudentRecord) => {
-    setStudents((prev) => [stu, ...prev]);
-    const targetInst = institutions.find((i) => i.id === stu.institutionId);
+    const existingCount = students.filter(
+      (s) => s.institutionId === stu.institutionId && s.gradeId === stu.gradeId
+    ).length;
+    const assignedCode: BookletCode =
+      stu.assignedBookletCode && BOOKLET_CODES.includes(stu.assignedBookletCode)
+        ? stu.assignedBookletCode
+        : BOOKLET_CODES[existingCount % BOOKLET_CODES.length];
+    const assignedNo =
+      stu.assignedBookletNumber ??
+      String(defaultStartBookletNumberForGrade(stu.gradeId) + existingCount).padStart(6, '0');
+    const enrichedStu: StudentRecord = {
+      ...stu,
+      assignedBookletCode: assignedCode,
+      assignedBookletNumber: assignedNo,
+    };
+    setStudents((prev) => [enrichedStu, ...prev]);
+    const targetInst = institutions.find((i) => i.id === enrichedStu.institutionId);
     setCover((prev) => ({
       ...prev,
       academyName: targetInst ? targetInst.name : prev.academyName,
       institutionCode8: targetInst ? targetInst.code8 : prev.institutionCode8,
+      bookletCode: assignedCode,
+      bookletNumber: assignedNo,
       isSampleDemo: false,
     }));
     if (targetInst) {
       setActiveInstitutionId(targetInst.id);
     }
-    syncGradeForStudent(stu.gradeId);
-    setStudentName(stu.fullName);
-    setStudentNumber(stu.studentNumber8);
-    setClassroom(stu.classroom);
+    syncGradeForStudent(enrichedStu.gradeId);
+    setStudentName(enrichedStu.fullName);
+    setStudentNumber(enrichedStu.studentNumber8);
+    setClassroom(enrichedStu.classroom);
     setStudentAnswersRaw('');
     setHasLiveAnalysis(false);
-    const gp = getGradeProfile(stu.gradeId);
+    const gp = getGradeProfile(enrichedStu.gradeId);
     showToast(
-      `${stu.fullName} kaydedildi · ${gp.shortLabel} · No: ${stu.studentNumber8} (Henüz deneme yapılmadı)`
+      `${enrichedStu.fullName} kaydedildi · ${gp.shortLabel} · Kitapçık: ${assignedCode} (#${assignedNo})`
     );
   };
 
   const handleBulkAddStudents = (items: StudentRecord[]) => {
     if (items.length === 0) return;
-    setStudents((prev) => [...items, ...prev]);
-    const first = items[0];
-    setCover((prev) => ({ ...prev, isSampleDemo: false }));
+    const baseCount = students.filter((s) => s.institutionId === items[0].institutionId).length;
+    const enrichedItems = items.map((item, idx) => {
+      const code =
+        item.assignedBookletCode && BOOKLET_CODES.includes(item.assignedBookletCode)
+          ? item.assignedBookletCode
+          : BOOKLET_CODES[(baseCount + idx) % BOOKLET_CODES.length];
+      const num =
+        item.assignedBookletNumber ??
+        String(defaultStartBookletNumberForGrade(item.gradeId) + baseCount + idx).padStart(6, '0');
+      return {
+        ...item,
+        assignedBookletCode: code,
+        assignedBookletNumber: num,
+      };
+    });
+    setStudents((prev) => [...enrichedItems, ...prev]);
+    const first = enrichedItems[0];
+    setCover((prev) => ({
+      ...prev,
+      bookletCode: first.assignedBookletCode || 'A',
+      bookletNumber: first.assignedBookletNumber || prev.bookletNumber,
+      isSampleDemo: false,
+    }));
     syncGradeForStudent(first.gradeId);
     setStudentName(first.fullName);
     setStudentNumber(first.studentNumber8);
     setClassroom(first.classroom);
     setStudentAnswersRaw('');
     setHasLiveAnalysis(false);
-    showToast(`${items.length} öğrenci Excel'den içe aktarıldı (Deneme bekleniyor).`);
+    showToast(
+      `${enrichedItems.length} öğrenci Excel'den içe aktarıldı ve otomatik A-B-C-D kitapçık yerleştirildi.`
+    );
   };
 
   const handleSelectStudent = (stu: StudentRecord) => {
     const targetInst = institutions.find((i) => i.id === stu.institutionId);
+    const stuCode: BookletCode =
+      stu.assignedBookletCode && BOOKLET_CODES.includes(stu.assignedBookletCode)
+        ? stu.assignedBookletCode
+        : cover.bookletCode;
+    const stuBookletNo = stu.assignedBookletNumber || cover.bookletNumber;
     setCover((prev) => ({
       ...prev,
       academyName: targetInst ? targetInst.name : prev.academyName,
       institutionCode8: targetInst ? targetInst.code8 : prev.institutionCode8,
+      bookletCode: stuCode,
+      bookletNumber: stuBookletNo,
       isSampleDemo: false,
     }));
     if (targetInst && targetInst.id !== activeInstitutionId) {
@@ -793,12 +917,24 @@ export default function App() {
     } else {
       setStudentAnswersRaw('');
       setHasLiveAnalysis(false);
+      if (examSourceMode === 'farkli-yayin') {
+        const extKey = resolveActiveAnswerKeyByMode({
+          examSourceMode: 'farkli-yayin',
+          bookletCode: stuCode,
+          baseQuestions: baseExamQuestions,
+          orderSeed: bookletOrderSeed,
+          externalKeys: externalPublisherConfig.answerKeys,
+          optionCount: getGradeProfile(stu.gradeId).optionCount,
+          fallbackKey: answerKeyRaw,
+        });
+        setAnswerKeyRaw(extKey);
+      }
     }
     const gp = getGradeProfile(stu.gradeId);
     showToast(
       hasSavedExam
-        ? `Aktif öğrenci: ${stu.fullName} (${stu.studentNumber8}) · ${gp.shortLabel} optik kaydı yüklendi`
-        : `Aktif öğrenci: ${stu.fullName} (${stu.studentNumber8}) · ${gp.shortLabel} (Henüz deneme yapılmadı)`
+        ? `Aktif öğrenci: ${stu.fullName} (${stu.studentNumber8}) · ${stuCode} Kitapçığı optik kaydı yüklendi`
+        : `Aktif öğrenci: ${stu.fullName} (${stu.studentNumber8}) · ${gp.shortLabel} · ${stuCode} Kitapçığı`
     );
   };
 
@@ -877,10 +1013,23 @@ export default function App() {
       autoSyncAnswerKey?: boolean;
     }
   ) => {
-    const variantQuestions = buildBookletVariantQuestions(baseExamQuestions, nextCode);
-    setQuestions(variantQuestions);
+    const synced = syncBookletVariantsAndOpticalKeys(
+      baseExamQuestions,
+      nextCode,
+      bookletOrderSeed
+    );
+    setQuestions(synced.activeQuestions);
     if (opts?.autoSyncAnswerKey !== false) {
-      setAnswerKeyRaw(buildAnswerKeyString(variantQuestions));
+      const nextKey = resolveActiveAnswerKeyByMode({
+        examSourceMode,
+        bookletCode: nextCode,
+        baseQuestions: baseExamQuestions,
+        orderSeed: bookletOrderSeed,
+        externalKeys: externalPublisherConfig.answerKeys,
+        optionCount: gradeProfile.optionCount,
+        fallbackKey: answerKeyRaw,
+      });
+      setAnswerKeyRaw(nextKey);
     }
     if (opts?.studentName !== undefined) setStudentName(opts.studentName);
     if (opts?.studentNumber !== undefined) setStudentNumber(opts.studentNumber);
@@ -890,8 +1039,68 @@ export default function App() {
       bookletCode: nextCode,
       bookletNumber: opts?.bookletNumber ?? prev.bookletNumber,
       gradeLabel: prev.gradeLabel || gradeProfile.shortLabel,
-      questionCount: variantQuestions.length,
+      questionCount: synced.activeQuestions.length,
     }));
+  };
+
+  const handleAutoAssignRegisteredStudents = (opts?: { includeAllGrades?: boolean }) => {
+    const res = assignBookletsToRegisteredStudents({
+      students,
+      institutionId: activeInstitution.id,
+      gradeProfile,
+      baseQuestions: baseExamQuestions,
+      startingBookletCode: 'A',
+      startBookletNumber: defaultStartBookletNumberForGrade(gradeId),
+      orderSeed: bookletOrderSeed,
+      examSourceMode,
+      externalKeys: externalPublisherConfig.answerKeys,
+      fallbackKey: answerKeyRaw,
+      includeAllGradesInInstitution: opts?.includeAllGrades ?? false,
+      preserveExisting: false,
+    });
+    if (res.assignedCount === 0) {
+      showToast(
+        `${activeInstitution.name} için kayıtlı öğrenci bulunamadı; sağ üstteki Öğrenci Paneli’nden öğrenci ekleyebilirsiniz.`
+      );
+      return;
+    }
+    setStudents(res.updatedStudents);
+    setBatchAssignments(res.assignments);
+    const first = res.assignments[0];
+    if (first) {
+      handleSelectBookletVariant(first.bookletCode, {
+        bookletNumber: first.bookletNumber,
+        studentName: first.studentName,
+        studentNumber: first.studentNumber8,
+        classroom: first.classroom,
+        autoSyncAnswerKey: true,
+      });
+    }
+    showToast(
+      `${res.assignedCount} kayıtlı öğrenciye ${
+        examSourceMode === 'farkli-yayin' ? 'farklı yayın denemesi' : `${gradeProfile.shortLabel} denemesi`
+      } için otomatik A-B-C-D kitapçık yerleştirildi.`
+    );
+  };
+
+  const handleReshuffleBookletOrder = () => {
+    const nextSeed = bookletOrderSeed + 1;
+    setBookletOrderSeed(nextSeed);
+    const synced = syncBookletVariantsAndOpticalKeys(
+      baseExamQuestions,
+      cover.bookletCode,
+      nextSeed
+    );
+    setQuestions(synced.activeQuestions);
+    setAnswerKeyRaw(synced.activeAnswerKey);
+    if (batchAssignments.length > 0) {
+      setBatchAssignments((prev) =>
+        prev.map((row) => ({ ...row, answerKey: synced.allAnswerKeys[row.bookletCode] }))
+      );
+    }
+    showToast(
+      `Zorluk derecesi korunarak A-B-C-D kitapçık soruları yeniden sıralandı (Düzen #${nextSeed + 1}) ve optik cevap anahtarı eş zamanlı güncellendi.`
+    );
   };
 
   const handleApplyMebCurriculum = (
@@ -900,14 +1109,18 @@ export default function App() {
   ) => {
     setMebOverride(override);
     setBaseExamQuestions(generatedQuestions);
-    const variant = buildBookletVariantQuestions(generatedQuestions, cover.bookletCode);
-    setQuestions(variant);
-    setAnswerKeyRaw(buildAnswerKeyString(variant));
+    const synced = syncBookletVariantsAndOpticalKeys(
+      generatedQuestions,
+      cover.bookletCode,
+      bookletOrderSeed
+    );
+    setQuestions(synced.activeQuestions);
+    setAnswerKeyRaw(synced.activeAnswerKey);
     setStudentAnswersRaw('');
     setHasLiveAnalysis(false);
     setCover((prev) => ({
       ...prev,
-      questionCount: variant.length,
+      questionCount: synced.activeQuestions.length,
     }));
     showToast(`MEB PDF "${override.sourceName}" aktif müfredat olarak uygulandı.`);
   };
@@ -916,14 +1129,18 @@ export default function App() {
     setMebOverride(null);
     const nextQuestions = buildAutoExamQuestions(gradeId, 'dengeli');
     setBaseExamQuestions(nextQuestions);
-    const variant = buildBookletVariantQuestions(nextQuestions, cover.bookletCode);
-    setQuestions(variant);
-    setAnswerKeyRaw(buildAnswerKeyString(variant));
+    const synced = syncBookletVariantsAndOpticalKeys(
+      nextQuestions,
+      cover.bookletCode,
+      bookletOrderSeed
+    );
+    setQuestions(synced.activeQuestions);
+    setAnswerKeyRaw(synced.activeAnswerKey);
     setStudentAnswersRaw('');
     setHasLiveAnalysis(false);
     setCover((prev) => ({
       ...prev,
-      questionCount: variant.length,
+      questionCount: synced.activeQuestions.length,
     }));
     showToast(`${gradeProfile.shortLabel} standart müfredatına dönüldü.`);
   };
@@ -934,7 +1151,12 @@ export default function App() {
     setBatchAssignments([]);
     const nextProfile = getGradeProfile(nextGradeId);
     const nextQuestions = buildAutoExamQuestions(nextGradeId, 'dengeli');
-    const variant = buildBookletVariantQuestions(nextQuestions, cover.bookletCode);
+    const synced = syncBookletVariantsAndOpticalKeys(
+      nextQuestions,
+      cover.bookletCode,
+      bookletOrderSeed
+    );
+    const variant = synced.activeQuestions;
     const nextStartNum = String(defaultStartBookletNumberForGrade(nextGradeId)).padStart(6, '0');
     setBaseExamQuestions(nextQuestions);
     setQuestions(variant);
@@ -942,7 +1164,7 @@ export default function App() {
     setClassroom(defaultClassroomForGrade(nextGradeId));
     setStudentAnswersRaw('');
     setHasLiveAnalysis(false);
-    setAnswerKeyRaw(buildAnswerKeyString(variant));
+    setAnswerKeyRaw(synced.activeAnswerKey);
     setAiCoachSummary(undefined);
     setCover((prev) => ({
       ...prev,
@@ -966,25 +1188,68 @@ export default function App() {
     showToast(`Doğru-Yanlış kuralı güncellendi: ${formatPenaltyRuleLabel(nextDivisor)}`);
   };
 
+  const handleAddOrUpdateWatermarkPreset = (input: {
+    id?: string;
+    text: string;
+    placement: PdfWatermarkPlacement;
+    opacity: number;
+    fontScale?: number;
+    angleDeg?: number;
+    colorHex?: string;
+    stripExistingMargins?: boolean;
+  }) => {
+    const res = upsertWatermarkPreset(watermarkPresets, input);
+    if (res.ok) {
+      setWatermarkPresets(res.presets);
+      if (res.saved) {
+        showToast(
+          res.wasUpdated
+            ? `Filigran şablonu güncellendi: "${res.saved.text}"`
+            : `Yeni filigran şablonu eklendi: "${res.saved.text}"`
+        );
+      }
+    } else if (res.reason) {
+      showToast(res.reason);
+    }
+    return {
+      ok: res.ok,
+      saved: res.saved,
+      wasUpdated: res.wasUpdated,
+      reason: res.reason,
+    };
+  };
+
+  const handleDeleteWatermarkPreset = (id: string) => {
+    const res = removeWatermarkPresetFromList(watermarkPresets, id);
+    if (res.ok) {
+      setWatermarkPresets(res.presets);
+      showToast('Kayıtlı filigran şablonu listeden silindi.');
+    } else if (res.reason) {
+      showToast(res.reason);
+    }
+    return { ok: res.ok, reason: res.reason };
+  };
+
   const unlockPortalWithInstitution = (
     inst: Institution,
     mode: 'admin' | 'password' | 'preview'
   ) => {
     const nextLoginMode: 'admin' | 'institution' =
       mode === 'admin' ? 'admin' : 'institution';
-    handleSelectInstitution(inst);
+    const targetInst = nextLoginMode === 'admin' ? primaryAdminInstitution : inst;
+    handleSelectInstitution(targetInst);
     setLoginMode(nextLoginMode);
     setPortalOpen(false);
     setActiveTab('dashboard');
     setTransitionSplash({
       visible: true,
-      institutionName: nextLoginMode === 'institution' ? inst.name : undefined,
+      institutionName: nextLoginMode === 'institution' ? targetInst.name : undefined,
       subtitle:
         mode === 'admin'
-          ? `Yönetici Ana Paneli Hazırlanıyor (${inst.name})`
+          ? 'Doğruluk Akademi Özel Yönetici Paneli Hazırlanıyor'
           : mode === 'preview'
-            ? `${inst.name} Kurum Önizleme Alanı Açılıyor`
-            : `${inst.name} Kurum Alanına Geçiliyor`,
+            ? `${targetInst.name} Kurum Önizleme Alanı Açılıyor`
+            : `${targetInst.name} Kurum Alanına Geçiliyor`,
     });
     try {
       window.sessionStorage.setItem('da_portal_unlocked_v1', '1');
@@ -994,10 +1259,10 @@ export default function App() {
     }
     showToast(
       mode === 'admin'
-        ? `Doğruluk Akademi Yönetici Ana Paneli açıldı (Şifresiz · ${inst.name}).`
+        ? `Doğruluk Akademi Özel Yönetici Paneli açıldı (${targetInst.name}).`
         : mode === 'preview'
-          ? `${inst.name} (${inst.code8}) kuruma özel önizleme alanı açıldı.`
-          : `${inst.name} (${inst.code8}) kuruma özel alana başarıyla giriş yapıldı.`
+          ? `${targetInst.name} (${targetInst.code8}) kuruma özel önizleme alanı açıldı.`
+          : `${targetInst.name} (${targetInst.code8}) kuruma özel alana başarıyla giriş yapıldı.`
     );
   };
 
@@ -1017,62 +1282,256 @@ export default function App() {
     setExportBusy(true);
     try {
       const pdfBytes = await generateStudentReportCardPdf(analysis, cover, gradeProfile);
-      const blob = new Blob([pdfBytes.buffer as ArrayBuffer], { type: 'application/pdf' });
-      const safeName = analysis.studentName
-        .toLocaleLowerCase('tr-TR')
-        .replace(/[^a-z0-9]+/g, '-')
-        .replace(/^-|-$/g, '');
-      triggerDownload(blob, `Karne-Analizi-${safeName || 'ogrenci'}-${analysis.studentNumber}.pdf`);
+      const blob = uint8ArrayToPdfBlob(pdfBytes);
+      triggerDownload(
+        blob,
+        buildStudentReportPdfFilename(analysis.studentName, analysis.studentNumber)
+      );
       showToast(`${analysis.studentName} için 2 sayfalık profesyonel PDF Karne Analizi indirildi.`);
+    } catch (err) {
+      console.error('Karne PDF hatası:', err);
+      showToast('Karne PDF hazırlanırken bir hata oluştu; lütfen tekrar deneyin.');
+    } finally {
+      setExportBusy(false);
+    }
+  };
+
+  const handleDownloadSpecificBookletPdf = async (
+    targetCode: BookletCode,
+    customBookletNumber?: string
+  ) => {
+    setExportBusy(true);
+    try {
+      const sourcePool = baseExamQuestions.length > 0 ? baseExamQuestions : questions;
+      const synced = syncBookletVariantsAndOpticalKeys(
+        sourcePool,
+        targetCode,
+        bookletOrderSeed
+      );
+      const effectiveQuestions =
+        targetCode === cover.bookletCode && questions.length === synced.activeQuestions.length
+          ? questions
+          : synced.activeQuestions;
+      const effectiveCover: CoverConfig = {
+        ...cover,
+        bookletCode: targetCode,
+        bookletNumber: customBookletNumber ?? cover.bookletNumber,
+        gradeLabel: cover.gradeLabel || gradeProfile.shortLabel,
+        questionCount: effectiveQuestions.length || cover.questionCount,
+      };
+
+      if (
+        targetCode !== cover.bookletCode ||
+        (customBookletNumber !== undefined && customBookletNumber !== cover.bookletNumber)
+      ) {
+        setQuestions(effectiveQuestions);
+        setAnswerKeyRaw(synced.activeAnswerKey);
+        setCover(effectiveCover);
+      }
+
+      const bytes = await generateBookletPdf(
+        effectiveCover,
+        effectiveQuestions,
+        uploadedPdfBytes,
+        pdfStripOptions
+      );
+      const blob = uint8ArrayToPdfBlob(bytes);
+      const filename = buildBookletPdfFilename(
+        effectiveCover,
+        targetCode,
+        customBookletNumber
+      );
+      triggerDownload(blob, filename);
+      showToast(
+        uploadedPdfBytes
+          ? `${targetCode} Kitapçığı (${effectiveCover.academyName}) ön/arka kapaklı PDF olarak indirildi.`
+          : `${targetCode} Kitapçığı (${effectiveQuestions.length} soru · ${effectiveCover.signatureName} 3D imzalı) PDF olarak indirildi.`
+      );
+    } catch (err) {
+      console.error(`${targetCode} Kitapçığı PDF indirme hatası:`, err);
+      showToast(`${targetCode} Kitapçığı PDF’i hazırlanırken bir hata oluştu; lütfen tekrar deneyin.`);
     } finally {
       setExportBusy(false);
     }
   };
 
   const handleDownloadBookletPdf = async () => {
+    await handleDownloadSpecificBookletPdf(cover.bookletCode);
+  };
+
+  const handleDownloadAllBookletsZip = async () => {
     setExportBusy(true);
     try {
-      const bytes = await generateBookletPdf(
+      const sourcePool = baseExamQuestions.length > 0 ? baseExamQuestions : questions;
+      const zipBlob = await generateAllBookletsZip({
         cover,
-        questions,
+        baseQuestions: sourcePool,
+        orderSeed: bookletOrderSeed,
         uploadedPdfBytes,
-        pdfStripOptions
-      );
-      const blob = new Blob([bytes.buffer as ArrayBuffer], { type: 'application/pdf' });
+        pdfStripOptions,
+      });
       triggerDownload(
-        blob,
-        `Dogruluk-Akademi-${cover.bookletCode}-Kitapcik-${cover.bookletNumber || '050001'}.pdf`
+        zipBlob,
+        buildAllBookletsZipFilename(cover.academyName, 'ABCD-Tum-Kitapciklar')
       );
-      showToast(
-        uploadedPdfBytes
-          ? `${cover.academyName} ön/arka kapaklı deneme PDF’i indirildi (dış kapaklar temizlendi).`
-          : cover.isSampleDemo
-            ? 'Furkan 3D imzalı, her sayfada logolu ve arka kapaklı ÖRNEKTİR PDF indirildi.'
-            : 'Furkan 3D dijital imzalı ve kuruma özel ön/arka kapaklı deneme PDF’i indirildi.'
-      );
+      showToast('A, B, C ve D kitapçık PDF’leri + karşılaştırmalı cevap anahtarı tek ZIP dosyasında indirildi.');
+    } catch (err) {
+      console.error('A-B-C-D ZIP oluşturma hatası:', err);
+      showToast('A-B-C-D kitapçık paketi hazırlanırken bir hata oluştu; lütfen tekrar deneyin.');
     } finally {
       setExportBusy(false);
     }
   };
 
-  const handleDownloadOpticalPdf = async () => {
+  const handleDownloadOpticalPdf = async (
+    targetCode?: BookletCode,
+    customBookletNumber?: string,
+    overrideStudent?: { studentName?: string; studentNumber8?: string; classroom?: string }
+  ) => {
     setExportBusy(true);
+    const chosenCode = targetCode ?? cover.bookletCode;
+    const chosenBookletNo = customBookletNumber ?? cover.bookletNumber;
+    const effStudentName = overrideStudent?.studentName ?? studentName;
+    const effStudentNo = overrideStudent?.studentNumber8 ?? studentNumber;
+    const effClassroom = overrideStudent?.classroom ?? classroom;
     try {
+      const effectiveCover: CoverConfig = {
+        ...cover,
+        bookletCode: chosenCode,
+        bookletNumber: chosenBookletNo,
+        gradeLabel: cover.gradeLabel || gradeProfile.shortLabel,
+      };
+      if (
+        chosenCode !== cover.bookletCode ||
+        (customBookletNumber !== undefined && customBookletNumber !== cover.bookletNumber)
+      ) {
+        handleSelectBookletVariant(chosenCode, {
+          bookletNumber: chosenBookletNo,
+          studentName: overrideStudent?.studentName,
+          studentNumber: overrideStudent?.studentNumber8,
+          classroom: overrideStudent?.classroom,
+          autoSyncAnswerKey: true,
+        });
+      }
       const bytes = await generateOpticalSheetPdf(
-        cover,
+        effectiveCover,
         Math.max(questions.length, 120),
         gradeProfile.optionCount,
         {
           gradeProfile,
-          studentName,
-          studentNumber8: studentNumber,
+          studentName: effStudentName,
+          studentNumber8: effStudentNo,
           institutionCode8: activeInstitution.code8,
-          classroom,
+          classroom: effClassroom,
         }
       );
-      const blob = new Blob([bytes.buffer as ArrayBuffer], { type: 'application/pdf' });
-      triggerDownload(blob, `Optik-Form-${studentNumber}-${activeInstitution.code8}.pdf`);
-      showToast('ÖSYM/MEB tipi 8 haneli kodlamalı optik cevap kağıdı PDF’i indirildi.');
+      const blob = uint8ArrayToPdfBlob(bytes);
+      const filename = buildOpticalPdfFilename(
+        effectiveCover,
+        chosenCode,
+        chosenBookletNo,
+        effStudentNo
+      );
+      triggerDownload(blob, filename);
+      showToast(`${chosenCode} kitapçığı (No: ${normalizeBookletNumber(chosenBookletNo)}) optik cevap kağıdı PDF’i indirildi.`);
+    } catch (err) {
+      console.error('Optik PDF hatası:', err);
+      showToast(`${chosenCode} Kitapçığı optik form PDF’i hazırlanırken bir hata oluştu.`);
+    } finally {
+      setExportBusy(false);
+    }
+  };
+
+  const handleDownloadAllOpticalPdf = async () => {
+    setExportBusy(true);
+    try {
+      const bytes = await generateMultiBookletOpticalPdf({
+        cover,
+        totalQuestions: Math.max(questions.length, 120),
+        optionCount: gradeProfile.optionCount,
+        gradeProfile,
+        institutionCode8: activeInstitution.code8,
+        studentName,
+        studentNumber8: studentNumber,
+        classroom,
+      });
+      const blob = uint8ArrayToPdfBlob(bytes);
+      triggerDownload(
+        blob,
+        `Optik-Formlari-ABCD-4-Sayfa-${activeInstitution.code8}.pdf`
+      );
+      showToast('A, B, C ve D kitapçıkları için 4 sayfalık toplu Optik Form PDF’i indirildi.');
+    } catch (err) {
+      console.error('A-B-C-D Optik PDF hatası:', err);
+      showToast('A-B-C-D optik form PDF’i hazırlanırken bir hata oluştu.');
+    } finally {
+      setExportBusy(false);
+    }
+  };
+
+  const handleDownloadRegisteredOpticalPdf = async () => {
+    const instStudents = students.filter((s) => s.institutionId === activeInstitution.id);
+    if (instStudents.length === 0) {
+      showToast('Kayıtlı öğrenci bulunamadı; önce öğrenci ekleyin.');
+      return;
+    }
+    setExportBusy(true);
+    try {
+      const entries = instStudents.map((stu, idx) => ({
+        bookletCode:
+          stu.assignedBookletCode && BOOKLET_CODES.includes(stu.assignedBookletCode)
+            ? stu.assignedBookletCode
+            : BOOKLET_CODES[idx % BOOKLET_CODES.length],
+        bookletNumber: normalizeBookletNumber(stu.assignedBookletNumber, idx + 1),
+        studentName: stu.fullName,
+        studentNumber8: stu.studentNumber8,
+        classroom: stu.classroom,
+      }));
+      const bytes = await generateMultiBookletOpticalPdf({
+        cover,
+        totalQuestions: Math.max(questions.length, 120),
+        optionCount: gradeProfile.optionCount,
+        gradeProfile,
+        institutionCode8: activeInstitution.code8,
+        entries,
+      });
+      const blob = uint8ArrayToPdfBlob(bytes);
+      triggerDownload(
+        blob,
+        `Kayitli-Ogrenciler-ABCD-Optik-${entries.length}-Sayfa-${activeInstitution.code8}.pdf`
+      );
+      showToast(
+        `${entries.length} kayıtlı öğrenci için A-B-C-D kitapçıklı kişiye özel optik formlar PDF olarak indirildi.`
+      );
+    } catch (err) {
+      console.error('Kayıtlı öğrenci optik PDF hatası:', err);
+      showToast('Kayıtlı öğrenci optik formları hazırlanırken bir hata oluştu.');
+    } finally {
+      setExportBusy(false);
+    }
+  };
+
+  const handleDownloadAllOpticalZip = async () => {
+    setExportBusy(true);
+    try {
+      const zipBlob = await generateAllOpticalFormsZip({
+        cover,
+        totalQuestions: Math.max(questions.length, 120),
+        optionCount: gradeProfile.optionCount,
+        gradeProfile,
+        institutionCode8: activeInstitution.code8,
+        studentName,
+        studentNumber8: studentNumber,
+        classroom,
+      });
+      triggerDownload(
+        zipBlob,
+        buildAllBookletsZipFilename(cover.academyName, 'ABCD-Optik-Formlari')
+      );
+      showToast('A, B, C, D ayrı optik PDF’leri ve birleştirilmiş 4 sayfalık PDF ZIP olarak indirildi.');
+    } catch (err) {
+      console.error('Optik ZIP hatası:', err);
+      showToast('A-B-C-D optik ZIP paketi hazırlanırken bir hata oluştu.');
     } finally {
       setExportBusy(false);
     }
@@ -1084,6 +1543,8 @@ export default function App() {
       const zipBlob = await generateCompleteSystemZip({
         cover,
         questions,
+        baseQuestions: baseExamQuestions,
+        orderSeed: bookletOrderSeed,
         analysis,
         uploadedPdfBytes,
         pdfStripOptions,
@@ -1094,7 +1555,10 @@ export default function App() {
         classroom,
       });
       triggerDownload(zipBlob, 'Dogruluk-Akademi-Tam-Paket.zip');
-      showToast('Tüm sistemi, 3D kapaklı PDF, optik form ve karneleri içeren ZIP indirildi.');
+      showToast('A-B-C-D kitapçıkları, 3D kapaklı PDF, optik form ve karneleri içeren Tam Paket ZIP indirildi.');
+    } catch (err) {
+      console.error('Tam ZIP hatası:', err);
+      showToast('Tam paket ZIP oluşturulurken bir hata oluştu.');
     } finally {
       setExportBusy(false);
     }
@@ -1108,6 +1572,9 @@ export default function App() {
       const blob = await resp.blob();
       triggerDownload(blob, 'Dogruluk-Akademi-Uygulama-Kaynak-Kodu.zip');
       showToast('Tam uygulama proje kaynak kodu ZIP dosyası indirildi.');
+    } catch (err) {
+      console.error('Kaynak ZIP hatası:', err);
+      showToast('Uygulama kaynak kodu ZIP dosyası indirilemedi.');
     } finally {
       setExportBusy(false);
     }
@@ -1145,16 +1612,16 @@ export default function App() {
     if (rec.actionType === 'apply-balanced-exam') {
       const next = buildAutoExamQuestions(gradeId, 'dengeli', questions.length);
       setBaseExamQuestions(next);
-      const variant = buildBookletVariantQuestions(next, cover.bookletCode);
-      setQuestions(variant);
-      setAnswerKeyRaw(buildAnswerKeyString(variant));
-      showToast(`${gradeProfile.shortLabel} için ÖSYM standardında dengeli ${variant.length} soruluk deneme hazırlandı.`);
+      const synced = syncBookletVariantsAndOpticalKeys(next, cover.bookletCode, bookletOrderSeed);
+      setQuestions(synced.activeQuestions);
+      setAnswerKeyRaw(synced.activeAnswerKey);
+      showToast(`${gradeProfile.shortLabel} için ÖSYM standardında dengeli ${synced.activeQuestions.length} soruluk deneme hazırlandı.`);
     } else if (rec.actionType === 'apply-hard-exam') {
       const next = buildAutoExamQuestions(gradeId, 'zor', questions.length);
       setBaseExamQuestions(next);
-      const variant = buildBookletVariantQuestions(next, cover.bookletCode);
-      setQuestions(variant);
-      setAnswerKeyRaw(buildAnswerKeyString(variant));
+      const synced = syncBookletVariantsAndOpticalKeys(next, cover.bookletCode, bookletOrderSeed);
+      setQuestions(synced.activeQuestions);
+      setAnswerKeyRaw(synced.activeAnswerKey);
       showToast(`${gradeProfile.shortLabel} için derece seçici zorlukta deneme oluşturuldu.`);
     } else if (rec.actionType === 'add-calendar-remedial') {
       const gap =
@@ -1240,7 +1707,7 @@ export default function App() {
       {
         fileName: `Pano-Asma-Sirali-Liste-${gradeProfile.id}.pdf`,
         mimeType: 'application/pdf',
-        blob: new Blob([pdfBytes.buffer as ArrayBuffer], { type: 'application/pdf' }),
+        blob: uint8ArrayToPdfBlob(pdfBytes),
       },
       {
         fileName: `Haftalik-Karsilastirma-${gradeProfile.id}.xlsx`,
@@ -1348,11 +1815,14 @@ export default function App() {
     () =>
       searchWorkspaceEntities({
         query: globalSearchQuery,
-        students,
-        institutions,
+        students:
+          loginMode === 'admin'
+            ? students.filter((s) => s.institutionId === activeInstitution.id)
+            : students,
+        institutions: loginMode === 'admin' ? [activeInstitution] : institutions,
         activeInstitutionId: activeInstitution.id,
       }),
-    [globalSearchQuery, students, institutions, activeInstitution.id]
+    [globalSearchQuery, students, institutions, activeInstitution, loginMode]
   );
 
   const threeDotQuickItems: Array<{
@@ -1491,7 +1961,7 @@ export default function App() {
                 >
                   {loginMode === 'institution'
                     ? `Kurum Girişi · Kod: ${activeInstitution.code8}`
-                    : `Yönetici Ana Paneli · ${activeInstitution.name} · ${activeInstitution.code8}`}
+                    : `Doğruluk Akademi Özel Paneli · ${activeInstitution.code8}`}
                 </div>
               </div>
             </div>
@@ -1625,7 +2095,7 @@ export default function App() {
                   </>
                 ) : (
                   <>
-                    Yönetici Ana Paneli (Şifresiz) · {activeInstitution.name} · Kod:{' '}
+                    Doğruluk Akademi Özel Yönetici Paneli · Kod:{' '}
                     <span className="font-mono-num">{activeInstitution.code8}</span>
                   </>
                 )}
@@ -1861,7 +2331,7 @@ export default function App() {
                   <div className="text-xs font-extrabold truncate" data-testid="private-institution-banner">
                     {loginMode === 'institution'
                       ? `Kurum Girişi · ${activeInstitution.name}`
-                      : `Yönetici Ana Paneli (Şifresiz) · Aktif Kurum: ${activeInstitution.name}`}
+                      : `Doğruluk Akademi Özel Yönetici Paneli · ${activeInstitution.name}`}
                   </div>
                   <div className="text-[11px] truncate" style={{ color: 'var(--text-secondary)' }}>
                     Kod: <span className="font-mono-num font-bold">{activeInstitution.code8}</span> ·{' '}
@@ -2062,11 +2532,16 @@ export default function App() {
               onNavigate={handleTabNavigation}
               onDownloadZip={handleDownloadZip}
               onDownloadSourceZip={handleDownloadSourceZip}
+              weeklyEntries={weeklyEntriesByInst[activeInstitution.id]}
+              weeklyQuestionCount={weeklyQuestionCount}
+              isPrivateAdminMode={loginMode === 'admin'}
             />
           )}
 
           {activeTab === 'omr' && (
             <OmrScannerView
+              institutionId={activeInstitution.id}
+              institutionName={activeInstitution.name}
               gradeProfile={gradeProfile}
               questions={questions}
               studentAnswersRaw={studentAnswersRaw}
@@ -2079,7 +2554,39 @@ export default function App() {
               cover={cover}
               institutionCode8={activeInstitution.code8}
               parentPhone={activeStudentParentPhone}
+              students={students}
               batchAssignments={batchAssignments}
+              examSourceMode={examSourceMode}
+              externalPublisherConfig={externalPublisherConfig}
+              exportBusy={exportBusy}
+              onChangeExamSourceMode={(mode) => {
+                setExamSourceMode(mode);
+                const nextKey = resolveActiveAnswerKeyByMode({
+                  examSourceMode: mode,
+                  bookletCode: cover.bookletCode,
+                  baseQuestions: baseExamQuestions,
+                  orderSeed: bookletOrderSeed,
+                  externalKeys: externalPublisherConfig.answerKeys,
+                  optionCount: gradeProfile.optionCount,
+                  fallbackKey: answerKeyRaw,
+                });
+                setAnswerKeyRaw(nextKey);
+                showToast(
+                  mode === 'farkli-yayin'
+                    ? 'Farklı Yayın Denemesi modu açıldı: A, B, C ve D kitapçıkları için yayın cevap anahtarlarını ayrı ayrı kullanabilirsiniz.'
+                    : 'Kurum Denemesi moduna geçildi: A-B-C-D cevap anahtarları soru sırasıyla otomatik eşleşir.'
+                );
+              }}
+              onUpdateExternalPublisher={(patch) =>
+                setExternalPublisherConfig((prev) => ({
+                  ...prev,
+                  ...patch,
+                  answerKeys: patch.answerKeys
+                    ? { ...prev.answerKeys, ...patch.answerKeys }
+                    : prev.answerKeys,
+                }))
+              }
+              onAutoAssignRegisteredStudents={handleAutoAssignRegisteredStudents}
               onSelectBookletVariant={handleSelectBookletVariant}
               onUpdateCover={(patch) => setCover((prev) => ({ ...prev, ...patch }))}
               initialMode={omrInitialMode}
@@ -2127,6 +2634,9 @@ export default function App() {
               }}
               onGoToReports={() => setActiveTab('reports')}
               onDownloadOpticalPdf={handleDownloadOpticalPdf}
+              onDownloadAllOpticalPdf={handleDownloadAllOpticalPdf}
+              onDownloadAllOpticalZip={handleDownloadAllOpticalZip}
+              onDownloadRegisteredOpticalPdf={handleDownloadRegisteredOpticalPdf}
             />
           )}
 
@@ -2139,11 +2649,14 @@ export default function App() {
               onChangePenaltyDivisor={handleChangePenaltyDivisor}
               questions={questions}
               baseQuestions={baseExamQuestions}
+              bookletOrderSeed={bookletOrderSeed}
+              activeAnswerKey={answerKeyRaw}
               cover={cover}
               students={students}
               batchAssignments={batchAssignments}
               onSetBatchAssignments={setBatchAssignments}
               onSelectBookletVariant={handleSelectBookletVariant}
+              onReshuffleBookletOrder={handleReshuffleBookletOrder}
               uploadedPdfName={uploadedPdfName}
               uploadedPdfPageCount={uploadedPdfPageCount}
               pdfStripOptions={pdfStripOptions}
@@ -2155,9 +2668,20 @@ export default function App() {
               onClearMebCurriculum={handleClearMebCurriculum}
               onUpdateQuestions={(next) => {
                 setBaseExamQuestions(next);
-                const variant = buildBookletVariantQuestions(next, cover.bookletCode);
-                setQuestions(variant);
-                setAnswerKeyRaw(buildAnswerKeyString(variant));
+                const synced = syncBookletVariantsAndOpticalKeys(
+                  next,
+                  cover.bookletCode,
+                  bookletOrderSeed
+                );
+                setQuestions(synced.activeQuestions);
+                if (examSourceMode === 'kurum') {
+                  setAnswerKeyRaw(synced.activeAnswerKey);
+                }
+                if (batchAssignments.length > 0 && examSourceMode === 'kurum') {
+                  setBatchAssignments((prev) =>
+                    prev.map((row) => ({ ...row, answerKey: synced.allAnswerKeys[row.bookletCode] }))
+                  );
+                }
               }}
               onUpdateCover={(patch) => setCover((prev) => ({ ...prev, ...patch }))}
               onUploadExamPdf={(bytes, name, pageCount) => {
@@ -2171,7 +2695,15 @@ export default function App() {
                 setUploadedPdfPageCount(null);
               }}
               onDownloadBookletPdf={handleDownloadBookletPdf}
-              onDownloadOpticalPdf={handleDownloadOpticalPdf}
+              onDownloadSpecificBookletPdf={handleDownloadSpecificBookletPdf}
+              onDownloadAllBookletsZip={handleDownloadAllBookletsZip}
+              exportBusy={exportBusy}
+              onDownloadOpticalPdf={() => handleDownloadOpticalPdf()}
+              onDownloadSpecificOpticalPdf={handleDownloadOpticalPdf}
+              onDownloadAllOpticalPdf={handleDownloadAllOpticalPdf}
+              examSourceMode={examSourceMode}
+              externalKeys={externalPublisherConfig.answerKeys}
+              onAutoAssignRegisteredStudents={() => handleAutoAssignRegisteredStudents()}
               onDownloadZip={handleDownloadZip}
               onDownloadSourceZip={handleDownloadSourceZip}
               onOpenEditor={() => handleTabNavigation('editor')}
@@ -2180,6 +2712,9 @@ export default function App() {
                 setCustomOpenEndedQuestions(generated);
                 showToast(`${generated.length} soruluk açık uçlu yazılı kağıdı Açık Uçlu paneline aktarıldı.`);
               }}
+              watermarkPresets={watermarkPresets}
+              onAddOrUpdateWatermarkPreset={handleAddOrUpdateWatermarkPreset}
+              onDeleteWatermarkPreset={handleDeleteWatermarkPreset}
             />
           )}
 
@@ -2190,6 +2725,7 @@ export default function App() {
               onSelectGrade={handleSelectGrade}
               questions={questions}
               cover={cover}
+              exportBusy={exportBusy}
               onUpdateQuestions={(next) => {
                 setBaseExamQuestions(next);
                 setQuestions(next);
@@ -2235,6 +2771,15 @@ export default function App() {
               onSyncWeeklyExportsRef={(builder) => {
                 weeklyBuilderRef.current = builder;
               }}
+              externalEntries={weeklyEntriesByInst[activeInstitution.id] ?? []}
+              onExternalEntriesChange={(next) =>
+                setWeeklyEntriesByInst((prev) => ({
+                  ...prev,
+                  [activeInstitution.id]: next,
+                }))
+              }
+              externalQuestionCount={weeklyQuestionCount}
+              onExternalQuestionCountChange={setWeeklyQuestionCount}
             />
           )}
 
@@ -2250,6 +2795,7 @@ export default function App() {
               studentPhone={activeStudentParentPhone}
               calendarEvents={calendarEvents}
               openEndedAnalysis={openEndedAnalysis}
+              exportBusy={exportBusy}
               onUpdateCoachSummary={(summary) => {
                 setAiCoachSummary(summary);
                 showToast('Gemini AI Eğitim Koçu karnesi güncellendi.');
@@ -2284,6 +2830,8 @@ export default function App() {
                 const zipBlob = await generateCompleteSystemZip({
                   cover,
                   questions,
+                  baseQuestions: baseExamQuestions,
+                  orderSeed: bookletOrderSeed,
                   analysis,
                   uploadedPdfBytes,
                   pdfStripOptions,

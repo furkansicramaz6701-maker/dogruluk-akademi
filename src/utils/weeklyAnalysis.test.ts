@@ -8,14 +8,17 @@ import {
   buildParentMessage,
   buildReportCardParentMessage,
   buildSampleWeeklyCohort,
+  buildWeeklyTrendComparisonDataset,
   buildWhatsAppHref,
   calculateNetAndScore,
+  classifyWeeklyProgressPattern,
   computeWeeklyCohortInsights,
   computeWeeklyComparison,
   filterAndSortWeeklyRows,
   filterRowsForBulkMessages,
   findNextStudyEventForStudent,
   formatCalendarDateTr,
+  formatShortStudentAxisLabel,
   getDynamicAchievementTier,
   normalizeClassroomForGrade,
   sanitizeExamLabelForGrade,
@@ -360,3 +363,72 @@ test('findNextStudyEventForStudent prioritizes upcoming incomplete telafi-etutu 
   assert.ok(customRendered.includes('Alihan Sarı'));
   assert.ok(customRendered.includes('23.11.2026 · Saat 16:00'));
 });
+
+test('buildWeeklyTrendComparisonDataset maps KTS-1 vs KTS-2 patterns, filters, sort orders, and Net/Score domains', () => {
+  const g5 = getGradeProfile('5');
+  const cohort = buildSampleWeeklyCohort({
+    institution: DEFAULT_INSTITUTIONS[0],
+    gradeId: '5',
+    questionCount: 50,
+  });
+
+  // Override one student with a clear drop so all 3 pattern buckets are exercised explicitly
+  const adjustedEntries = cohort.map((entry, idx) =>
+    idx === 12
+      ? {
+          ...entry,
+          kts1Correct: 30,
+          kts1Wrong: 4,
+          kts2Correct: 22,
+          kts2Wrong: 8,
+        }
+      : entry
+  );
+
+  const ranked = computeWeeklyComparison({
+    entries: adjustedEntries,
+    kts1TotalQuestions: 50,
+    kts2TotalQuestions: 50,
+    gradeProfile: g5,
+  });
+
+  assert.equal(formatShortStudentAxisLabel('Alihan Sarı'), 'Alihan S.');
+  assert.equal(formatShortStudentAxisLabel('Elif Naz Demir'), 'Elif D.');
+
+  const scoreView = buildWeeklyTrendComparisonDataset({
+    rows: ranked,
+    metric: 'score',
+    patternFilter: 'all',
+    orderBy: 'rank',
+    gradeProfile: g5,
+    questionCount: 50,
+  });
+
+  assert.equal(scoreView.points.length, 15);
+  assert.equal(scoreView.summary.totalStudents, 15);
+  assert.ok(scoreView.summary.risingCount >= 1);
+  assert.ok(scoreView.summary.steadyCount >= 1);
+  assert.ok(scoreView.summary.supportCount >= 1);
+  assert.ok(scoreView.summary.avgKts2Value > scoreView.summary.avgKts1Value);
+  assert.ok(scoreView.summary.biggestGainer !== null);
+  assert.ok(scoreView.summary.yDomain[0] < scoreView.summary.yDomain[1]);
+
+  const dropRow = ranked.find((r) => r.scoreDelta < 0);
+  assert.ok(dropRow !== undefined);
+  assert.equal(classifyWeeklyProgressPattern(dropRow).pattern, 'support');
+
+  const risingOnly = buildWeeklyTrendComparisonDataset({
+    rows: ranked,
+    metric: 'net',
+    patternFilter: 'rising',
+    orderBy: 'delta',
+    gradeProfile: g5,
+    questionCount: 50,
+  });
+
+  assert.equal(risingOnly.points.length, scoreView.summary.risingCount);
+  assert.ok(risingOnly.points.every((p) => p.pattern === 'rising'));
+  assert.ok(risingOnly.points[0].deltaValue >= risingOnly.points[risingOnly.points.length - 1].deltaValue);
+  assert.ok(risingOnly.summary.yDomain[0] >= 0 && risingOnly.summary.yDomain[1] <= 50);
+});
+

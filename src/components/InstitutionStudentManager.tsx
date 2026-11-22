@@ -37,6 +37,7 @@ import {
   generate8DigitStudentNumber,
   normalizeInstitutionKey,
 } from '../utils/institutionCodes';
+import { uint8ArrayToPdfBlob } from '../utils/downloadHelpers';
 import {
   generateInstitutionsListPdf,
   generateStudentsListPdf,
@@ -62,6 +63,7 @@ interface InstitutionStudentManagerProps {
   onBulkAddStudents: (items: StudentRecord[]) => void;
   onSelectStudent: (student: StudentRecord) => void;
   onDownloadStudentReportPdf: () => Promise<void>;
+  isPrivateAdminMode?: boolean;
 }
 
 export function InstitutionStudentManager({
@@ -80,6 +82,7 @@ export function InstitutionStudentManager({
   onBulkAddStudents,
   onSelectStudent,
   onDownloadStudentReportPdf,
+  isPrivateAdminMode = false,
 }: InstitutionStudentManagerProps) {
   // 1. Institution Login by 8-digit code
   const [loginCodeInput, setLoginCodeInput] = useState<string>('');
@@ -355,10 +358,17 @@ export function InstitutionStudentManager({
 
   const handleDownloadInstitutionsPdf = async () => {
     setPdfBusy(true);
+    setLoginError(null);
     try {
       const bytes = await generateInstitutionsListPdf(institutions, students, cover);
-      const blob = new Blob([bytes.buffer as ArrayBuffer], { type: 'application/pdf' });
+      const blob = uint8ArrayToPdfBlob(bytes);
       triggerDownload(blob, 'Dogruluk-Akademi-Kurumlar-Listesi.pdf');
+    } catch (err) {
+      setLoginError(
+        err instanceof Error
+          ? `Kurumlar PDF indirilemedi: ${err.message}`
+          : 'Kurumlar PDF hazırlanırken bir hata oluştu.'
+      );
     } finally {
       setPdfBusy(false);
     }
@@ -366,12 +376,20 @@ export function InstitutionStudentManager({
 
   const handleDownloadStudentsPdf = async () => {
     setPdfBusy(true);
+    setLoginError(null);
     try {
       const instStudentsList = students.filter((s) => s.institutionId === activeInstitution.id);
-      const listToExport = instStudentsList.length > 0 ? instStudentsList : students;
+      const listToExport =
+        instStudentsList.length > 0 || isPrivateAdminMode ? instStudentsList : students;
       const bytes = await generateStudentsListPdf(listToExport, activeInstitution, cover);
-      const blob = new Blob([bytes.buffer as ArrayBuffer], { type: 'application/pdf' });
+      const blob = uint8ArrayToPdfBlob(bytes);
       triggerDownload(blob, `Ogrenciler-${activeInstitution.code8}.pdf`);
+    } catch (err) {
+      setLoginError(
+        err instanceof Error
+          ? `Öğrenciler PDF indirilemedi: ${err.message}`
+          : 'Öğrenciler PDF hazırlanırken bir hata oluştu.'
+      );
     } finally {
       setPdfBusy(false);
     }
@@ -395,10 +413,14 @@ export function InstitutionStudentManager({
           <Building2 className="w-5 h-5" style={{ color: 'var(--accent-primary)' }} aria-hidden="true" />
           <div>
             <h2 id="institution-student-manager-title" className="text-lg font-bold leading-tight">
-              Ayrı Kurum Girişi (8 Hane), Öğrenci Kayıt & Excel / PDF Merkezi
+              {isPrivateAdminMode
+                ? 'Doğruluk Akademi Özel Öğrenci Kayıt & Excel / PDF Merkezi'
+                : 'Ayrı Kurum Girişi (8 Hane), Öğrenci Kayıt & Excel / PDF Merkezi'}
             </h2>
             <p className="text-xs" style={{ color: 'var(--text-secondary)' }}>
-              3. sınıftan 12. sınıfa ve Üniversite Hazırlık (TYT/AYT) düzeyine kadar her öğrenci kendi müfredatında değerlendirilir; kurum ve öğrenci listelerini Excel/PDF olarak yükleyip indirebilirsiniz.
+              {isPrivateAdminMode
+                ? 'Yalnızca Doğruluk Akademi öğrencilerini yönetin, 8 haneli numara üretin ve Excel / PDF listeleri dışa aktarın.'
+                : '3. sınıftan 12. sınıfa ve Üniversite Hazırlık (TYT/AYT) düzeyine kadar her öğrenci kendi müfredatında değerlendirilir; kurum ve öğrenci listelerini Excel/PDF olarak yükleyip indirebilirsiniz.'}
             </p>
           </div>
         </div>
@@ -437,8 +459,96 @@ export function InstitutionStudentManager({
       )}
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
-        {/* Left: Kurum Girişi + Manuel Kurum Ekleme + Kurum Excel/PDF İşlemleri */}
+        {/* Left: Kurum Bilgisi (Özel Admin) veya Çoklu Kurum Yönetimi */}
         <div className="lg:col-span-5 space-y-4">
+          {isPrivateAdminMode ? (
+            <div className="surface-alt rounded-xl p-4 space-y-3" data-testid="private-admin-inst-card">
+              <div className="flex items-center justify-between gap-2 text-xs font-bold">
+                <span className="inline-flex items-center gap-1.5">
+                  <Building2 className="w-4 h-4" style={{ color: 'var(--accent-primary)' }} aria-hidden="true" />
+                  <span>Doğruluk Akademi Özel Yönetim Alanı</span>
+                </span>
+                <span className="font-mono-num" style={{ color: 'var(--accent-primary)' }}>
+                  Kod: {activeInstitution.code8}
+                </span>
+              </div>
+              <div className="surface-card rounded-lg p-3 text-xs space-y-1">
+                <div className="font-extrabold text-sm">{activeInstitution.name}</div>
+                <div style={{ color: 'var(--text-secondary)' }}>
+                  Şehir: {activeInstitution.city} · Durum: {activeInstitution.permissions?.status ?? 'Aktif'}
+                </div>
+                <div className="text-[11px] pt-1" style={{ color: 'var(--text-secondary)' }}>
+                  Bu yönetici paneli yalnızca Doğruluk Akademi için ayrılmıştır; harici okul/kurumlar kendi bağımsız <strong>Kurum Girişi</strong> ekranından yönetilir.
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEditInstName(activeInstitution.name);
+                    setEditInstCity(activeInstitution.city);
+                    setEditingInst((v) => !v);
+                    setConfirmDeleteInst(false);
+                  }}
+                  className="btn-3d-secondary flex-1 py-1.5 px-2.5 rounded-lg text-[11px] font-bold inline-flex items-center justify-center gap-1.5 cursor-pointer"
+                >
+                  <Pencil className="w-3.5 h-3.5" aria-hidden="true" />
+                  <span>Doğruluk Akademi Bilgilerini Düzenle</span>
+                </button>
+              </div>
+              {editingInst && (
+                <div className="surface-card rounded-lg p-3 space-y-2 border" style={{ borderColor: 'var(--border-subtle)' }}>
+                  <div className="text-[11px] font-bold">
+                    Kurum Bilgilerini Güncelle ({activeInstitution.code8})
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                    <input
+                      type="text"
+                      value={editInstName}
+                      onChange={(e) => setEditInstName(e.target.value)}
+                      aria-label="Kurum Adını Güncelle"
+                      placeholder="Kurum Adı"
+                      className="sm:col-span-2 rounded-lg px-2.5 py-1.5 text-xs surface-alt"
+                    />
+                    <input
+                      type="text"
+                      value={editInstCity}
+                      onChange={(e) => setEditInstCity(e.target.value)}
+                      aria-label="Kurum Şehrini Güncelle"
+                      placeholder="Şehir"
+                      className="rounded-lg px-2.5 py-1.5 text-xs surface-alt"
+                    />
+                    <input
+                      type="text"
+                      value={editInstPassword}
+                      onChange={(e) => setEditInstPassword(e.target.value)}
+                      aria-label="Kurum Şifresini Güncelle"
+                      placeholder="Kurum Şifresi"
+                      className="sm:col-span-3 rounded-lg px-2.5 py-1.5 text-xs surface-alt font-mono-num"
+                    />
+                  </div>
+                  <div className="flex items-center justify-end gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setEditingInst(false)}
+                      className="btn-3d-secondary px-2.5 py-1 rounded-md text-[11px] font-bold inline-flex items-center gap-1 cursor-pointer"
+                    >
+                      <X className="w-3 h-3" aria-hidden="true" />
+                      <span>Vazgeç</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleSaveEditInstitution}
+                      className="btn-3d px-3 py-1 rounded-md text-[11px] font-bold cursor-pointer"
+                    >
+                      Kaydet
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          ) : (
+          <>
           {/* Ayrı Kurum Girişi */}
           <form onSubmit={handleCodeLogin} className="surface-alt rounded-xl p-4 space-y-3">
             <div className="flex items-center gap-2 text-xs font-bold">
@@ -695,6 +805,8 @@ export function InstitutionStudentManager({
               </button>
             </div>
           </form>
+          </>
+          )}
         </div>
 
         {/* Right: Manuel Öğrenci Ekleme (Sınıf Düzeyi Seçimli) + Öğrenci Listesi + Excel/PDF */}
@@ -724,13 +836,16 @@ export function InstitutionStudentManager({
               </label>
 
               <label className="block text-xs font-semibold">
-                <span style={{ color: 'var(--text-secondary)' }}>Kurum Seç</span>
+                <span style={{ color: 'var(--text-secondary)' }}>
+                  {isPrivateAdminMode ? 'Özel Kurum' : 'Kurum Seç'}
+                </span>
                 <select
-                  value={selectedInst.id}
+                  value={isPrivateAdminMode ? activeInstitution.id : selectedInst.id}
+                  disabled={isPrivateAdminMode}
                   onChange={(e) => setSelectedInstId(e.target.value)}
-                  className="mt-1 w-full rounded-lg px-2.5 py-2 text-xs surface-card"
+                  className="mt-1 w-full rounded-lg px-2.5 py-2 text-xs surface-card disabled:opacity-80"
                 >
-                  {institutions.map((inst) => (
+                  {(isPrivateAdminMode ? [activeInstitution] : institutions).map((inst) => (
                     <option key={inst.id} value={inst.id}>
                       {inst.name} ({inst.code8})
                     </option>
@@ -839,7 +954,7 @@ export function InstitutionStudentManager({
                 title={excelPerm.reason}
                 onClick={() =>
                   exportStudentsToXlsx(
-                    instStudents.length > 0 ? instStudents : students,
+                    instStudents.length > 0 || isPrivateAdminMode ? instStudents : students,
                     activeInstitution
                   )
                 }

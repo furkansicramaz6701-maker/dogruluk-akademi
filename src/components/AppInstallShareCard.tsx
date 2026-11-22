@@ -9,6 +9,7 @@ import {
   ExternalLink,
   Laptop,
   Link2,
+  Loader2,
   MessageCircle,
   QrCode,
   Share2,
@@ -21,6 +22,7 @@ import {
   buildPhoneInstallUrl,
   detectDeviceInstallPlatform,
 } from '../utils/appInstallShare';
+import { triggerDownload } from '../utils/pdfAndZip';
 
 interface AppInstallShareCardProps {
   academyName?: string;
@@ -50,6 +52,7 @@ export function AppInstallShareCard({
   const [qrDataUrl, setQrDataUrl] = useState<string>('');
   const [copiedKey, setCopiedKey] = useState<'url' | 'msg' | null>(null);
   const [installFeedback, setInstallFeedback] = useState<string | null>(null);
+  const [downloadBusyKey, setDownloadBusyKey] = useState<'desktop' | 'source' | null>(null);
 
   const phoneInstallUrl = useMemo(
     () => buildPhoneInstallUrl(customAppUrl || defaultOrigin),
@@ -157,6 +160,32 @@ export function AppInstallShareCard({
         'url',
         'Telefon & bilgisayar kurulum bağlantısı panoya kopyalandı.'
       );
+    }
+  };
+
+  const handleServerZipDownload = async (
+    key: 'desktop' | 'source',
+    url: string,
+    filename: string,
+    successMsg: string
+  ) => {
+    setDownloadBusyKey(key);
+    try {
+      const resp = await fetch(url);
+      if (!resp.ok) {
+        throw new Error(`Sunucu indirme hatası (${resp.status})`);
+      }
+      const blob = await resp.blob();
+      triggerDownload(blob, filename);
+      onToast?.(successMsg);
+    } catch (err) {
+      onToast?.(
+        err instanceof Error
+          ? `${filename} indirilemedi: ${err.message}`
+          : `${filename} indirilemedi.`
+      );
+    } finally {
+      setDownloadBusyKey(null);
     }
   };
 
@@ -443,23 +472,57 @@ export function AppInstallShareCard({
             </button>
           )}
 
-          <a
-            href={desktopKitUrl}
-            download="Dogruluk-Akademi-Bilgisayar-Kurulumu.zip"
-            className="btn-3d px-3.5 py-2 rounded-xl text-xs font-bold inline-flex items-center gap-1.5"
+          <button
+            type="button"
+            disabled={downloadBusyKey !== null}
+            onClick={() =>
+              void handleServerZipDownload(
+                'desktop',
+                desktopKitUrl,
+                'Dogruluk-Akademi-Bilgisayar-Kurulumu.zip',
+                'İkonlu Masaüstü Başlatıcı (.ZIP) indirildi.'
+              )
+            }
+            data-testid="install-card-download-desktop-kit-btn"
+            className="btn-3d px-3.5 py-2 rounded-xl text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-60"
           >
-            <Download className="w-3.5 h-3.5" aria-hidden="true" />
-            <span>İkonlu Masaüstü Kurulumu İndir (.ZIP)</span>
-          </a>
+            {downloadBusyKey === 'desktop' ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
+            ) : (
+              <Download className="w-3.5 h-3.5" aria-hidden="true" />
+            )}
+            <span>
+              {downloadBusyKey === 'desktop'
+                ? 'Hazırlanıyor...'
+                : 'İkonlu Masaüstü Kurulumu İndir (.ZIP)'}
+            </span>
+          </button>
 
-          <a
-            href="/api/export/app-zip"
-            download="Dogruluk-Akademi-Uygulama-Kaynak-Kodu.zip"
-            className="btn-3d-secondary px-3.5 py-2 rounded-xl text-xs font-bold inline-flex items-center gap-1.5"
+          <button
+            type="button"
+            disabled={downloadBusyKey !== null}
+            onClick={() =>
+              void handleServerZipDownload(
+                'source',
+                '/api/export/app-zip',
+                'Dogruluk-Akademi-Uygulama-Kaynak-Kodu.zip',
+                'Tam Uygulama Kaynak Kodu (.ZIP) indirildi.'
+              )
+            }
+            data-testid="install-card-download-source-zip-btn"
+            className="btn-3d-secondary px-3.5 py-2 rounded-xl text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-60"
           >
-            <Download className="w-3.5 h-3.5" aria-hidden="true" />
-            <span>Tam Uygulama Kaynak Kodu (.ZIP)</span>
-          </a>
+            {downloadBusyKey === 'source' ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
+            ) : (
+              <Download className="w-3.5 h-3.5" aria-hidden="true" />
+            )}
+            <span>
+              {downloadBusyKey === 'source'
+                ? 'Hazırlanıyor...'
+                : 'Tam Uygulama Kaynak Kodu (.ZIP)'}
+            </span>
+          </button>
         </div>
       </div>
     </div>

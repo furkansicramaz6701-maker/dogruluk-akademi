@@ -77,11 +77,25 @@ export function parseAnswerString(
   return result;
 }
 
+export interface BuildAutoExamOptions {
+  variantSeed?: number;
+  excludeStems?: Iterable<string>;
+}
+
+export function normalizeQuestionStemKey(stem: string): string {
+  return stem
+    .replace(/^\[[^\]]+\]\s*/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLocaleLowerCase('tr-TR');
+}
+
 export function buildAutoExamQuestions(
   gradeId: GradeLevelId,
   difficultyMix: 'dengeli' | 'kolay' | 'zor' = 'dengeli',
   customTotal?: number,
-  subjectFilter?: string
+  subjectFilter?: string,
+  options?: BuildAutoExamOptions
 ): ExamQuestion[] {
   const profile = getGradeProfile(gradeId);
   const matchingSubjects =
@@ -95,6 +109,14 @@ export function buildAutoExamQuestions(
   const baseTotal = activeSubjects.reduce((sum, s) => sum + s.questionCount, 0);
   const targetTotal = customTotal && customTotal > 0 ? customTotal : baseTotal;
   const optionKeys = profile.optionCount === 4 ? ['A', 'B', 'C', 'D'] : ['A', 'B', 'C', 'D', 'E'];
+  const variantSeed = Math.max(0, Math.round(options?.variantSeed ?? 0));
+  const usedStemKeys = new Set<string>();
+  if (options?.excludeStems) {
+    for (const s of options.excludeStems) {
+      const norm = normalizeQuestionStemKey(s);
+      if (norm) usedStemKeys.add(norm);
+    }
+  }
 
   const ratios =
     difficultyMix === 'kolay'
@@ -113,43 +135,77 @@ export function buildAutoExamQuestions(
         : Math.max(1, Math.round((subj.questionCount / Math.max(1, baseTotal)) * targetTotal));
 
     for (let i = 0; i < scaledCount && questions.length < targetTotal; i++) {
-      const topic = subj.topics[i % subj.topics.length];
+      const topic = subj.topics[(i + variantSeed) % subj.topics.length];
       const progress = i / Math.max(1, scaledCount);
       let difficulty: DifficultyLevel = 'Orta';
       if (progress < ratios.Kolay) difficulty = 'Kolay';
       else if (progress >= ratios.Kolay + ratios.Orta) difficulty = 'Zor';
 
-      const answerSeed = qNumber * 5 + subjIdx * 11 + i * i + Math.floor(qNumber / 3);
+      const answerSeed =
+        qNumber * 5 + subjIdx * 11 + i * i + Math.floor(qNumber / 3) + variantSeed * 7;
       const correctIndex = answerSeed % optionKeys.length;
       const correctOption = optionKeys[correctIndex];
-      const tpl = generateRealisticQuestionContent(
+
+      let tpl = generateRealisticQuestionContent(
         qNumber,
         subj.name,
         topic,
         difficulty,
-        profile
+        profile,
+        variantSeed
       );
-      const options: Record<string, string> = {};
+
+      // Search up to 24 alternative seeds if this stem was already used in a previous exam or earlier in this exam
+      if (usedStemKeys.has(normalizeQuestionStemKey(tpl.stem))) {
+        let foundUnique = false;
+        for (let attempt = 1; attempt <= 24; attempt++) {
+          const altTopic = subj.topics[(i + variantSeed + attempt) % subj.topics.length];
+          const candidate = generateRealisticQuestionContent(
+            qNumber + attempt * 3,
+            subj.name,
+            altTopic,
+            difficulty,
+            profile,
+            variantSeed + attempt * 5
+          );
+          if (!usedStemKeys.has(normalizeQuestionStemKey(candidate.stem))) {
+            tpl = candidate;
+            foundUnique = true;
+            break;
+          }
+        }
+        if (!foundUnique) {
+          const contextTag =
+            variantSeed > 0 ? `Deneme Seti #${variantSeed + 1} · Kazanım Uygulaması ${qNumber}: ` : `Uygulama ${qNumber}: `;
+          tpl = {
+            ...tpl,
+            stem: tpl.stem.replace(/^(\[[^\]]+\]\s*)/, `$1${contextTag}`),
+          };
+        }
+      }
+      usedStemKeys.add(normalizeQuestionStemKey(tpl.stem));
+
+      const optMap: Record<string, string> = {};
       let distIdx = 0;
       optionKeys.forEach((opt, idx) => {
         if (idx === correctIndex) {
-          options[opt] = tpl.correct;
+          optMap[opt] = tpl.correct;
         } else {
-          options[opt] = tpl.distractors[distIdx % tpl.distractors.length];
+          optMap[opt] = tpl.distractors[distIdx % tpl.distractors.length];
           distIdx++;
         }
       });
 
-      const gainCode = `${profile.shortLabel.replace(/\s+/g, '')}.${subj.id.toUpperCase()}.${(i % subj.topics.length) + 1}`;
+      const gainCode = `${profile.shortLabel.replace(/\s+/g, '')}.${subj.id.toUpperCase()}.${((i + variantSeed) % subj.topics.length) + 1}`;
       questions.push({
-        id: `q-${gradeId}-${qNumber}`,
+        id: `q-${gradeId}-s${variantSeed}-${qNumber}`,
         number: qNumber,
         subject: subj.name,
         topic,
         gainCode,
         difficulty,
         stem: tpl.stem,
-        options,
+        options: optMap,
         correctOption,
         explanation: tpl.explanation,
         source: 'Müfredat Havuzu',

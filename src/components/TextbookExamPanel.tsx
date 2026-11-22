@@ -25,7 +25,8 @@ import {
   OpenEndedQuestion,
 } from '../types/academy';
 import { extractPrintableTextFromPdfBytes } from '../utils/examPdfParser';
-import { generateOpenEndedExamPdf } from '../utils/pdfAndZip';
+import { uint8ArrayToPdfBlob } from '../utils/downloadHelpers';
+import { generateOpenEndedExamPdf, triggerDownload } from '../utils/pdfAndZip';
 import {
   analyzeTextbookTopicsAndHeadings,
   buildQuestionsFromTextbookSelection,
@@ -45,6 +46,7 @@ interface TextbookExamPanelProps {
   onSelectGrade: (gradeId: GradeLevelId) => void;
   cover: CoverConfig;
   existingQuestions: ExamQuestion[];
+  exportBusy?: boolean;
   onApplyMcqQuestions: (
     generated: ExamQuestion[],
     meta: { examTitle: string; subtitle: string; modeLabel: string }
@@ -74,6 +76,7 @@ export function TextbookExamPanel({
   onSelectGrade,
   cover,
   existingQuestions,
+  exportBusy = false,
   onApplyMcqQuestions,
   onApplyOpenEndedQuestions,
   onDownloadBookletPdf,
@@ -539,6 +542,7 @@ export function TextbookExamPanel({
   const handleDownloadOpenEndedPdf = async () => {
     if (generatedOpenEnded.length === 0) return;
     setBusyMode('pdf');
+    setErrorMsg(null);
     try {
       const bytes = await generateOpenEndedExamPdf({
         cover,
@@ -546,13 +550,16 @@ export function TextbookExamPanel({
         questions: generatedOpenEnded,
         includeSolutionKey: true,
       });
-      const blob = new Blob([new Uint8Array(bytes)], { type: 'application/pdf' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `Dogruluk-Akademi-${gradeProfile.id}-Ders-Kitabi-Acik-Uclu-Yazili.pdf`;
-      a.click();
-      URL.revokeObjectURL(url);
+      const blob = uint8ArrayToPdfBlob(bytes);
+      const filename = `Dogruluk-Akademi-${gradeProfile.id}-Ders-Kitabi-Acik-Uclu-Yazili.pdf`;
+      triggerDownload(blob, filename);
+      setNotice(`${filename} indirildi.`);
+    } catch (err) {
+      setErrorMsg(
+        err instanceof Error
+          ? `Açık uçlu yazılı PDF’i indirilemedi: ${err.message}`
+          : 'Açık uçlu yazılı PDF’i oluşturulamadı.'
+      );
     } finally {
       setBusyMode(null);
     }
@@ -1079,13 +1086,17 @@ export function TextbookExamPanel({
                     <>
                       <button
                         type="button"
-                        disabled={busyMode === 'pdf'}
+                        disabled={busyMode === 'pdf' || exportBusy}
                         onClick={handleDownloadOpenEndedPdf}
                         data-testid="textbook-download-open-ended-pdf-btn"
-                        className="btn-3d px-4 py-2 rounded-xl text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer"
+                        className="btn-3d px-4 py-2 rounded-xl text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-60"
                       >
-                        <FileDown className="w-4 h-4" aria-hidden="true" />
-                        <span>Açık Uçlu Yazılı PDF İndir</span>
+                        {busyMode === 'pdf' ? (
+                          <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />
+                        ) : (
+                          <FileDown className="w-4 h-4" aria-hidden="true" />
+                        )}
+                        <span>{busyMode === 'pdf' ? 'PDF Hazırlanıyor...' : 'Açık Uçlu Yazılı PDF İndir'}</span>
                       </button>
                       {onOpenOpenEnded && (
                         <button
@@ -1102,12 +1113,17 @@ export function TextbookExamPanel({
                     <>
                       <button
                         type="button"
+                        disabled={exportBusy}
                         onClick={onDownloadBookletPdf}
                         data-testid="textbook-download-booklet-pdf-btn"
-                        className="btn-3d px-4 py-2 rounded-xl text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer"
+                        className="btn-3d px-4 py-2 rounded-xl text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-60"
                       >
-                        <FileDown className="w-4 h-4" aria-hidden="true" />
-                        <span>Kapaklı Kitapçık PDF İndir</span>
+                        {exportBusy ? (
+                          <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />
+                        ) : (
+                          <FileDown className="w-4 h-4" aria-hidden="true" />
+                        )}
+                        <span>{exportBusy ? 'PDF Hazırlanıyor...' : 'Kapaklı Kitapçık PDF İndir'}</span>
                       </button>
                       {onOpenEditor && (
                         <button

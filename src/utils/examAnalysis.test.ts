@@ -34,6 +34,25 @@ test('buildAutoExamQuestions generates exact 120 realistic questions for TYT and
   const grade3Questions = buildAutoExamQuestions('3', 'kolay');
   assert.equal(grade3Questions.length, 50);
   assert.equal(Object.keys(grade3Questions[0].options).length, 4);
+
+  // Consecutive exam sets must not reuse the same questions
+  const set1 = buildAutoExamQuestions('5', 'dengeli', 20, 'Matematik', { variantSeed: 0 });
+  const set2 = buildAutoExamQuestions('5', 'dengeli', 20, 'Matematik', {
+    variantSeed: 1,
+    excludeStems: set1.map((q) => q.stem),
+  });
+  const set3 = buildAutoExamQuestions('5', 'dengeli', 20, 'Matematik', {
+    variantSeed: 2,
+    excludeStems: [...set1, ...set2].map((q) => q.stem),
+  });
+  const stems1 = new Set(set1.map((q) => q.stem));
+  const stems2 = new Set(set2.map((q) => q.stem));
+  for (const q of set2) {
+    assert.ok(!stems1.has(q.stem), 'Set 2 must not repeat stems from Set 1');
+  }
+  for (const q of set3) {
+    assert.ok(!stems1.has(q.stem) && !stems2.has(q.stem), 'Set 3 must not repeat stems from Set 1 or 2');
+  }
 });
 
 test('evaluateOmrExam applies 4-wrong-1-right and 3-wrong-1-right rules correctly', () => {

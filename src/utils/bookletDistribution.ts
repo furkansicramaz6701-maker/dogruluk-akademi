@@ -2,7 +2,10 @@ import {
   BookletCode,
   CoverColorThemeId,
   CoverConfig,
+  CoverLayoutStyleId,
+  DifficultyLevel,
   ExamQuestion,
+  ExamSourceMode,
   GradeLevelId,
   GradeProfile,
   StudentBookletAssignment,
@@ -176,6 +179,47 @@ export function resolveCoverColorPalette(
   };
 }
 
+export interface CoverLayoutOption {
+  id: CoverLayoutStyleId;
+  name: string;
+  shortLabel: string;
+  subtitle: string;
+}
+
+export const COVER_LAYOUT_OPTIONS: CoverLayoutOption[] = [
+  {
+    id: 'klasik-cerceve',
+    name: 'Klasik Çerçeve',
+    shortLabel: 'Çerçeve',
+    subtitle: 'Çift katlı kurumsal dış çerçeve ve klasik üst bant',
+  },
+  {
+    id: 'diyagonal-serit',
+    name: 'Diyagonal Şerit',
+    shortLabel: 'Diyagonal',
+    subtitle: 'Modern çapraz geometrik bantlar ve dinamik kurdele',
+  },
+  {
+    id: 'geometrik-blok',
+    name: 'Geometrik Blok',
+    shortLabel: 'Blok',
+    subtitle: 'Sol dikey omurga şeridi ve mimari köşe blokları',
+  },
+  {
+    id: 'akademik-kose',
+    name: 'Akademik Köşe',
+    shortLabel: 'Köşe Arma',
+    subtitle: 'Dört köşe üçgen bant ve altın rozet ayırıcı çizgi',
+  },
+];
+
+export function resolveCoverLayoutStyle(
+  cover?: Pick<CoverConfig, 'coverLayoutId'> | null
+): CoverLayoutOption {
+  const id = cover?.coverLayoutId ?? 'klasik-cerceve';
+  return COVER_LAYOUT_OPTIONS.find((opt) => opt.id === id) ?? COVER_LAYOUT_OPTIONS[0];
+}
+
 export function normalizeBookletNumber(raw?: string | number, fallbackIndex = 1): string {
   const digits = String(raw ?? '').replace(/\D/g, '');
   if (!digits) {
@@ -204,83 +248,151 @@ export function defaultStartBookletNumberForGrade(gradeId: GradeLevelId): number
   return numericMap[gradeId] ?? 50001;
 }
 
-function gcd(a: number, b: number): number {
-  let x = Math.abs(a);
-  let y = Math.abs(b);
-  while (y !== 0) {
-    const t = y;
-    y = x % y;
-    x = t;
-  }
-  return x || 1;
+function mulberry32(seed: number): () => number {
+  let a = seed >>> 0;
+  return function () {
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
 }
 
-function findCoprimeStride(length: number, preferred: number): number {
-  if (length <= 2) return 1;
-  for (let delta = 0; delta < length; delta++) {
-    const candidate = ((preferred + delta - 1) % (length - 1)) + 1;
-    if (gcd(candidate, length) === 1 && candidate !== 1) {
-      return candidate;
+function deterministicFisherYates(length: number, seed: number): number[] {
+  const arr = Array.from({ length }, (_, i) => i);
+  const rand = mulberry32(seed);
+  for (let i = length - 1; i > 0; i--) {
+    const j = Math.floor(rand() * (i + 1));
+    const tmp = arr[i];
+    arr[i] = arr[j];
+    arr[j] = tmp;
+  }
+  return arr;
+}
+
+function buildTierPermutationsForAllBooklets(
+  length: number,
+  orderSeed: number,
+  subjectIdx: number,
+  tierIdx: number
+): Record<BookletCode, number[]> {
+  if (length <= 1) {
+    return { A: [0], B: [0], C: [0], D: [0] };
+  }
+  if (length === 2) {
+    const flipA = orderSeed !== 0 && (orderSeed + subjectIdx + tierIdx) % 2 === 1;
+    const flipB = (orderSeed + subjectIdx + tierIdx) % 2 === 0;
+    const flipC = (orderSeed + subjectIdx * 3 + tierIdx + 1) % 2 === 0;
+    const flipD = (orderSeed + subjectIdx * 2 + tierIdx * 3) % 2 === 0;
+    return {
+      A: flipA ? [1, 0] : [0, 1],
+      B: flipB ? [1, 0] : [0, 1],
+      C: flipC ? [1, 0] : [0, 1],
+      D: flipD ? [1, 0] : [0, 1],
+    };
+  }
+
+  const used = new Set<string>();
+  const result = {} as Record<BookletCode, number[]>;
+
+  BOOKLET_CODES.forEach((code, codeIdx) => {
+    if (code === 'A' && orderSeed === 0) {
+      const identity = Array.from({ length }, (_, i) => i);
+      used.add(identity.join(','));
+      result.A = identity;
+      return;
     }
-  }
-  return 1;
+
+    let chosen: number[] = Array.from({ length }, (_, i) => i);
+    for (let attempt = 0; attempt < 32; attempt++) {
+      const seed =
+        (codeIdx + 1) * 104729 +
+        (orderSeed + 1) * 7919 +
+        (subjectIdx + 1) * 353 +
+        (tierIdx + 1) * 97 +
+        attempt * 1999;
+      const candidate = deterministicFisherYates(length, seed);
+      const sig = candidate.join(',');
+      if (!used.has(sig)) {
+        chosen = candidate;
+        used.add(sig);
+        break;
+      }
+      chosen = candidate;
+    }
+    result[code] = chosen;
+  });
+
+  return result;
 }
 
-function permuteSubjectGroup(
+const DIFFICULTY_TIERS: DifficultyLevel[] = ['Kolay', 'Orta', 'Zor'];
+
+/**
+ * Permutes questions INSIDE each contiguous subject block while strictly preserving
+ * the exact difficulty level (`Kolay` / `Orta` / `Zor`) at every slot index.
+ */
+function permuteSubjectGroupPreservingDifficulty(
   group: ExamQuestion[],
-  bookletCode: BookletCode
+  bookletCode: BookletCode,
+  orderSeed: number,
+  subjectIdx: number
 ): ExamQuestion[] {
   const m = group.length;
-  if (m <= 1 || bookletCode === 'A') return [...group];
+  if (m <= 1) return [...group];
+  if (bookletCode === 'A' && orderSeed === 0) return [...group];
 
-  if (m === 2) {
-    if (bookletCode === 'B') return [group[1], group[0]];
-    if (bookletCode === 'C') return [group[1], group[0]];
-    return [group[1], group[0]];
-  }
+  const output = new Array<ExamQuestion>(m);
+  const tierBuckets = new Map<string, number[]>();
 
-  let indices: number[] = [];
-  if (bookletCode === 'B') {
-    const stride = findCoprimeStride(m, Math.max(2, Math.floor(m / 2)));
-    for (let i = 0; i < m; i++) {
-      indices.push((1 + i * stride) % m);
+  group.forEach((q, localIdx) => {
+    const key = q.difficulty || 'Orta';
+    const existing = tierBuckets.get(key);
+    if (existing) {
+      existing.push(localIdx);
+    } else {
+      tierBuckets.set(key, [localIdx]);
     }
-  } else if (bookletCode === 'C') {
-    const shift = Math.max(1, Math.floor(m / 3));
-    for (let i = 0; i < m; i++) {
-      indices.push((m - 1 - i + shift) % m);
-    }
-  } else {
-    // D booklet: alternate from both ends outward/inward then adjust cleanly
-    const stride = findCoprimeStride(m, Math.max(2, m - 2));
-    for (let i = 0; i < m; i++) {
-      indices.push((m - 1 + i * stride) % m);
-    }
-  }
+  });
 
-  // Ensure D differs from B and C when m >= 4
-  if (bookletCode === 'D' && m >= 4) {
-    const bFirst = 1 % m;
-    if (indices[0] === bFirst) {
-      indices = [...indices.slice(1), indices[0]];
-    }
-  }
+  const orderedTierKeys = [
+    ...DIFFICULTY_TIERS.filter((t) => tierBuckets.has(t)),
+    ...Array.from(tierBuckets.keys()).filter(
+      (k) => !DIFFICULTY_TIERS.includes(k as DifficultyLevel)
+    ),
+  ];
 
-  return indices.map((idx) => group[idx]);
+  orderedTierKeys.forEach((tierKey, tierIdx) => {
+    const slots = tierBuckets.get(tierKey)!;
+    const perms = buildTierPermutationsForAllBooklets(
+      slots.length,
+      orderSeed,
+      subjectIdx,
+      tierIdx
+    );
+    const perm = perms[bookletCode];
+    slots.forEach((targetSlot, pos) => {
+      const sourceSlot = slots[perm[pos]];
+      output[targetSlot] = group[sourceSlot];
+    });
+  });
+
+  return output;
 }
 
 /**
  * Deterministically builds A, B, C, or D booklet variant from a base question list:
- * - Booklet A preserves base order (1..N).
- * - Booklets B, C, D deterministically permute questions inside each contiguous subject block
- *   and renumber 1..N so the exam remains organized by subject while preventing side-by-side copying.
+ * - Preserves contiguous subject grouping AND exact difficulty level (`Kolay` / `Orta` / `Zor`) at every slot.
+ * - Booklet A preserves base order (1..N) when orderSeed = 0; reshuffles deterministically when orderSeed > 0.
+ * - Booklets B, C, D deterministically permute questions within matching difficulty tiers and renumber 1..N.
  */
 export function buildBookletVariantQuestions(
   baseQuestions: ExamQuestion[],
-  bookletCode: BookletCode
+  bookletCode: BookletCode,
+  orderSeed = 0
 ): ExamQuestion[] {
   if (baseQuestions.length === 0) return [];
-  if (bookletCode === 'A') {
+  if (bookletCode === 'A' && orderSeed === 0) {
     return baseQuestions.map((q, idx) => ({ ...q, number: idx + 1 }));
   }
 
@@ -294,7 +406,9 @@ export function buildBookletVariantQuestions(
     }
   }
 
-  const reordered = subjectGroups.flatMap((grp) => permuteSubjectGroup(grp, bookletCode));
+  const reordered = subjectGroups.flatMap((grp, subjectIdx) =>
+    permuteSubjectGroupPreservingDifficulty(grp, bookletCode, orderSeed, subjectIdx)
+  );
   return reordered.map((q, idx) => ({
     ...q,
     number: idx + 1,
@@ -306,13 +420,131 @@ export function buildAnswerKeyString(questions: ExamQuestion[]): string {
 }
 
 export function buildAnswerKeysForAllBooklets(
-  baseQuestions: ExamQuestion[]
+  baseQuestions: ExamQuestion[],
+  orderSeed = 0
 ): Record<BookletCode, string> {
   return {
-    A: buildAnswerKeyString(buildBookletVariantQuestions(baseQuestions, 'A')),
-    B: buildAnswerKeyString(buildBookletVariantQuestions(baseQuestions, 'B')),
-    C: buildAnswerKeyString(buildBookletVariantQuestions(baseQuestions, 'C')),
-    D: buildAnswerKeyString(buildBookletVariantQuestions(baseQuestions, 'D')),
+    A: buildAnswerKeyString(buildBookletVariantQuestions(baseQuestions, 'A', orderSeed)),
+    B: buildAnswerKeyString(buildBookletVariantQuestions(baseQuestions, 'B', orderSeed)),
+    C: buildAnswerKeyString(buildBookletVariantQuestions(baseQuestions, 'C', orderSeed)),
+    D: buildAnswerKeyString(buildBookletVariantQuestions(baseQuestions, 'D', orderSeed)),
+  };
+}
+
+export interface BookletVariantComparisonItem {
+  code: BookletCode;
+  questionCount: number;
+  mappedBaseNumbers: number[];
+  answerKey: string;
+  orderSignature: string;
+  difficultyPreserved: boolean;
+  subjectPreserved: boolean;
+  movedCount: number;
+}
+
+export function computeDifficultyCounts(
+  questions: ExamQuestion[]
+): Record<DifficultyLevel, number> {
+  const counts: Record<DifficultyLevel, number> = { Kolay: 0, Orta: 0, Zor: 0 };
+  for (const q of questions) {
+    if (q.difficulty === 'Kolay' || q.difficulty === 'Orta' || q.difficulty === 'Zor') {
+      counts[q.difficulty] += 1;
+    }
+  }
+  return counts;
+}
+
+export function buildBookletOrderComparison(
+  baseQuestions: ExamQuestion[],
+  orderSeed = 0
+): {
+  items: BookletVariantComparisonItem[];
+  allOrdersUnique: boolean;
+  allKeysUnique: boolean;
+  difficultyPreserved: boolean;
+  subjectPreserved: boolean;
+  difficultyCounts: Record<DifficultyLevel, number>;
+} {
+  const baseIndexById = new Map<string, number>();
+  baseQuestions.forEach((q, idx) => baseIndexById.set(q.id, idx + 1));
+
+  const items: BookletVariantComparisonItem[] = BOOKLET_CODES.map((code) => {
+    const variant = buildBookletVariantQuestions(baseQuestions, code, orderSeed);
+    const mappedBaseNumbers = variant.map((q) => baseIndexById.get(q.id) ?? q.number);
+    const itemDifficultyPreserved = variant.every(
+      (q, idx) => q.difficulty === baseQuestions[idx]?.difficulty
+    );
+    const itemSubjectPreserved = variant.every(
+      (q, idx) => q.subject === baseQuestions[idx]?.subject
+    );
+    const movedCount = mappedBaseNumbers.reduce(
+      (acc, baseNum, idx) => (baseNum !== idx + 1 ? acc + 1 : acc),
+      0
+    );
+
+    return {
+      code,
+      questionCount: variant.length,
+      mappedBaseNumbers,
+      answerKey: buildAnswerKeyString(variant),
+      orderSignature: mappedBaseNumbers.join('-'),
+      difficultyPreserved: itemDifficultyPreserved,
+      subjectPreserved: itemSubjectPreserved,
+      movedCount,
+    };
+  });
+
+  const uniqueSignatures = new Set(items.map((i) => i.orderSignature));
+  const uniqueKeys = new Set(items.map((i) => i.answerKey));
+  return {
+    items,
+    allOrdersUnique: baseQuestions.length >= 3 ? uniqueSignatures.size === 4 : true,
+    allKeysUnique: baseQuestions.length >= 4 ? uniqueKeys.size === 4 : true,
+    difficultyPreserved: items.every((i) => i.difficultyPreserved),
+    subjectPreserved: items.every((i) => i.subjectPreserved),
+    difficultyCounts: computeDifficultyCounts(baseQuestions),
+  };
+}
+
+export interface BookletVariantSyncBundle {
+  activeCode: BookletCode;
+  orderSeed: number;
+  activeQuestions: ExamQuestion[];
+  activeAnswerKey: string;
+  allAnswerKeys: Record<BookletCode, string>;
+  variantsByCode: Record<BookletCode, ExamQuestion[]>;
+  comparison: ReturnType<typeof buildBookletOrderComparison>;
+}
+
+/**
+ * Atomically computes deterministic A/B/C/D booklet question variants (preserving difficulty)
+ * and simultaneously synchronizes the active optical answer key and all 4 booklet keys.
+ */
+export function syncBookletVariantsAndOpticalKeys(
+  baseQuestions: ExamQuestion[],
+  activeCode: BookletCode,
+  orderSeed = 0
+): BookletVariantSyncBundle {
+  const variantsByCode: Record<BookletCode, ExamQuestion[]> = {
+    A: buildBookletVariantQuestions(baseQuestions, 'A', orderSeed),
+    B: buildBookletVariantQuestions(baseQuestions, 'B', orderSeed),
+    C: buildBookletVariantQuestions(baseQuestions, 'C', orderSeed),
+    D: buildBookletVariantQuestions(baseQuestions, 'D', orderSeed),
+  };
+  const allAnswerKeys: Record<BookletCode, string> = {
+    A: buildAnswerKeyString(variantsByCode.A),
+    B: buildAnswerKeyString(variantsByCode.B),
+    C: buildAnswerKeyString(variantsByCode.C),
+    D: buildAnswerKeyString(variantsByCode.D),
+  };
+  return {
+    activeCode,
+    orderSeed,
+    activeQuestions: variantsByCode[activeCode],
+    activeAnswerKey: allAnswerKeys[activeCode],
+    allAnswerKeys,
+    variantsByCode,
+    comparison: buildBookletOrderComparison(baseQuestions, orderSeed),
   };
 }
 
@@ -339,8 +571,46 @@ export interface BuildBatchAssignmentsParams {
   count?: number;
   startBookletNumber?: number;
   startingBookletCode?: BookletCode;
+  orderSeed?: number;
   students?: StudentRecord[];
   institutionId?: string;
+  examSourceMode?: ExamSourceMode;
+  externalKeys?: Partial<Record<BookletCode, string>>;
+  fallbackKey?: string;
+}
+
+export function normalizeExternalAnswerKeyString(
+  raw: string,
+  optionCount: 4 | 5 = 5
+): string {
+  const allowed = optionCount === 4 ? /[ABCD]/g : /[ABCDE]/g;
+  const matches = (raw || '').toUpperCase().match(allowed);
+  return matches ? matches.join('') : '';
+}
+
+export function resolveActiveAnswerKeyByMode(params: {
+  examSourceMode: ExamSourceMode;
+  bookletCode: BookletCode;
+  baseQuestions: ExamQuestion[];
+  orderSeed?: number;
+  externalKeys?: Partial<Record<BookletCode, string>>;
+  optionCount?: 4 | 5;
+  fallbackKey?: string;
+}): string {
+  const optionCount = params.optionCount ?? 5;
+  if (params.examSourceMode === 'farkli-yayin') {
+    const extRaw = params.externalKeys?.[params.bookletCode] ?? '';
+    const extNorm = normalizeExternalAnswerKeyString(extRaw, optionCount);
+    if (extNorm.length > 0) return extNorm;
+    const anyExt = BOOKLET_CODES.map((c) =>
+      normalizeExternalAnswerKeyString(params.externalKeys?.[c] ?? '', optionCount)
+    ).find((k) => k.length > 0);
+    if (anyExt) return anyExt;
+    return normalizeExternalAnswerKeyString(params.fallbackKey ?? '', optionCount) ||
+      buildAnswerKeyString(params.baseQuestions);
+  }
+  const all = buildAnswerKeysForAllBooklets(params.baseQuestions, params.orderSeed ?? 0);
+  return all[params.bookletCode];
 }
 
 export function buildBatchBookletAssignments(
@@ -357,7 +627,49 @@ export function buildBatchBookletAssignments(
     BOOKLET_CODES.indexOf(params.startingBookletCode ?? 'A')
   );
 
-  const keysByCode = buildAnswerKeysForAllBooklets(params.baseQuestions);
+  const mode = params.examSourceMode ?? 'kurum';
+  const keysByCode: Record<BookletCode, string> =
+    mode === 'farkli-yayin'
+      ? {
+          A: resolveActiveAnswerKeyByMode({
+            examSourceMode: 'farkli-yayin',
+            bookletCode: 'A',
+            baseQuestions: params.baseQuestions,
+            orderSeed: params.orderSeed,
+            externalKeys: params.externalKeys,
+            optionCount: params.gradeProfile.optionCount,
+            fallbackKey: params.fallbackKey,
+          }),
+          B: resolveActiveAnswerKeyByMode({
+            examSourceMode: 'farkli-yayin',
+            bookletCode: 'B',
+            baseQuestions: params.baseQuestions,
+            orderSeed: params.orderSeed,
+            externalKeys: params.externalKeys,
+            optionCount: params.gradeProfile.optionCount,
+            fallbackKey: params.fallbackKey,
+          }),
+          C: resolveActiveAnswerKeyByMode({
+            examSourceMode: 'farkli-yayin',
+            bookletCode: 'C',
+            baseQuestions: params.baseQuestions,
+            orderSeed: params.orderSeed,
+            externalKeys: params.externalKeys,
+            optionCount: params.gradeProfile.optionCount,
+            fallbackKey: params.fallbackKey,
+          }),
+          D: resolveActiveAnswerKeyByMode({
+            examSourceMode: 'farkli-yayin',
+            bookletCode: 'D',
+            baseQuestions: params.baseQuestions,
+            orderSeed: params.orderSeed,
+            externalKeys: params.externalKeys,
+            optionCount: params.gradeProfile.optionCount,
+            fallbackKey: params.fallbackKey,
+          }),
+        }
+      : buildAnswerKeysForAllBooklets(params.baseQuestions, params.orderSeed ?? 0);
+
   const matchingStudents = (params.students ?? []).filter(
     (s) =>
       s.gradeId === params.gradeProfile.id &&
@@ -372,9 +684,14 @@ export function buildBatchBookletAssignments(
 
   const assignments: StudentBookletAssignment[] = [];
   for (let i = 0; i < count; i++) {
-    const bookletCode = BOOKLET_CODES[(startCodeIdx + i) % BOOKLET_CODES.length];
-    const bookletNumber = String(startNum + i).padStart(6, '0').slice(-6);
     const enrolled = matchingStudents[i];
+    const bookletCode =
+      enrolled?.assignedBookletCode && BOOKLET_CODES.includes(enrolled.assignedBookletCode)
+        ? enrolled.assignedBookletCode
+        : BOOKLET_CODES[(startCodeIdx + i) % BOOKLET_CODES.length];
+    const bookletNumber = enrolled?.assignedBookletNumber
+      ? normalizeBookletNumber(enrolled.assignedBookletNumber, i + 1)
+      : String(startNum + i).padStart(6, '0').slice(-6);
 
     const fallbackStuNum = String(gradeNumeric * 1000000 + 1000 + i + 1)
       .padStart(8, '0')
@@ -396,6 +713,123 @@ export function buildBatchBookletAssignments(
   }
 
   return assignments;
+}
+
+export interface AssignRegisteredStudentsResult {
+  assignments: StudentBookletAssignment[];
+  updatedStudents: StudentRecord[];
+  assignedCount: number;
+}
+
+/**
+ * Automatically distributes registered students across A-B-C-D booklets (and 6-digit booklet numbers)
+ * for both internal academy exams and external publisher exams ("farklı yayın denemesi").
+ */
+export function assignBookletsToRegisteredStudents(params: {
+  students: StudentRecord[];
+  institutionId: string;
+  gradeProfile: GradeProfile;
+  baseQuestions: ExamQuestion[];
+  startingBookletCode?: BookletCode;
+  startBookletNumber?: number;
+  orderSeed?: number;
+  examSourceMode?: ExamSourceMode;
+  externalKeys?: Partial<Record<BookletCode, string>>;
+  fallbackKey?: string;
+  includeAllGradesInInstitution?: boolean;
+  preserveExisting?: boolean;
+}): AssignRegisteredStudentsResult {
+  const startNum =
+    typeof params.startBookletNumber === 'number' && Number.isFinite(params.startBookletNumber)
+      ? Math.max(1, Math.round(params.startBookletNumber))
+      : defaultStartBookletNumberForGrade(params.gradeProfile.id);
+  const startCodeIdx = Math.max(
+    0,
+    BOOKLET_CODES.indexOf(params.startingBookletCode ?? 'A')
+  );
+  const mode = params.examSourceMode ?? 'kurum';
+
+  const keysByCode: Record<BookletCode, string> = {
+    A: resolveActiveAnswerKeyByMode({
+      examSourceMode: mode,
+      bookletCode: 'A',
+      baseQuestions: params.baseQuestions,
+      orderSeed: params.orderSeed,
+      externalKeys: params.externalKeys,
+      optionCount: params.gradeProfile.optionCount,
+      fallbackKey: params.fallbackKey,
+    }),
+    B: resolveActiveAnswerKeyByMode({
+      examSourceMode: mode,
+      bookletCode: 'B',
+      baseQuestions: params.baseQuestions,
+      orderSeed: params.orderSeed,
+      externalKeys: params.externalKeys,
+      optionCount: params.gradeProfile.optionCount,
+      fallbackKey: params.fallbackKey,
+    }),
+    C: resolveActiveAnswerKeyByMode({
+      examSourceMode: mode,
+      bookletCode: 'C',
+      baseQuestions: params.baseQuestions,
+      orderSeed: params.orderSeed,
+      externalKeys: params.externalKeys,
+      optionCount: params.gradeProfile.optionCount,
+      fallbackKey: params.fallbackKey,
+    }),
+    D: resolveActiveAnswerKeyByMode({
+      examSourceMode: mode,
+      bookletCode: 'D',
+      baseQuestions: params.baseQuestions,
+      orderSeed: params.orderSeed,
+      externalKeys: params.externalKeys,
+      optionCount: params.gradeProfile.optionCount,
+      fallbackKey: params.fallbackKey,
+    }),
+  };
+
+  let matchIndex = 0;
+  const assignments: StudentBookletAssignment[] = [];
+  const updatedStudents = params.students.map((stu) => {
+    const matchesInstitution = stu.institutionId === params.institutionId;
+    const matchesGrade = params.includeAllGradesInInstitution || stu.gradeId === params.gradeProfile.id;
+    if (!matchesInstitution || !matchesGrade) {
+      return stu;
+    }
+
+    const i = matchIndex++;
+    const bookletCode =
+      params.preserveExisting && stu.assignedBookletCode && BOOKLET_CODES.includes(stu.assignedBookletCode)
+        ? stu.assignedBookletCode
+        : BOOKLET_CODES[(startCodeIdx + i) % BOOKLET_CODES.length];
+    const bookletNumber =
+      params.preserveExisting && stu.assignedBookletNumber
+        ? normalizeBookletNumber(stu.assignedBookletNumber, i + 1)
+        : String(startNum + i).padStart(6, '0').slice(-6);
+
+    assignments.push({
+      index: i + 1,
+      studentName: stu.fullName,
+      studentNumber8: stu.studentNumber8,
+      classroom: stu.classroom,
+      gradeLabel: stu.gradeId === params.gradeProfile.id ? params.gradeProfile.shortLabel : `${stu.gradeId}. Sınıf`,
+      bookletCode,
+      bookletNumber,
+      answerKey: keysByCode[bookletCode],
+    });
+
+    return {
+      ...stu,
+      assignedBookletCode: bookletCode,
+      assignedBookletNumber: bookletNumber,
+    };
+  });
+
+  return {
+    assignments,
+    updatedStudents,
+    assignedCount: assignments.length,
+  };
 }
 
 export function buildBatchAssignmentsCsv(
@@ -426,3 +860,103 @@ export function buildBatchAssignmentsCsv(
   );
   return `\uFEFF${header}\n${rows.join('\n')}`;
 }
+
+function sanitizeAsciiSlug(text: string): string {
+  return text
+    .replace(/ğ/g, 'g')
+    .replace(/Ğ/g, 'G')
+    .replace(/ü/g, 'u')
+    .replace(/Ü/g, 'U')
+    .replace(/ş/g, 's')
+    .replace(/Ş/g, 'S')
+    .replace(/ı/g, 'i')
+    .replace(/İ/g, 'I')
+    .replace(/ö/g, 'o')
+    .replace(/Ö/g, 'O')
+    .replace(/ç/g, 'c')
+    .replace(/Ç/g, 'C')
+    .replace(/[^a-zA-Z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 32);
+}
+
+export function buildBookletPdfFilename(
+  cover: Pick<CoverConfig, 'academyName' | 'bookletCode' | 'bookletNumber'>,
+  targetCode?: BookletCode,
+  customBookletNumber?: string
+): string {
+  const code = targetCode ?? cover.bookletCode ?? 'A';
+  const num = normalizeBookletNumber(customBookletNumber ?? cover.bookletNumber, 1);
+  const slug = sanitizeAsciiSlug(cover.academyName || 'Dogruluk-Akademi') || 'Dogruluk-Akademi';
+  return `${slug}-${code}-Kitapcik-${num}.pdf`;
+}
+
+export function buildOpticalPdfFilename(
+  cover: Pick<CoverConfig, 'academyName' | 'bookletCode' | 'bookletNumber' | 'institutionCode8'>,
+  targetCode?: BookletCode,
+  customBookletNumber?: string,
+  studentNumber8?: string
+): string {
+  const code = targetCode ?? cover.bookletCode ?? 'A';
+  const num = normalizeBookletNumber(customBookletNumber ?? cover.bookletNumber, 1);
+  const instCode = (cover.institutionCode8 || '00000000').replace(/\D/g, '').padStart(8, '0').slice(0, 8);
+  const stuClean = (studentNumber8 || '').replace(/\D/g, '').slice(0, 8);
+  return stuClean
+    ? `Optik-Form-${code}-No${num}-Ogr${stuClean}-${instCode}.pdf`
+    : `Optik-Form-${code}-No${num}-${instCode}.pdf`;
+}
+
+export function buildAllBookletsZipFilename(
+  academyName?: string,
+  suffix = 'ABCD-Tum-Kitapciklar'
+): string {
+  const slug = sanitizeAsciiSlug(academyName || 'Dogruluk-Akademi') || 'Dogruluk-Akademi';
+  return `${slug}-${suffix}.zip`;
+}
+
+export function buildAllBookletsAnswerKeyCsv(
+  baseQuestions: ExamQuestion[],
+  orderSeed = 0
+): string {
+  const variants: Record<BookletCode, ExamQuestion[]> = {
+    A: buildBookletVariantQuestions(baseQuestions, 'A', orderSeed),
+    B: buildBookletVariantQuestions(baseQuestions, 'B', orderSeed),
+    C: buildBookletVariantQuestions(baseQuestions, 'C', orderSeed),
+    D: buildBookletVariantQuestions(baseQuestions, 'D', orderSeed),
+  };
+  const header = [
+    'SoruNo',
+    'Ders',
+    'Zorluk',
+    'A_Kitapcik_Cevap',
+    'B_Kitapcik_Cevap',
+    'C_Kitapcik_Cevap',
+    'D_Kitapcik_Cevap',
+    'B_Kaynak_Soru',
+    'C_Kaynak_Soru',
+    'D_Kaynak_Soru',
+  ].join(';');
+  const baseNumById = new Map<string, number>();
+  baseQuestions.forEach((q, idx) => baseNumById.set(q.id, idx + 1));
+
+  const rows = variants.A.map((qA, idx) => {
+    const qB = variants.B[idx];
+    const qC = variants.C[idx];
+    const qD = variants.D[idx];
+    return [
+      idx + 1,
+      `"${qA.subject.replace(/"/g, '""')}"`,
+      qA.difficulty,
+      qA.correctOption,
+      qB?.correctOption ?? qA.correctOption,
+      qC?.correctOption ?? qA.correctOption,
+      qD?.correctOption ?? qA.correctOption,
+      qB ? baseNumById.get(qB.id) ?? qB.number : idx + 1,
+      qC ? baseNumById.get(qC.id) ?? qC.number : idx + 1,
+      qD ? baseNumById.get(qD.id) ?? qD.number : idx + 1,
+    ].join(';');
+  });
+
+  return `\uFEFF${header}\n${rows.join('\n')}`;
+}
+

@@ -359,9 +359,11 @@ export function deleteInstitutionSafely(
   };
 }
 
+export const ADMIN_PRIMARY_INSTITUTION_ID = 'inst-dogruluk-merkez';
+
 export const DEFAULT_INSTITUTIONS: Institution[] = [
   {
-    id: 'inst-dogruluk-merkez',
+    id: ADMIN_PRIMARY_INSTITUTION_ID,
     name: 'Doğruluk Akademi Merkez',
     code8: generate8DigitInstitutionCode('Doğruluk Akademi Merkez'),
     city: 'İstanbul',
@@ -388,6 +390,22 @@ export const DEFAULT_INSTITUTIONS: Institution[] = [
     permissions: createDefaultPermissions('Öğretmen', ['lise', 'yks']),
   },
 ];
+
+export function isDogrulukAcademyInstitution(
+  inst: Pick<Institution, 'id' | 'name'>
+): boolean {
+  if (inst.id === ADMIN_PRIMARY_INSTITUTION_ID) return true;
+  const key = normalizeInstitutionKey(inst.name);
+  return key.includes('doğruluk akademi');
+}
+
+export function resolvePrimaryAdminInstitution(list: Institution[]): Institution {
+  const byId = list.find((i) => i.id === ADMIN_PRIMARY_INSTITUTION_ID);
+  if (byId) return normalizeInstitution(byId);
+  const byName = list.find((i) => isDogrulukAcademyInstitution(i));
+  if (byName) return normalizeInstitution(byName);
+  return normalizeInstitution(DEFAULT_INSTITUTIONS[0]);
+}
 
 export const DEFAULT_STUDENTS: StudentRecord[] = [
   {

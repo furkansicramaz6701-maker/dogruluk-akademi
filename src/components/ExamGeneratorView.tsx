@@ -27,15 +27,19 @@ import {
   BookletCode,
   CoverColorThemeId,
   CoverConfig,
+  CoverLayoutStyleId,
   DifficultyLevel,
   DynamicCurriculumOverride,
   DynamicSourceMix,
   ExamQuestion,
+  ExamSourceMode,
   GradeLevelId,
   GradeProfile,
   Institution,
   OpenEndedQuestion,
   PdfUploadStripOptions,
+  PdfWatermarkPlacement,
+  PdfWatermarkPreset,
   PenaltyDivisor,
   StudentBookletAssignment,
   StudentRecord,
@@ -43,7 +47,9 @@ import {
 import {
   BOOKLET_CODES,
   COVER_COLOR_THEMES,
+  COVER_LAYOUT_OPTIONS,
   resolveCoverColorPalette,
+  resolveCoverLayoutStyle,
 } from '../utils/bookletDistribution';
 import { buildAutoExamQuestions, selectCuratedQuestions } from '../utils/examAnalysis';
 import {
@@ -59,8 +65,16 @@ import {
   parseExamQuestionsFromRawText,
 } from '../utils/examPdfParser';
 import { filterGradeProfilesByInstitution } from '../utils/institutionCodes';
+import {
+  DEFAULT_WATERMARK_PRESETS,
+  deleteWatermarkPreset as deleteWatermarkPresetFromList,
+  resolvePdfWatermarkConfig,
+  upsertWatermarkPreset,
+} from '../utils/pdfWatermark';
 import { BatchBookletPanel } from './BatchBookletPanel';
+import { BookletVariantSelector } from './BookletVariantSelector';
 import { Cover3DPreview } from './Cover3DPreview';
+import { PdfWatermarkStudio } from './PdfWatermarkStudio';
 import { QuestionVisualPreview } from './QuestionVisualPreview';
 import { TextbookExamPanel } from './TextbookExamPanel';
 
@@ -72,6 +86,8 @@ interface ExamGeneratorViewProps {
   onChangePenaltyDivisor?: (divisor: PenaltyDivisor) => void;
   questions: ExamQuestion[];
   baseQuestions?: ExamQuestion[];
+  bookletOrderSeed?: number;
+  activeAnswerKey?: string;
   cover: CoverConfig;
   students?: StudentRecord[];
   batchAssignments?: StudentBookletAssignment[];
@@ -86,6 +102,7 @@ interface ExamGeneratorViewProps {
       autoSyncAnswerKey?: boolean;
     }
   ) => void;
+  onReshuffleBookletOrder?: () => void;
   uploadedPdfName: string | null;
   uploadedPdfPageCount: number | null;
   pdfStripOptions: PdfUploadStripOptions;
@@ -101,12 +118,36 @@ interface ExamGeneratorViewProps {
   onUploadExamPdf: (bytes: Uint8Array, name: string, pageCount: number) => void;
   onClearExamPdf: () => void;
   onDownloadBookletPdf: () => Promise<void>;
+  onDownloadSpecificBookletPdf?: (code: BookletCode, bookletNumber?: string) => Promise<void>;
+  onDownloadAllBookletsZip?: () => Promise<void>;
+  exportBusy?: boolean;
   onDownloadOpticalPdf: () => Promise<void>;
+  onDownloadSpecificOpticalPdf?: (
+    code: BookletCode,
+    bookletNumber?: string,
+    overrideStudent?: { studentName?: string; studentNumber8?: string; classroom?: string }
+  ) => Promise<void>;
+  onDownloadAllOpticalPdf?: () => Promise<void>;
+  examSourceMode?: ExamSourceMode;
+  externalKeys?: Partial<Record<BookletCode, string>>;
+  onAutoAssignRegisteredStudents?: () => void;
   onDownloadZip: () => Promise<void>;
   onDownloadSourceZip: () => Promise<void>;
   onOpenEditor?: () => void;
   onOpenOpenEnded?: () => void;
   onApplyOpenEndedQuestions?: (questions: OpenEndedQuestion[]) => void;
+  watermarkPresets?: PdfWatermarkPreset[];
+  onAddOrUpdateWatermarkPreset?: (input: {
+    id?: string;
+    text: string;
+    placement: PdfWatermarkPlacement;
+    opacity: number;
+    fontScale?: number;
+    angleDeg?: number;
+    colorHex?: string;
+    stripExistingMargins?: boolean;
+  }) => { ok: boolean; saved?: PdfWatermarkPreset; wasUpdated: boolean; reason?: string };
+  onDeleteWatermarkPreset?: (id: string) => { ok: boolean; reason?: string };
 }
 
 async function fileToBase64(file: File): Promise<string> {
@@ -128,11 +169,14 @@ export function ExamGeneratorView({
   onChangePenaltyDivisor,
   questions,
   baseQuestions,
+  bookletOrderSeed = 0,
+  activeAnswerKey,
   cover,
   students = [],
   batchAssignments = [],
   onSetBatchAssignments,
   onSelectBookletVariant,
+  onReshuffleBookletOrder,
   uploadedPdfName,
   uploadedPdfPageCount,
   pdfStripOptions,
@@ -145,13 +189,52 @@ export function ExamGeneratorView({
   onUploadExamPdf,
   onClearExamPdf,
   onDownloadBookletPdf,
+  onDownloadSpecificBookletPdf,
+  onDownloadAllBookletsZip,
+  exportBusy = false,
   onDownloadOpticalPdf,
+  onDownloadSpecificOpticalPdf,
+  onDownloadAllOpticalPdf,
+  examSourceMode = 'kurum',
+  externalKeys,
+  onAutoAssignRegisteredStudents,
   onDownloadZip,
   onDownloadSourceZip,
   onOpenEditor,
   onOpenOpenEnded,
   onApplyOpenEndedQuestions,
+  watermarkPresets,
+  onAddOrUpdateWatermarkPreset,
+  onDeleteWatermarkPreset,
 }: ExamGeneratorViewProps) {
+  const [localWatermarkPresets, setLocalWatermarkPresets] = useState<PdfWatermarkPreset[]>(
+    DEFAULT_WATERMARK_PRESETS
+  );
+  const effectiveWatermarkPresets = watermarkPresets ?? localWatermarkPresets;
+  const handleAddOrUpdateWmPreset =
+    onAddOrUpdateWatermarkPreset ??
+    ((input: {
+      id?: string;
+      text: string;
+      placement: PdfWatermarkPlacement;
+      opacity: number;
+      fontScale?: number;
+      angleDeg?: number;
+      colorHex?: string;
+      stripExistingMargins?: boolean;
+    }) => {
+      const res = upsertWatermarkPreset(localWatermarkPresets, input);
+      if (res.ok) setLocalWatermarkPresets(res.presets);
+      return res;
+    });
+  const handleDeleteWmPreset =
+    onDeleteWatermarkPreset ??
+    ((id: string) => {
+      const res = deleteWatermarkPresetFromList(localWatermarkPresets, id);
+      if (res.ok) setLocalWatermarkPresets(res.presets);
+      return res;
+    });
+
   const allowedGradeProfiles = filterGradeProfilesByInstitution(GRADE_PROFILES, institution);
   const defaultQuestionTarget = gradeProfile.subjects.reduce((acc, s) => acc + s.questionCount, 0);
 
@@ -159,6 +242,10 @@ export function ExamGeneratorView({
   const [difficultyMix, setDifficultyMix] = useState<'dengeli' | 'kolay' | 'zor'>('dengeli');
   const [targetCount, setTargetCount] = useState<number>(defaultQuestionTarget);
   const [subjectScope, setSubjectScope] = useState<string>('Tümü');
+  const [examSeriesNo, setExamSeriesNo] = useState<number>(1);
+  const [usedQuestionStems, setUsedQuestionStems] = useState<string[]>(() =>
+    (baseQuestions ?? questions).map((q) => q.stem)
+  );
   const [show20Picker, setShow20Picker] = useState<boolean>(false);
   const [showTextbookPanel, setShowTextbookPanel] = useState<boolean>(false);
   const [pickedQuestionIds, setPickedQuestionIds] = useState<string[]>([]);
@@ -228,6 +315,8 @@ export function ExamGeneratorView({
     const total = gradeProfile.subjects.reduce((acc, s) => acc + s.questionCount, 0);
     setTargetCount(total);
     setSubjectScope('Tümü');
+    setExamSeriesNo(1);
+    setUsedQuestionStems([]);
     setMebQuestionCount(total);
     setMebSourceTitle(`MEB ${gradeProfile.shortLabel} Öğretim Programı`);
     setSearchSubject(gradeProfile.subjects[0]?.name ?? 'Türkçe');
@@ -245,17 +334,25 @@ export function ExamGeneratorView({
     setErrorMsg(null);
     const countToUse = forcedCount ?? targetCount;
     const subjToUse = forcedSubject ?? subjectScope;
-    const next = buildAutoExamQuestions(gradeProfile.id, difficultyMix, countToUse, subjToUse);
+    const nextSeriesNo = examSeriesNo + 1;
+    const currentStems = (baseQuestions ?? questions).map((q) => q.stem);
+    const mergedExcluded = Array.from(new Set([...usedQuestionStems, ...currentStems]));
+    const next = buildAutoExamQuestions(gradeProfile.id, difficultyMix, countToUse, subjToUse, {
+      variantSeed: nextSeriesNo - 1,
+      excludeStems: mergedExcluded,
+    });
+    setExamSeriesNo(nextSeriesNo);
+    setUsedQuestionStems([...mergedExcluded, ...next.map((q) => q.stem)].slice(-600));
     onUpdateQuestions(next);
     onUpdateCover({
       questionCount: next.length,
       examTitle:
         countToUse === 20
-          ? `${cover.academyName.split(' ')[0]} ${gradeProfile.shortLabel} 20 Soruluk Yazılıya Hazırlık${subjToUse !== 'Tümü' ? ` (${subjToUse})` : ''}`
-          : cover.examTitle,
+          ? `${cover.academyName.split(' ')[0]} ${gradeProfile.shortLabel} 20 Soruluk Yazılıya Hazırlık #${nextSeriesNo}${subjToUse !== 'Tümü' ? ` (${subjToUse})` : ''}`
+          : `${gradeProfile.shortLabel} Kurumsal Deneme Sınavı #${nextSeriesNo}`,
     });
     setNotice(
-      `${gradeProfile.label}${subjToUse !== 'Tümü' ? ` · ${subjToUse}` : ''} müfredatına göre ${next.length} soruluk (${gradeProfile.optionCount} şıklı) ${countToUse === 20 ? 'yazılıya hazırlık denemesi' : 'deneme'} oluşturuldu.`
+      `Deneme Seti #${nextSeriesNo} oluşturuldu: ${gradeProfile.label}${subjToUse !== 'Tümü' ? ` · ${subjToUse}` : ''} için önceki denemelerden farklı ${next.length} özgün soru (${gradeProfile.optionCount} şık) hazırlandı.`
     );
   };
 
@@ -934,12 +1031,30 @@ export function ExamGeneratorView({
           <div className="flex flex-wrap items-center gap-2.5">
             <button
               type="button"
+              disabled={exportBusy}
               onClick={onDownloadBookletPdf}
-              className="btn-3d flex-1 py-2.5 px-4 rounded-xl text-xs font-bold inline-flex items-center justify-center gap-1.5 whitespace-nowrap cursor-pointer"
+              data-testid="card-a-download-booklet-btn"
+              className="btn-3d flex-1 py-2.5 px-4 rounded-xl text-xs font-bold inline-flex items-center justify-center gap-1.5 whitespace-nowrap cursor-pointer disabled:opacity-60"
             >
-              <FileDown className="w-4 h-4 shrink-0" aria-hidden="true" />
-              <span>Kapaklı Deneme PDF İndir</span>
+              {exportBusy ? (
+                <Loader2 className="w-4 h-4 shrink-0 animate-spin" aria-hidden="true" />
+              ) : (
+                <FileDown className="w-4 h-4 shrink-0" aria-hidden="true" />
+              )}
+              <span>Kapaklı Deneme PDF İndir ({cover.bookletCode})</span>
             </button>
+            {onDownloadAllBookletsZip && (
+              <button
+                type="button"
+                disabled={exportBusy}
+                onClick={onDownloadAllBookletsZip}
+                data-testid="card-a-download-all-zip-btn"
+                className="btn-3d-secondary px-3.5 py-2.5 rounded-xl text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer disabled:opacity-60"
+              >
+                <Archive className="w-3.5 h-3.5" aria-hidden="true" />
+                <span>A-B-C-D Tümü (.ZIP)</span>
+              </button>
+            )}
             {uploadedPdfName && (
               <button
                 type="button"
@@ -949,6 +1064,18 @@ export function ExamGeneratorView({
                 PDF’i Kaldır
               </button>
             )}
+            <button
+              type="button"
+              onClick={() =>
+                document
+                  .getElementById('pdf-watermark-studio-section')
+                  ?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+              }
+              data-testid="card-a-watermark-jump-btn"
+              className="btn-3d-secondary px-3.5 py-2.5 rounded-xl text-xs font-bold cursor-pointer"
+            >
+              Filigran Ekle / Düzelt
+            </button>
           </div>
         </section>
 
@@ -1061,35 +1188,143 @@ export function ExamGeneratorView({
             </div>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2.5">
-            <button
-              type="button"
-              onClick={() => handleGenerateAuto()}
-              className="btn-3d flex-1 py-2.5 px-4 rounded-xl text-xs font-bold inline-flex items-center justify-center gap-1.5 whitespace-nowrap cursor-pointer"
+          <div className="space-y-3">
+            <div
+              className="surface-alt rounded-lg px-3 py-2 text-[11px] flex flex-wrap items-center justify-between gap-2"
+              data-testid="unique-exam-series-bar"
             >
-              <Wand2 className="w-4 h-4 shrink-0" aria-hidden="true" />
-              <span>{targetCount} Soruluk Otomatik Deneme Oluştur</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => setShow20Picker((v) => !v)}
-              data-testid="select-20-quiz-btn"
-              className="btn-3d-secondary px-3.5 py-2.5 rounded-xl text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
-            >
-              <ListChecks className="w-3.5 h-3.5" aria-hidden="true" />
-              <span>20 Soruluk Soru Seçimi</span>
-            </button>
-            <button
-              type="button"
-              onClick={onDownloadOpticalPdf}
-              className="btn-3d-secondary px-3.5 py-2.5 rounded-xl text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
-            >
-              <FileDown className="w-3.5 h-3.5" aria-hidden="true" />
-              <span>Optik Form PDF</span>
-            </button>
+              <span className="font-semibold">
+                <strong style={{ color: 'var(--accent-primary)' }}>
+                  Özgün Deneme Seti #{examSeriesNo}
+                </strong>{' '}
+                · Her yeni üretimde önceki denemelerle çakışmayan farklı sorular seçilir ({usedQuestionStems.length} soru takip ediliyor).
+              </span>
+              {examSeriesNo > 1 && (
+                <button
+                  type="button"
+                  data-testid="reset-used-stems-btn"
+                  onClick={() => {
+                    setExamSeriesNo(1);
+                    setUsedQuestionStems([]);
+                    setNotice('Kullanılmış soru geçmişi sıfırlandı; Deneme Seti #1’den başlanabilir.');
+                  }}
+                  className="underline font-bold cursor-pointer"
+                  style={{ color: 'var(--accent-primary)' }}
+                >
+                  Havuzu Sıfırla
+                </button>
+              )}
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2.5">
+              <button
+                type="button"
+                data-testid="generate-auto-exam-btn"
+                onClick={() => handleGenerateAuto()}
+                className="btn-3d flex-1 py-2.5 px-4 rounded-xl text-xs font-bold inline-flex items-center justify-center gap-1.5 whitespace-nowrap cursor-pointer"
+              >
+                <Wand2 className="w-4 h-4 shrink-0" aria-hidden="true" />
+                <span>{targetCount} Soruluk Yeni Özgün Deneme Oluştur (Set #{examSeriesNo + 1})</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setShow20Picker((v) => !v)}
+                data-testid="select-20-quiz-btn"
+                className="btn-3d-secondary px-3.5 py-2.5 rounded-xl text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
+              >
+                <ListChecks className="w-3.5 h-3.5" aria-hidden="true" />
+                <span>20 Soruluk Soru Seçimi</span>
+              </button>
+              <button
+                type="button"
+                disabled={exportBusy}
+                onClick={onDownloadOpticalPdf}
+                data-testid="card-b-download-optical-btn"
+                className="btn-3d-secondary px-3.5 py-2.5 rounded-xl text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer disabled:opacity-60"
+              >
+                {exportBusy ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
+                ) : (
+                  <FileDown className="w-3.5 h-3.5" aria-hidden="true" />
+                )}
+                <span>Optik Form PDF ({cover.bookletCode})</span>
+              </button>
+              {onDownloadAllOpticalPdf && (
+                <button
+                  type="button"
+                  disabled={exportBusy}
+                  onClick={onDownloadAllOpticalPdf}
+                  data-testid="card-b-download-all-optical-btn"
+                  className="btn-3d-secondary px-3 py-2.5 rounded-xl text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer disabled:opacity-60"
+                >
+                  <Archive className="w-3.5 h-3.5" aria-hidden="true" />
+                  <span>A-B-C-D Optik</span>
+                </button>
+              )}
+            </div>
           </div>
         </section>
       </div>
+
+      {/* PDF FİLİGRAN EKLEME & DÜZELTME STÜDYOSU */}
+      <PdfWatermarkStudio
+        cover={cover}
+        watermarkPresets={effectiveWatermarkPresets}
+        uploadedPdfName={uploadedPdfName}
+        exportBusy={exportBusy}
+        onUpdateCover={onUpdateCover}
+        onAddOrUpdateWatermarkPreset={handleAddOrUpdateWmPreset}
+        onDeleteWatermarkPreset={handleDeleteWmPreset}
+        onDownloadBookletPdf={onDownloadBookletPdf}
+      />
+
+      {/* KİTAPÇIK VARYANTI SEÇİCİ (A · B · C · D HIZLI GEÇİŞ & BENZERSİZ SORU SIRASI) */}
+      <BookletVariantSelector
+        baseQuestions={baseQuestions ?? questions}
+        cover={cover}
+        orderSeed={bookletOrderSeed}
+        activeAnswerKey={activeAnswerKey}
+        exportBusy={exportBusy}
+        onSelectBooklet={(code) => {
+          if (onSelectBookletVariant) {
+            onSelectBookletVariant(code, { autoSyncAnswerKey: true });
+          } else {
+            onUpdateCover({ bookletCode: code });
+          }
+          setNotice(
+            `${code} Kitapçığı seçildi: sorular otomatik karıştırılarak benzersiz soru sırası, kapak rengi ve cevap anahtarı uygulandı.`
+          );
+        }}
+        onReshuffleOrder={() => {
+          onReshuffleBookletOrder?.();
+        }}
+        onDownloadBookletPdf={
+          onDownloadSpecificBookletPdf
+            ? (code) => onDownloadSpecificBookletPdf(code)
+            : undefined
+        }
+        onDownloadAllBookletsZip={onDownloadAllBookletsZip}
+        onDownloadOpticalPdf={
+          onDownloadSpecificOpticalPdf
+            ? (code) => onDownloadSpecificOpticalPdf(code)
+            : undefined
+        }
+        onDownloadAllOpticalPdf={onDownloadAllOpticalPdf}
+        onChangeColorTheme={(themeId) => {
+          onUpdateCover({ coverColorThemeId: themeId });
+          const matched = COVER_COLOR_THEMES.find((t) => t.id === themeId);
+          setNotice(
+            `Kurumsal kapak renk paleti "${matched?.name ?? themeId}" olarak güncellendi; A, B, C ve D kitapçık kapakları dinamik olarak yenilendi.`
+          );
+        }}
+        onChangeCoverLayout={(layoutId) => {
+          onUpdateCover({ coverLayoutId: layoutId });
+          const matched = COVER_LAYOUT_OPTIONS.find((l) => l.id === layoutId);
+          setNotice(
+            `Kapak grafik düzeni "${matched?.name ?? layoutId}" olarak uygulandı.`
+          );
+        }}
+      />
 
       {/* 20 SORULUK YAZILIYA HAZIRLIK & SORU SEÇİMİ PANELİ */}
       {show20Picker && (
@@ -1194,18 +1429,28 @@ export function ExamGeneratorView({
           <div className="flex flex-wrap items-center gap-2.5">
             <button
               type="button"
+              disabled={exportBusy}
               onClick={onDownloadZip}
-              className="btn-3d px-4 py-2.5 rounded-xl text-xs font-bold inline-flex items-center gap-2 whitespace-nowrap cursor-pointer"
+              className="btn-3d px-4 py-2.5 rounded-xl text-xs font-bold inline-flex items-center gap-2 whitespace-nowrap cursor-pointer disabled:opacity-60"
             >
-              <Archive className="w-4 h-4" aria-hidden="true" />
-              <span>Tam Sınav & Karne Paketi (.ZIP) İndir</span>
+              {exportBusy ? (
+                <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />
+              ) : (
+                <Archive className="w-4 h-4" aria-hidden="true" />
+              )}
+              <span>{exportBusy ? 'Paket Hazırlanıyor...' : 'Tam Sınav & Karne Paketi (.ZIP) İndir'}</span>
             </button>
             <button
               type="button"
+              disabled={exportBusy}
               onClick={onDownloadSourceZip}
-              className="btn-3d-secondary px-4 py-2.5 rounded-xl text-xs font-bold inline-flex items-center gap-2 whitespace-nowrap cursor-pointer"
+              className="btn-3d-secondary px-4 py-2.5 rounded-xl text-xs font-bold inline-flex items-center gap-2 whitespace-nowrap cursor-pointer disabled:opacity-60"
             >
-              <Code2 className="w-4 h-4" aria-hidden="true" />
+              {exportBusy ? (
+                <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />
+              ) : (
+                <Code2 className="w-4 h-4" aria-hidden="true" />
+              )}
               <span>Uygulama Kaynak Kodu (.ZIP)</span>
             </button>
           </div>
@@ -1214,10 +1459,10 @@ export function ExamGeneratorView({
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5 text-xs">
           {[
             { file: '01_Dogruluk_Akademi_Panel.html', desc: '10 Temalı Taşınabilir Panel' },
-            { file: '02_Deneme_Kitapcigi_Furkan_Imzali.pdf', desc: 'Kapaklı & Çoğaltılamaz PDF' },
+            { file: '02_Deneme_Kitapcigi_Furkan_Imzali.pdf', desc: 'Aktif Kitapçık + Kitapciklar/A-B-C-D PDF' },
             { file: '03_Optik_Form_Sablonu.pdf', desc: 'ÖSYM/MEB Tipi Optik Kağıdı' },
             { file: '04_Cevap_Anahtari_ve_Sorular.json', desc: 'Tüm Soru & Analiz Verisi' },
-            { file: '05_Cevap_Anahtari.csv', desc: 'Excel Uyumlu Cevap Anahtarı' },
+            { file: '05_Cevap_Anahtari.csv', desc: 'A-B-C-D Cevap Anahtarı Tabloları' },
             { file: '06_5_Cesit_Analiz_Karnesi.html', desc: '5 Karne & Kazanım Matrisi' },
             { file: '07_Konu_Kazanim_Matrisi.csv', desc: 'Konu Başarı Yüzdeleri CSV' },
             { file: '08_Dogruluk_Akademi_3D_Afis.png', desc: 'Kurumsal Duyuru Afişi PNG' },
@@ -1926,6 +2171,23 @@ export function ExamGeneratorView({
               </select>
             </label>
             <label className="block text-xs font-semibold">
+              <span style={{ color: 'var(--text-secondary)' }}>Kapak Grafik Düzeni</span>
+              <select
+                data-testid="cover-layout-select"
+                value={cover.coverLayoutId ?? 'klasik-cerceve'}
+                onChange={(e) =>
+                  onUpdateCover({ coverLayoutId: e.target.value as CoverLayoutStyleId })
+                }
+                className="mt-1 w-full rounded-lg px-3 py-2 text-sm surface-alt font-semibold"
+              >
+                {COVER_LAYOUT_OPTIONS.map((layout) => (
+                  <option key={layout.id} value={layout.id}>
+                    {layout.name} ({layout.shortLabel})
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="block text-xs font-semibold">
               <span style={{ color: 'var(--text-secondary)' }}>Sınıf Başlığı (Her Sayfa Üstü)</span>
               <input
                 type="text"
@@ -1944,13 +2206,16 @@ export function ExamGeneratorView({
                 className="mt-1 w-full rounded-lg px-3 py-2 text-sm surface-alt font-mono-num"
               />
             </label>
-            <div className="block text-xs font-semibold">
-              <span style={{ color: 'var(--text-secondary)' }}>Aktif Renk Paleti Önizleme</span>
+            <div className="block text-xs font-semibold sm:col-span-2">
+              <span style={{ color: 'var(--text-secondary)' }}>Aktif Renk Paleti &amp; Düzen Önizleme</span>
               {(() => {
                 const pal = resolveCoverColorPalette(cover, getLogoPreset(cover.logoStyleId));
+                const layoutOpt = resolveCoverLayoutStyle(cover);
                 return (
                   <div className="mt-1 surface-alt rounded-lg px-3 py-2 flex items-center justify-between gap-2">
-                    <span className="truncate font-bold">{pal.themeLabel}</span>
+                    <span className="truncate font-bold">
+                      {pal.themeLabel} · {layoutOpt.name}
+                    </span>
                     <span className="flex items-center gap-1 shrink-0">
                       <span
                         className="w-4 h-4 rounded border border-white/50"
@@ -1981,6 +2246,36 @@ export function ExamGeneratorView({
               />
             </label>
           </div>
+
+          {/* Quick link to PDF Watermark Studio */}
+          {(() => {
+            const wm = resolvePdfWatermarkConfig(cover.watermark);
+            const wmPct = Math.round(wm.opacity * 100);
+            return (
+              <div
+                className="pt-3 border-t flex flex-wrap items-center justify-between gap-2 text-xs"
+                style={{ borderColor: 'var(--border-subtle)' }}
+              >
+                <div>
+                  <span className="font-bold">Aktif PDF Filigranı: </span>
+                  <span style={{ color: 'var(--text-secondary)' }}>
+                    {wm.enabled ? `"${wm.text}" · %${wmPct}` : 'Kapalı'}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() =>
+                    document
+                      .getElementById('pdf-watermark-studio-section')
+                      ?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+                  }
+                  className="btn-3d-secondary px-3 py-1.5 rounded-lg text-[11px] font-bold cursor-pointer"
+                >
+                  Filigran Ekle / Düzelt Stüdyosuna Git
+                </button>
+              </div>
+            );
+          })()}
 
           <div className="pt-2 border-t" style={{ borderColor: 'var(--border-subtle)' }}>
             <div className="text-xs font-bold mb-2">Deneme Kapağında Hatırlatmalar</div>
@@ -2036,9 +2331,14 @@ export function ExamGeneratorView({
         gradeProfile={gradeProfile}
         baseQuestions={baseQuestions ?? questions}
         cover={cover}
+        orderSeed={bookletOrderSeed}
+        exportBusy={exportBusy}
+        examSourceMode={examSourceMode}
+        externalKeys={externalKeys}
         students={students}
         assignments={batchAssignments}
         onSetAssignments={(next) => onSetBatchAssignments?.(next)}
+        onAutoAssignRegisteredStudents={onAutoAssignRegisteredStudents}
         onApplyAssignment={(row) => {
           if (onSelectBookletVariant) {
             onSelectBookletVariant(row.bookletCode, {
@@ -2066,7 +2366,11 @@ export function ExamGeneratorView({
           }
         }}
         onDownloadBookletPdf={onDownloadBookletPdf}
+        onDownloadSpecificBookletPdf={onDownloadSpecificBookletPdf}
+        onDownloadAllBookletsZip={onDownloadAllBookletsZip}
         onDownloadOpticalPdf={onDownloadOpticalPdf}
+        onDownloadSpecificOpticalPdf={onDownloadSpecificOpticalPdf}
+        onDownloadAllOpticalPdf={onDownloadAllOpticalPdf}
       />
 
       {/* AŞAĞIDA AÇILIR PANEL: DERS KİTABINDAN (PDF) DENEME / YAZILI OLUŞTURMA STÜDYOSU */}
@@ -2078,6 +2382,7 @@ export function ExamGeneratorView({
         onSelectGrade={onSelectGrade}
         cover={cover}
         existingQuestions={questions}
+        exportBusy={exportBusy}
         onApplyMcqQuestions={(generated, meta) => {
           onUpdateQuestions(generated);
           onUpdateCover({

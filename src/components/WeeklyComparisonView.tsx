@@ -46,6 +46,10 @@ import {
 } from '../utils/excelExport';
 import { generate8DigitStudentNumber } from '../utils/institutionCodes';
 import {
+  normalizeTurkishSlug,
+  uint8ArrayToPdfBlob,
+} from '../utils/downloadHelpers';
+import {
   buildWeeklyPcStandaloneHtml,
   generateAchievementBadgePng,
   generateWeeklyFullPcZip,
@@ -82,6 +86,10 @@ interface WeeklyComparisonViewProps {
   onOpenDriveTab: () => void;
   onToast: (msg: string) => void;
   onSyncWeeklyExportsRef?: (builder: () => Promise<DriveUploadPayload[]>) => void;
+  externalEntries?: WeeklyStudentScore[];
+  onExternalEntriesChange?: (next: WeeklyStudentScore[]) => void;
+  externalQuestionCount?: WeeklyQuestionPreset;
+  onExternalQuestionCountChange?: (next: WeeklyQuestionPreset) => void;
 }
 
 export function WeeklyComparisonView({
@@ -96,24 +104,47 @@ export function WeeklyComparisonView({
   onOpenDriveTab,
   onToast,
   onSyncWeeklyExportsRef,
+  externalEntries,
+  onExternalEntriesChange,
+  externalQuestionCount,
+  onExternalQuestionCountChange,
 }: WeeklyComparisonViewProps) {
-  const [questionCount, setQuestionCount] = useState<WeeklyQuestionPreset>(50);
+  const [internalQuestionCount, setInternalQuestionCount] = useState<WeeklyQuestionPreset>(50);
+  const questionCount = externalQuestionCount ?? internalQuestionCount;
+  const setQuestionCount = (next: WeeklyQuestionPreset) => {
+    setInternalQuestionCount(next);
+    if (onExternalQuestionCountChange) {
+      onExternalQuestionCountChange(next);
+    }
+  };
+
   const [kts1Meta, setKts1Meta] = useState<WeeklyExamMeta>(() => ({
     id: 'kts-1',
     name: 'Haftalık 1 (KTS-1)',
     date: new Date(Date.now() - 7 * 86400000).toLocaleDateString('tr-TR'),
-    questionCount: 50,
+    questionCount,
     gradeId: gradeProfile.id,
   }));
   const [kts2Meta, setKts2Meta] = useState<WeeklyExamMeta>(() => ({
     id: 'kts-2',
     name: 'Haftalık 2 (KTS-2)',
     date: new Date().toLocaleDateString('tr-TR'),
-    questionCount: 50,
+    questionCount,
     gradeId: gradeProfile.id,
   }));
 
-  const [entries, setEntries] = useState<WeeklyStudentScore[]>([]);
+  const [internalEntries, setInternalEntries] = useState<WeeklyStudentScore[]>([]);
+  const entries = externalEntries ?? internalEntries;
+  const setEntries = (
+    updater: WeeklyStudentScore[] | ((prev: WeeklyStudentScore[]) => WeeklyStudentScore[])
+  ) => {
+    const next = typeof updater === 'function' ? updater(entries) : updater;
+    if (onExternalEntriesChange) {
+      onExternalEntriesChange(next);
+    } else {
+      setInternalEntries(next);
+    }
+  };
   const [newName, setNewName] = useState('');
   const [newClassroom, setNewClassroom] = useState(() =>
     defaultClassroomForGrade(gradeProfile.id)
@@ -139,17 +170,20 @@ export function WeeklyComparisonView({
 
   useEffect(() => {
     setNewClassroom(defaultClassroomForGrade(gradeProfile.id));
-    setKts1Meta((p) => ({ ...p, gradeId: gradeProfile.id }));
-    setKts2Meta((p) => ({ ...p, gradeId: gradeProfile.id }));
-    setEntries((prev) =>
-      prev.length === 0
-        ? prev
-        : prev.map((e) => ({
-            ...e,
-            classroom: normalizeClassroomForGrade(e.classroom, gradeProfile),
-          }))
-    );
-  }, [gradeProfile]);
+    setKts1Meta((p) => ({ ...p, gradeId: gradeProfile.id, questionCount }));
+    setKts2Meta((p) => ({ ...p, gradeId: gradeProfile.id, questionCount }));
+    if (entries.length > 0) {
+      const normalized = entries.map((e) => ({
+        ...e,
+        classroom: normalizeClassroomForGrade(e.classroom, gradeProfile),
+      }));
+      const changed = normalized.some((e, idx) => e.classroom !== entries[idx]?.classroom);
+      if (changed) {
+        setEntries(normalized);
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gradeProfile, questionCount]);
 
   const handleQuestionPresetChange = (count: WeeklyQuestionPreset) => {
     setQuestionCount(count);
@@ -270,9 +304,7 @@ export function WeeklyComparisonView({
       gradeProfile,
       cover,
     });
-    const pdfBlob = new Blob([pdfBytes.buffer as ArrayBuffer], {
-      type: 'application/pdf',
-    });
+    const pdfBlob = uint8ArrayToPdfBlob(pdfBytes);
 
     const excelBlob = buildWeeklyComparisonWorkbookBlob({
       rows: activeRows,
@@ -425,9 +457,15 @@ export function WeeklyComparisonView({
         gradeProfile,
         cover,
       });
-      const blob = new Blob([bytes.buffer as ArrayBuffer], { type: 'application/pdf' });
+      const blob = uint8ArrayToPdfBlob(bytes);
       triggerDownload(blob, `Pano-Asma-Sirali-Liste-${activeInstitution.code8}.pdf`);
       onToast('İlk 3 başarı rozetli Pano Asma Sıralı Liste PDF indirildi.');
+    } catch (err) {
+      onToast(
+        err instanceof Error
+          ? `Pano Asma Sıralı Liste PDF indirilemedi: ${err.message}`
+          : 'Pano Asma Sıralı Liste PDF hazırlanırken bir hata oluştu.'
+      );
     } finally {
       setBusyExport(false);
     }
@@ -435,20 +473,24 @@ export function WeeklyComparisonView({
 
   const handleDownloadPcHtml = () => {
     if (rows.length === 0) return;
-    const html = buildWeeklyPcStandaloneHtml({
-      rows,
-      academyName: activeInstitution.name,
-      institutionCode8: activeInstitution.code8,
-      kts1Name: kts1Meta.name,
-      kts2Name: kts2Meta.name,
-      kts1QuestionCount: kts1Meta.questionCount,
-      kts2QuestionCount: kts2Meta.questionCount,
-      gradeLabel: gradeProfile.shortLabel,
-      signatureName: cover.signatureName,
-    });
-    const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
-    triggerDownload(blob, `Bilgisayarda-Ac-Haftalik-Liste-${activeInstitution.code8}.html`);
-    onToast('Herhangi bir bilgisayarda doğrudan açılabilen interaktif HTML raporu indirildi.');
+    try {
+      const html = buildWeeklyPcStandaloneHtml({
+        rows,
+        academyName: activeInstitution.name,
+        institutionCode8: activeInstitution.code8,
+        kts1Name: kts1Meta.name,
+        kts2Name: kts2Meta.name,
+        kts1QuestionCount: kts1Meta.questionCount,
+        kts2QuestionCount: kts2Meta.questionCount,
+        gradeLabel: gradeProfile.shortLabel,
+        signatureName: cover.signatureName,
+      });
+      const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+      triggerDownload(blob, `Bilgisayarda-Ac-Haftalik-Liste-${activeInstitution.code8}.html`);
+      onToast('Herhangi bir bilgisayarda doğrudan açılabilen interaktif HTML raporu indirildi.');
+    } catch {
+      onToast('PC HTML raporu hazırlanırken bir hata oluştu.');
+    }
   };
 
   const handleDownloadWeeklyZip = async () => {
@@ -469,6 +511,12 @@ export function WeeklyComparisonView({
       });
       triggerDownload(zipBlob, `Haftalik-Tam-Bilgisayar-Paketi-${activeInstitution.code8}.zip`);
       onToast('Pano PDF + Excel + PC HTML + Toplu Veli Mesajları ZIP paketi indirildi.');
+    } catch (err) {
+      onToast(
+        err instanceof Error
+          ? `Haftalık Tam PC ZIP hazırlanamadı: ${err.message}`
+          : 'Haftalık Tam PC ZIP hazırlanırken bir hata oluştu.'
+      );
     } finally {
       setBusyExport(false);
     }
@@ -532,9 +580,15 @@ export function WeeklyComparisonView({
         cover,
         isRisingStar: insights.risingStar?.studentId === row.studentId,
       });
-      const safeName = row.studentName.replace(/\s+/g, '-').toLowerCase();
+      const safeName = normalizeTurkishSlug(row.studentName, 'ogrenci');
       triggerDownload(blob, `Basari-Rozeti-${safeName}-${row.studentNumber8}.png`);
       onToast(`${row.studentName} için 3D Başarı Rozeti & Onur Kartı PNG indirildi.`);
+    } catch (err) {
+      onToast(
+        err instanceof Error
+          ? `Başarı rozeti PNG indirilemedi: ${err.message}`
+          : 'Başarı rozeti PNG hazırlanırken bir hata oluştu.'
+      );
     } finally {
       setBusyExport(false);
     }

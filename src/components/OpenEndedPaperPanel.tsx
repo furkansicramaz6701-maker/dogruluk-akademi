@@ -26,7 +26,8 @@ import {
   evaluateOpenEndedAnswersText,
   parseOpenEndedQuestionsFromText,
 } from '../utils/openEndedExam';
-import { generateOpenEndedExamPdf } from '../utils/pdfAndZip';
+import { uint8ArrayToPdfBlob } from '../utils/downloadHelpers';
+import { generateOpenEndedExamPdf, triggerDownload } from '../utils/pdfAndZip';
 import { buildWhatsAppHref } from '../utils/weeklyAnalysis';
 
 interface OpenEndedPaperPanelProps {
@@ -343,6 +344,7 @@ export function OpenEndedPaperPanel({
 
   const handleDownloadOpenEndedPdf = async () => {
     setPdfBusy(true);
+    setErrorMsg(null);
     try {
       const bytes = await generateOpenEndedExamPdf({
         cover,
@@ -350,13 +352,16 @@ export function OpenEndedPaperPanel({
         questions,
         includeSolutionKey: true,
       });
-      const blob = new Blob([new Uint8Array(bytes)], { type: 'application/pdf' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `Dogruluk-Akademi-${gradeProfile.id}-10-Acik-Uclu-Yazili.pdf`;
-      a.click();
-      URL.revokeObjectURL(url);
+      const blob = uint8ArrayToPdfBlob(bytes);
+      const filename = `Dogruluk-Akademi-${gradeProfile.id}-10-Acik-Uclu-Yazili.pdf`;
+      triggerDownload(blob, filename);
+      setNotice(`${filename} indirildi.`);
+    } catch (err) {
+      setErrorMsg(
+        err instanceof Error
+          ? `Yazılı & çözüm PDF’i indirilemedi: ${err.message}`
+          : 'Yazılı & çözüm PDF’i oluşturulamadı.'
+      );
     } finally {
       setPdfBusy(false);
     }

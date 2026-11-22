@@ -53,6 +53,7 @@ interface ExamEditorViewProps {
   onSelectGrade: (id: GradeLevelId) => void;
   questions: ExamQuestion[];
   cover: CoverConfig;
+  exportBusy?: boolean;
   onUpdateQuestions: (next: ExamQuestion[]) => void;
   onDownloadBookletPdf: () => Promise<void>;
 }
@@ -74,6 +75,7 @@ export function ExamEditorView({
   onSelectGrade,
   questions,
   cover,
+  exportBusy = false,
   onUpdateQuestions,
   onDownloadBookletPdf,
 }: ExamEditorViewProps) {
@@ -496,11 +498,16 @@ export function ExamEditorView({
 
             <button
               type="button"
+              disabled={exportBusy}
               onClick={onDownloadBookletPdf}
-              className="btn-3d px-4 py-2 rounded-xl text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer"
+              className="btn-3d px-4 py-2 rounded-xl text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-60"
             >
-              <FileDown className="w-4 h-4" aria-hidden="true" />
-              <span>Düzenlenmiş Kitapçığı PDF İndir</span>
+              {exportBusy ? (
+                <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />
+              ) : (
+                <FileDown className="w-4 h-4" aria-hidden="true" />
+              )}
+              <span>{exportBusy ? 'PDF Hazırlanıyor...' : 'Düzenlenmiş Kitapçığı PDF İndir'}</span>
             </button>
           </div>
         </div>

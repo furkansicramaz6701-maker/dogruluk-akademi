@@ -45,6 +45,10 @@ import {
 } from '../types/academy';
 import { buildStudentDigitalKarneUrl } from '../utils/digitalKarneQr';
 import {
+  buildStudentReportPdfFilename,
+  uint8ArrayToPdfBlob,
+} from '../utils/downloadHelpers';
+import {
   buildStandaloneHtmlReport,
   generateParentInformationReportPdf,
   generateStudentReportCardPdf,
@@ -83,6 +87,7 @@ interface ReportsAnalysisViewProps {
   studentPhone?: string;
   calendarEvents?: EducationCalendarEvent[];
   openEndedAnalysis?: OpenEndedPaperAnalysis | null;
+  exportBusy?: boolean;
   onUpdateCoachSummary: (summary: string) => void;
   onDownloadZip: () => Promise<void>;
   onScheduleRemedial?: (topicGap: TopicGapMetric) => void;
@@ -122,6 +127,7 @@ export function ReportsAnalysisView({
   studentPhone,
   calendarEvents = [],
   openEndedAnalysis = null,
+  exportBusy = false,
   onUpdateCoachSummary,
   onDownloadZip,
   onScheduleRemedial,
@@ -416,17 +422,25 @@ export function ReportsAnalysisView({
 
   const handleDownloadPdfReport = async () => {
     setPdfDownloading(true);
+    setParentPdfNotice(null);
     try {
       const pdfBytes = await generateStudentReportCardPdf(analysis, cover, gradeProfile, {
         qrCodeDataUrl: embedQrInPdf ? qrDataUrl : undefined,
         digitalKarneUrl,
       });
-      const blob = new Blob([pdfBytes.buffer as ArrayBuffer], { type: 'application/pdf' });
-      const safeName = analysis.studentName
-        .toLocaleLowerCase('tr-TR')
-        .replace(/[^a-z0-9]+/g, '-')
-        .replace(/^-|-$/g, '');
-      triggerDownload(blob, `Karne-Analizi-${safeName || 'ogrenci'}-${analysis.studentNumber}.pdf`);
+      const blob = uint8ArrayToPdfBlob(pdfBytes);
+      const filename = buildStudentReportPdfFilename(
+        analysis.studentName,
+        analysis.studentNumber
+      );
+      triggerDownload(blob, filename);
+      setParentPdfNotice(`${filename} indirildi.`);
+    } catch (err) {
+      setParentPdfNotice(
+        err instanceof Error
+          ? `Profesyonel karne PDF oluşturulamadı: ${err.message}`
+          : 'Profesyonel karne PDF oluşturulamadı.'
+      );
     } finally {
       setPdfDownloading(false);
     }
@@ -449,7 +463,7 @@ export function ReportsAnalysisView({
         qrCodeDataUrl: embedQrInPdf ? qrDataUrl : undefined,
         digitalKarneUrl,
       });
-      const blob = new Blob([bytes.buffer as ArrayBuffer], { type: 'application/pdf' });
+      const blob = uint8ArrayToPdfBlob(bytes);
       triggerDownload(blob, filename);
       setParentPdfNotice(`${filename} indirildi.`);
     } catch (err) {
@@ -481,12 +495,13 @@ export function ReportsAnalysisView({
           }
         );
         if (previewRequestIdRef.current !== reqId) return;
-        const safeName = (analysis.studentName || 'ogrenci')
-          .toLocaleLowerCase('tr-TR')
-          .replace(/[^a-z0-9]+/g, '-')
-          .replace(/^-|-$/g, '');
         setPreviewPages(res.pageDataUrls);
-        setPreviewFilename(`Karne-Analizi-${safeName || 'ogrenci'}-${analysis.studentNumber || 'rapor'}.pdf`);
+        setPreviewFilename(
+          buildStudentReportPdfFilename(
+            analysis.studentName,
+            analysis.studentNumber || 'rapor'
+          )
+        );
       } else {
         const res = await generateParentInformationReportPdf({
           analysis,
@@ -693,11 +708,16 @@ Haftalık Aksiyon Planı:
               </button>
               <button
                 type="button"
+                disabled={exportBusy}
                 onClick={onDownloadZip}
-                className="btn-3d-secondary px-4 py-2 rounded-xl text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
+                className="btn-3d-secondary px-4 py-2 rounded-xl text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-60"
               >
-                <Archive className="w-4 h-4" aria-hidden="true" />
-                <span>Tam ZIP Paketi İndir</span>
+                {exportBusy ? (
+                  <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />
+                ) : (
+                  <Archive className="w-4 h-4" aria-hidden="true" />
+                )}
+                <span>{exportBusy ? 'ZIP Hazırlanıyor...' : 'Tam ZIP Paketi İndir'}</span>
               </button>
             </>
           )}

@@ -27,7 +27,7 @@ import {
   listGoogleDriveFiles,
   uploadBlobToGoogleDrive,
 } from '../utils/googleDrive';
-import { triggerDownload } from '../utils/pdfAndZip';
+import { triggerDownload, triggerStaggeredDownloads } from '../utils/pdfAndZip';
 import { AppInstallShareCard } from './AppInstallShareCard';
 import { DriveConfirmModal } from './DriveConfirmModal';
 import { GoogleSignInButton } from './GoogleSignInButton';
@@ -301,8 +301,14 @@ export function GoogleDrivePanel({
               setActionBusy(true);
               try {
                 const filesBatch = await onBuildWeeklyFiles();
-                filesBatch.forEach((f) => triggerDownload(f.blob, f.fileName));
+                await triggerStaggeredDownloads(filesBatch, 260);
                 onToast('Yedek: PDF + Excel + PC HTML dosyaları bilgisayarınıza indirildi.');
+              } catch (err) {
+                onToast(
+                  err instanceof Error
+                    ? `Raporlar indirilemedi: ${err.message}`
+                    : 'Rapor dosyaları indirilirken bir hata oluştu.'
+                );
               } finally {
                 setActionBusy(false);
               }
@@ -545,8 +551,14 @@ export function GoogleDrivePanel({
                 setActionBusy(true);
                 try {
                   const filesBatch = await onBuildWeeklyFiles();
-                  filesBatch.forEach((f) => triggerDownload(f.blob, f.fileName));
+                  await triggerStaggeredDownloads(filesBatch, 260);
                   onToast('Bilgisayarda açılabilir HTML, PDF ve Excel dosyaları indirildi.');
+                } catch (err) {
+                  onToast(
+                    err instanceof Error
+                      ? `Dosyalar indirilemedi: ${err.message}`
+                      : 'Dosyalar bilgisayarınıza indirilirken bir hata oluştu.'
+                  );
                 } finally {
                   setActionBusy(false);
                 }

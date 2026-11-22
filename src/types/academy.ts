@@ -200,9 +200,19 @@ export interface StudentRecord {
   lastAnswerKey?: string;
   lastExamTitle?: string;
   lastEvaluatedAt?: string;
+  assignedBookletCode?: BookletCode;
+  assignedBookletNumber?: string;
 }
 
 export type BookletCode = 'A' | 'B' | 'C' | 'D';
+
+export type ExamSourceMode = 'kurum' | 'farkli-yayin';
+
+export interface ExternalPublisherExamConfig {
+  publisherName: string;
+  examTitle: string;
+  answerKeys: Record<BookletCode, string>;
+}
 
 export type CoverColorThemeId =
   | 'otomatik-abcd'
@@ -212,6 +222,12 @@ export type CoverColorThemeId =
   | 'bordo-kehribar'
   | 'turkuaz-bakir'
   | 'indigo-lavanta';
+
+export type CoverLayoutStyleId =
+  | 'klasik-cerceve'
+  | 'diyagonal-serit'
+  | 'geometrik-blok'
+  | 'akademik-kose';
 
 export interface StudentBookletAssignment {
   index: number;
@@ -224,6 +240,32 @@ export interface StudentBookletAssignment {
   answerKey: string;
 }
 
+export type PdfWatermarkPlacement = 'background' | 'header-footer' | 'both';
+
+export interface PdfWatermarkConfig {
+  enabled: boolean;
+  text: string;
+  placement: PdfWatermarkPlacement;
+  opacity: number;
+  includeCoverAndBack: boolean;
+  fontScale?: number;
+  angleDeg?: number;
+  colorHex?: string;
+  stripExistingMargins?: boolean;
+}
+
+export interface PdfWatermarkPreset {
+  id: string;
+  text: string;
+  placement: PdfWatermarkPlacement;
+  opacity: number;
+  fontScale?: number;
+  angleDeg?: number;
+  colorHex?: string;
+  stripExistingMargins?: boolean;
+  isDefault?: boolean;
+}
+
 export interface CoverConfig {
   academyName: string;
   institutionCode8?: string;
@@ -234,6 +276,8 @@ export interface CoverConfig {
   bookletCode: BookletCode;
   bookletNumber?: string;
   coverColorThemeId?: CoverColorThemeId;
+  coverLayoutId?: CoverLayoutStyleId;
+  watermark?: PdfWatermarkConfig;
   signatureName: string;
   signatureTitle: string;
   securityNotice: string;

@@ -86,3 +86,31 @@ test('deleteInstitutionSafely deletes non-last institution cleanly and blocks de
   assert.equal(blocked.ok, false);
   assert.equal(blocked.institutions.length, 1);
 });
+
+import {
+  ADMIN_PRIMARY_INSTITUTION_ID,
+  isDogrulukAcademyInstitution,
+  resolvePrimaryAdminInstitution,
+} from './institutionCodes';
+
+test('resolvePrimaryAdminInstitution always selects Doğruluk Akademi over third-party schools', () => {
+  const customFirst = [
+    {
+      id: 'inst-custom-external',
+      name: 'Örnek Dış Okul',
+      code8: '91234567',
+      city: 'Ankara',
+      createdAt: '2026-11-20',
+    },
+    ...DEFAULT_INSTITUTIONS,
+  ];
+  const resolved = resolvePrimaryAdminInstitution(customFirst);
+  assert.equal(resolved.id, ADMIN_PRIMARY_INSTITUTION_ID);
+  assert.equal(resolved.name, 'Doğruluk Akademi Merkez');
+  assert.equal(isDogrulukAcademyInstitution(resolved), true);
+  assert.equal(isDogrulukAcademyInstitution(customFirst[0]), false);
+
+  const fallback = resolvePrimaryAdminInstitution([customFirst[0]]);
+  assert.equal(fallback.id, ADMIN_PRIMARY_INSTITUTION_ID);
+  assert.equal(fallback.name, 'Doğruluk Akademi Merkez');
+});

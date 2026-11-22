@@ -964,3 +964,236 @@ export function buildSampleWeeklyCohort(params: {
 
   return list;
 }
+
+export type WeeklyProgressPatternKey = 'rising' | 'steady' | 'support';
+export type WeeklyTrendMetric = 'score' | 'net';
+export type WeeklyTrendOrder = 'rank' | 'delta' | 'kts1';
+
+export interface WeeklyTrendPoint {
+  studentId: string;
+  studentName: string;
+  shortName: string;
+  studentNumber8: string;
+  classroom: string;
+  rank: number;
+  kts1Score: number;
+  kts2Score: number;
+  kts1Net: number;
+  kts2Net: number;
+  kts1Value: number;
+  kts2Value: number;
+  deltaValue: number;
+  scoreDelta: number;
+  netDelta: number;
+  successPct: number;
+  status: WeeklyPerformanceStatus;
+  pattern: WeeklyProgressPatternKey;
+  patternLabel: string;
+  weakTopicNote?: string;
+}
+
+export interface WeeklyProgressPatternSummary {
+  totalStudents: number;
+  risingCount: number;
+  steadyCount: number;
+  supportCount: number;
+  risingPct: number;
+  avgKts1Value: number;
+  avgKts2Value: number;
+  avgDeltaValue: number;
+  biggestGainer: WeeklyTrendPoint | null;
+  biggestDropOrSupport: WeeklyTrendPoint | null;
+  yDomain: [number, number];
+}
+
+export function classifyWeeklyProgressPattern(
+  row: Pick<WeeklyComparisonRow, 'scoreDelta' | 'netDelta' | 'status'>
+): { pattern: WeeklyProgressPatternKey; label: string } {
+  if (
+    row.scoreDelta < 0 ||
+    row.netDelta <= -0.5 ||
+    row.status === 'Destek Gerekiyor' ||
+    row.status === 'Çalışması Gerekiyor'
+  ) {
+    return {
+      pattern: 'support',
+      label: row.scoreDelta < 0 ? 'Düşüş · Destek Odağı' : 'Destek Odağı',
+    };
+  }
+  if (row.netDelta >= 3.0 || row.scoreDelta >= 24) {
+    return {
+      pattern: 'rising',
+      label: 'Hızlı Yükseliş',
+    };
+  }
+  return {
+    pattern: 'steady',
+    label: 'Dengeli İlerleme',
+  };
+}
+
+export function formatShortStudentAxisLabel(fullName: string): string {
+  const parts = fullName.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return 'Öğrenci';
+  if (parts.length === 1) return parts[0].slice(0, 10);
+  const first = parts[0];
+  const lastInitial = parts[parts.length - 1].charAt(0).toLocaleUpperCase('tr-TR');
+  const trimmedFirst = first.length > 9 ? `${first.slice(0, 8)}.` : first;
+  return `${trimmedFirst} ${lastInitial}.`;
+}
+
+export function buildWeeklyTrendComparisonDataset(params: {
+  rows: WeeklyComparisonRow[];
+  metric?: WeeklyTrendMetric;
+  patternFilter?: 'all' | WeeklyProgressPatternKey;
+  orderBy?: WeeklyTrendOrder;
+  gradeProfile: GradeProfile;
+  questionCount: number;
+}): {
+  points: WeeklyTrendPoint[];
+  summary: WeeklyProgressPatternSummary;
+} {
+  const metric = params.metric ?? 'score';
+  const patternFilter = params.patternFilter ?? 'all';
+  const orderBy = params.orderBy ?? 'rank';
+  const safeQuestions = Math.max(1, params.questionCount);
+
+  const allPoints: WeeklyTrendPoint[] = params.rows.map((row) => {
+    const classified = classifyWeeklyProgressPattern(row);
+    const kts1Value = metric === 'score' ? row.kts1Score : row.kts1Net;
+    const kts2Value = metric === 'score' ? row.kts2Score : row.kts2Net;
+    const deltaValue =
+      metric === 'score'
+        ? row.scoreDelta
+        : row.netDelta;
+
+    return {
+      studentId: row.studentId,
+      studentName: row.studentName,
+      shortName: formatShortStudentAxisLabel(row.studentName),
+      studentNumber8: row.studentNumber8,
+      classroom: row.classroom,
+      rank: row.rank,
+      kts1Score: row.kts1Score,
+      kts2Score: row.kts2Score,
+      kts1Net: row.kts1Net,
+      kts2Net: row.kts2Net,
+      kts1Value,
+      kts2Value,
+      deltaValue,
+      scoreDelta: row.scoreDelta,
+      netDelta: row.netDelta,
+      successPct: row.successPct,
+      status: row.status,
+      pattern: classified.pattern,
+      patternLabel: classified.label,
+      weakTopicNote: row.weakTopicNote,
+    };
+  });
+
+  const risingCount = allPoints.filter((p) => p.pattern === 'rising').length;
+  const steadyCount = allPoints.filter((p) => p.pattern === 'steady').length;
+  const supportCount = allPoints.filter((p) => p.pattern === 'support').length;
+  const totalStudents = allPoints.length;
+
+  const avgKts1Value =
+    totalStudents > 0
+      ? Number(
+          (
+            allPoints.reduce((acc, p) => acc + p.kts1Value, 0) / totalStudents
+          ).toFixed(metric === 'score' ? 1 : 2)
+        )
+      : 0;
+  const avgKts2Value =
+    totalStudents > 0
+      ? Number(
+          (
+            allPoints.reduce((acc, p) => acc + p.kts2Value, 0) / totalStudents
+          ).toFixed(metric === 'score' ? 1 : 2)
+        )
+      : 0;
+  const avgDeltaValue = Number(
+    (avgKts2Value - avgKts1Value).toFixed(metric === 'score' ? 1 : 2)
+  );
+
+  const gainerSorted = [...allPoints].sort((a, b) => {
+    if (b.deltaValue !== a.deltaValue) return b.deltaValue - a.deltaValue;
+    return b.kts2Value - a.kts2Value;
+  });
+  const biggestGainer =
+    gainerSorted[0] && gainerSorted[0].deltaValue > 0 ? gainerSorted[0] : null;
+
+  const supportSorted = [...allPoints].sort((a, b) => {
+    if (a.deltaValue !== b.deltaValue) return a.deltaValue - b.deltaValue;
+    return a.kts2Value - b.kts2Value;
+  });
+  const biggestDropOrSupport =
+    supportSorted.find((p) => p.pattern === 'support') ?? supportSorted[0] ?? null;
+
+  const filtered =
+    patternFilter === 'all'
+      ? allPoints
+      : allPoints.filter((p) => p.pattern === patternFilter);
+
+  const sortedPoints = [...filtered].sort((a, b) => {
+    if (orderBy === 'delta') {
+      if (b.deltaValue !== a.deltaValue) return b.deltaValue - a.deltaValue;
+      return a.rank - b.rank;
+    }
+    if (orderBy === 'kts1') {
+      if (b.kts1Value !== a.kts1Value) return b.kts1Value - a.kts1Value;
+      return a.rank - b.rank;
+    }
+    return a.rank - b.rank;
+  });
+
+  const domainSource = sortedPoints.length > 0 ? sortedPoints : allPoints;
+  let yDomain: [number, number];
+  if (metric === 'score') {
+    if (domainSource.length === 0) {
+      yDomain = [params.gradeProfile.baseScore, params.gradeProfile.maxScore];
+    } else {
+      const vals = domainSource.flatMap((p) => [p.kts1Value, p.kts2Value]);
+      const minV = Math.min(...vals);
+      const maxV = Math.max(...vals);
+      const low = Math.max(
+        params.gradeProfile.baseScore,
+        Math.floor((minV - 20) / 10) * 10
+      );
+      const high = Math.min(
+        params.gradeProfile.maxScore,
+        Math.ceil((maxV + 20) / 10) * 10
+      );
+      yDomain = low < high ? [low, high] : [params.gradeProfile.baseScore, params.gradeProfile.maxScore];
+    }
+  } else {
+    if (domainSource.length === 0) {
+      yDomain = [0, safeQuestions];
+    } else {
+      const vals = domainSource.flatMap((p) => [p.kts1Value, p.kts2Value]);
+      const minV = Math.min(...vals);
+      const maxV = Math.max(...vals);
+      const low = Math.max(0, Math.floor((minV - 4) / 5) * 5);
+      const high = Math.min(safeQuestions, Math.ceil((maxV + 4) / 5) * 5);
+      yDomain = low < high ? [low, high] : [0, safeQuestions];
+    }
+  }
+
+  return {
+    points: sortedPoints,
+    summary: {
+      totalStudents,
+      risingCount,
+      steadyCount,
+      supportCount,
+      risingPct: totalStudents > 0 ? Math.round((risingCount / totalStudents) * 100) : 0,
+      avgKts1Value,
+      avgKts2Value,
+      avgDeltaValue,
+      biggestGainer,
+      biggestDropOrSupport,
+      yDomain,
+    },
+  };
+}
+

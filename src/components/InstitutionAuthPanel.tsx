@@ -21,6 +21,7 @@ interface InstitutionAuthPanelProps {
     patch: { name: string; city: string; accessPassword?: string }
   ) => { ok: boolean; reason?: string };
   onDeleteInstitution?: (institutionId: string) => { ok: boolean; reason?: string };
+  isPrivateAdminMode?: boolean;
 }
 
 const SCOPE_OPTIONS: Array<{ id: AllowedScopeId; label: string; desc: string }> = [
@@ -56,6 +57,7 @@ export function InstitutionAuthPanel({
   onUpdatePermissions,
   onUpdateInstitution,
   onDeleteInstitution,
+  isPrivateAdminMode = false,
 }: InstitutionAuthPanelProps) {
   const [editOpen, setEditOpen] = useState(false);
   const [editName, setEditName] = useState(activeInstitution.name);
@@ -129,30 +131,36 @@ export function InstitutionAuthPanel({
           <ShieldCheck className="w-5 h-5" style={{ color: 'var(--accent-primary)' }} aria-hidden="true" />
           <div>
             <h2 id="institution-auth-panel-title" className="text-lg font-bold leading-tight">
-              Kurum Yetki Paneli (Rol, Sınıf Kapsamı & Modül İzinleri)
+              {isPrivateAdminMode
+                ? 'Doğruluk Akademi Özel Yetki & Modül Ayarları'
+                : 'Kurum Yetki Paneli (Rol, Sınıf Kapsamı & Modül İzinleri)'}
             </h2>
             <p className="text-xs" style={{ color: 'var(--text-secondary)' }}>
-              Her 8 haneli kurum için yetkili sınıf düzeylerini (örn. yalnızca 3–8. sınıf, TYT/AYT gizli), modül izinlerini ve öğrenci kotasını yönetin
+              {isPrivateAdminMode
+                ? 'Doğruluk Akademi özel yönetici panelinin aktif sınıf kapsamlarını, modül izinlerini ve öğrenci kotasını yönetin'
+                : 'Her 8 haneli kurum için yetkili sınıf düzeylerini (örn. yalnızca 3–8. sınıf, TYT/AYT gizli), modül izinlerini ve öğrenci kotasını yönetin'}
             </p>
           </div>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          <select
-            aria-label="Yetkilendirilecek Kurum"
-            value={activeInstitution.id}
-            onChange={(e) => {
-              const found = institutions.find((i) => i.id === e.target.value);
-              if (found) onSelectInstitution(found);
-            }}
-            className="rounded-lg px-3 py-2 text-xs font-semibold surface-alt"
-          >
-            {institutions.map((i) => (
-              <option key={i.id} value={i.id}>
-                {i.name} ({i.code8})
-              </option>
-            ))}
-          </select>
+          {!isPrivateAdminMode && (
+            <select
+              aria-label="Yetkilendirilecek Kurum"
+              value={activeInstitution.id}
+              onChange={(e) => {
+                const found = institutions.find((i) => i.id === e.target.value);
+                if (found) onSelectInstitution(found);
+              }}
+              className="rounded-lg px-3 py-2 text-xs font-semibold surface-alt"
+            >
+              {institutions.map((i) => (
+                <option key={i.id} value={i.id}>
+                  {i.name} ({i.code8})
+                </option>
+              ))}
+            </select>
+          )}
 
           <button
             type="button"

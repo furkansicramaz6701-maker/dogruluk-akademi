@@ -8,6 +8,11 @@ import {
   RotateCcw,
 } from 'lucide-react';
 import { resolveDefaultDigitalKarneBaseUrl } from '../utils/digitalKarneQr';
+import {
+  dataUrlToUint8Array,
+  normalizeTurkishSlug,
+  uint8ArrayToBlob,
+} from '../utils/downloadHelpers';
 import { triggerDownload } from '../utils/pdfAndZip';
 
 interface DigitalKarneQrCardProps {
@@ -55,16 +60,21 @@ export function DigitalKarneQrCard({
 
   const handleDownloadQrPng = async () => {
     if (!qrDataUrl) return;
-    const safeSlug = (studentName || 'ogrenci')
-      .toLocaleLowerCase('tr-TR')
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-|-$/g, '');
-    const resp = await fetch(qrDataUrl);
-    const blob = await resp.blob();
-    triggerDownload(
-      blob,
-      `Dijital-Karne-QR-${safeSlug || 'ogrenci'}-${studentNumber || institutionCode8}.png`
-    );
+    const safeSlug = normalizeTurkishSlug(studentName, 'ogrenci');
+    const filename = `Dijital-Karne-QR-${safeSlug}-${studentNumber || institutionCode8}.png`;
+    try {
+      if (qrDataUrl.startsWith('data:')) {
+        const bytes = dataUrlToUint8Array(qrDataUrl);
+        triggerDownload(uint8ArrayToBlob(bytes, 'image/png'), filename);
+        return;
+      }
+      const resp = await fetch(qrDataUrl);
+      const blob = await resp.blob();
+      triggerDownload(blob, filename);
+    } catch {
+      const bytes = dataUrlToUint8Array(qrDataUrl);
+      triggerDownload(uint8ArrayToBlob(bytes, 'image/png'), filename);
+    }
   };
 
   return (
