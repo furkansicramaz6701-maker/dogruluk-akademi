@@ -25,6 +25,7 @@ import {
   FileText,
   Users,
   FlaskConical,
+  FileSpreadsheet,
 } from 'lucide-react';
 import { DEFAULT_COVER_REMINDERS, GRADE_PROFILES, getGradeProfile } from './data/curriculum';
 import { getLogoPreset } from './data/logos';
@@ -34,12 +35,14 @@ import {
   ActiveTab,
   AppPermissionKey,
   BookletCode,
+  BookletDistributionPattern,
   CoverConfig,
   DynamicCurriculumOverride,
   EducationCalendarEvent,
   ExamQuestion,
   ExamSourceMode,
   ExternalPublisherExamConfig,
+  ExternalPublisherExamPreset,
   GradeLevelId,
   Institution,
   InstitutionPermissions,
@@ -118,6 +121,19 @@ import {
 } from './utils/pdfWatermark';
 import { buildWeeklyComparisonWorkbookBlob, defaultClassroomForGrade } from './utils/excelExport';
 import {
+  configToPresetInput,
+  deletePublisherPreset as removePublisherPresetFromList,
+  ensurePublisherPresetsList,
+  EXTERNAL_PUBLISHER_PRESETS_STORAGE_KEY,
+  upsertPublisherPreset,
+} from './utils/externalPublisherLibrary';
+import {
+  DEFAULT_POSTER_GOOGLE_FORM_URL,
+  GoogleFormStudentSubmission,
+  mergeGoogleFormSubmissionsIntoStudents,
+} from './utils/googleFormsIntegration';
+import { mergeImportedOmrStudents } from './utils/omrSpreadsheet';
+import {
   buildRemedialCalendarEvent,
   buildSmartRecommendations,
 } from './utils/recommendations';
@@ -145,6 +161,7 @@ import { ReportsAnalysisView } from './components/ReportsAnalysisView';
 import { Poster3DStudio } from './components/Poster3DStudio';
 import { WeeklyComparisonView } from './components/WeeklyComparisonView';
 import { GoogleDrivePanel, DriveUploadPayload } from './components/GoogleDrivePanel';
+import { GoogleFormsPanel } from './components/GoogleFormsPanel';
 import { DriveConfirmModal } from './components/DriveConfirmModal';
 import { Logo3D } from './components/Logo3D';
 import { Education3DCascade } from './components/Education3DCascade';
@@ -178,6 +195,7 @@ export default function App() {
         'reports',
         'calendar',
         'poster',
+        'forms',
         'drive',
         'sample',
       ];
@@ -277,7 +295,24 @@ export default function App() {
   const [externalPublisherConfig, setExternalPublisherConfig] = useState<ExternalPublisherExamConfig>({
     publisherName: '',
     examTitle: '',
+    bookletMode: 'AB',
     answerKeys: { A: '', B: '', C: '', D: '' },
+  });
+  const [publisherPresets, setPublisherPresets] = useState<ExternalPublisherExamPreset[]>(() =>
+    ensurePublisherPresetsList(
+      readStorageJson<ExternalPublisherExamPreset[]>(EXTERNAL_PUBLISHER_PRESETS_STORAGE_KEY, [])
+    )
+  );
+  const [activePublisherPresetId, setActivePublisherPresetId] = useState<string | null>(null);
+  const [posterGoogleFormUrl, setPosterGoogleFormUrl] = useState<string>(() => {
+    try {
+      return (
+        window.localStorage.getItem('da_poster_google_form_url_v1') ||
+        DEFAULT_POSTER_GOOGLE_FORM_URL
+      );
+    } catch {
+      return DEFAULT_POSTER_GOOGLE_FORM_URL;
+    }
   });
 
   const [studentAnswersRaw, setStudentAnswersRaw] = useState<string>('');
@@ -399,6 +434,11 @@ export default function App() {
       window.localStorage.setItem('da_calendar_events_v1', JSON.stringify(calendarEvents));
       window.localStorage.setItem('da_weekly_entries_v1', JSON.stringify(weeklyEntriesByInst));
       window.localStorage.setItem('da_watermark_presets_v1', JSON.stringify(watermarkPresets));
+      window.localStorage.setItem(
+        EXTERNAL_PUBLISHER_PRESETS_STORAGE_KEY,
+        JSON.stringify(publisherPresets)
+      );
+      window.localStorage.setItem('da_poster_google_form_url_v1', posterGoogleFormUrl);
     } catch {
       // Ignore storage quota errors
     }
@@ -410,6 +450,8 @@ export default function App() {
     calendarEvents,
     weeklyEntriesByInst,
     watermarkPresets,
+    publisherPresets,
+    posterGoogleFormUrl,
   ]);
 
   // Apply selected theme CSS variables and dark class on <html>
@@ -1043,13 +1085,18 @@ export default function App() {
     }));
   };
 
-  const handleAutoAssignRegisteredStudents = (opts?: { includeAllGrades?: boolean }) => {
+  const handleAutoAssignRegisteredStudents = (opts?: {
+    includeAllGrades?: boolean;
+    distributionPattern?: BookletDistributionPattern;
+  }) => {
+    const pattern = opts?.distributionPattern ?? 'ABCD';
     const res = assignBookletsToRegisteredStudents({
       students,
       institutionId: activeInstitution.id,
       gradeProfile,
       baseQuestions: baseExamQuestions,
       startingBookletCode: 'A',
+      distributionPattern: pattern,
       startBookletNumber: defaultStartBookletNumberForGrade(gradeId),
       orderSeed: bookletOrderSeed,
       examSourceMode,
@@ -1079,8 +1126,150 @@ export default function App() {
     showToast(
       `${res.assignedCount} kayıtlı öğrenciye ${
         examSourceMode === 'farkli-yayin' ? 'farklı yayın denemesi' : `${gradeProfile.shortLabel} denemesi`
-      } için otomatik A-B-C-D kitapçık yerleştirildi.`
+      } için otomatik ${pattern === 'AB' ? 'A-B' : pattern === 'ABCD' ? 'A-B-C-D' : 'A'} kitapçık yerleştirildi.`
     );
+  };
+
+  const handleSelectPublisherPreset = (preset: ExternalPublisherExamPreset) => {
+    setActivePublisherPresetId(preset.id);
+    setExamSourceMode('farkli-yayin');
+    setExternalPublisherConfig({
+      publisherName: preset.publisherName,
+      examTitle: preset.examTitle,
+      examDate: preset.examDate,
+      gradeId: preset.gradeId,
+      optionCount: preset.optionCount,
+      questionCount: preset.questionCount,
+      bookletMode: preset.bookletMode,
+      answerKeys: { ...preset.answerKeys },
+    });
+    const nextCode: BookletCode =
+      preset.bookletMode === 'AB' && (cover.bookletCode === 'C' || cover.bookletCode === 'D')
+        ? 'A'
+        : cover.bookletCode;
+    const syncedKey = preset.answerKeys[nextCode] || preset.answerKeys.A || answerKeyRaw;
+    setAnswerKeyRaw(syncedKey);
+    setCover((prev) => ({
+      ...prev,
+      bookletCode: nextCode,
+      examTitle: preset.examTitle || preset.publisherName,
+    }));
+    showToast(
+      `Yayın yüklendi: ${preset.publisherName} (${preset.bookletMode === 'AB' ? 'A - B' : 'A - B - C - D'})`
+    );
+  };
+
+  const handleSavePublisherPreset = (asNew = false) => {
+    const input = configToPresetInput(externalPublisherConfig, gradeProfile, questions.length);
+    const res = upsertPublisherPreset(publisherPresets, {
+      ...input,
+      id: asNew ? undefined : activePublisherPresetId ?? undefined,
+    });
+    setPublisherPresets(res.list);
+    setActivePublisherPresetId(res.saved.id);
+    showToast(
+      `${res.saved.publisherName} (${res.saved.examTitle}) yayın kütüphanesine kaydedildi.`
+    );
+  };
+
+  const handleDeletePublisherPreset = (presetId: string) => {
+    setPublisherPresets((prev) => removePublisherPresetFromList(prev, presetId));
+    if (activePublisherPresetId === presetId) {
+      setActivePublisherPresetId(null);
+    }
+    showToast('Seçili yayın profili kütüphaneden kaldırıldı.');
+  };
+
+  const handleApplyGoogleFormSubmissions = (params: {
+    submissions: GoogleFormStudentSubmission[];
+    pattern: BookletDistributionPattern;
+    groupByClassroom: boolean;
+  }) => {
+    if (params.submissions.length === 0) {
+      showToast('Aktarılacak Google Form başvurusu bulunamadı.');
+      return;
+    }
+    const merged = mergeGoogleFormSubmissionsIntoStudents(
+      students,
+      params.submissions,
+      activeInstitution
+    );
+    const enrichedAssignments = merged.assignments.map((row) => ({
+      ...row,
+      answerKey: resolveActiveAnswerKeyByMode({
+        examSourceMode,
+        bookletCode: row.bookletCode,
+        baseQuestions: baseExamQuestions,
+        orderSeed: bookletOrderSeed,
+        externalKeys: externalPublisherConfig.answerKeys,
+        optionCount: gradeProfile.optionCount,
+        fallbackKey: answerKeyRaw,
+      }),
+    }));
+    setStudents(merged.nextStudents);
+    setBatchAssignments(enrichedAssignments);
+
+    const first = enrichedAssignments[0];
+    if (first) {
+      handleSelectBookletVariant(first.bookletCode, {
+        bookletNumber: first.bookletNumber,
+        studentName: first.studentName,
+        studentNumber: first.studentNumber8,
+        classroom: first.classroom,
+        autoSyncAnswerKey: true,
+      });
+    }
+    showToast(
+      `Google Form'dan ${merged.addedCount} yeni öğrenci eklendi, ${merged.updatedCount} kayıt güncellendi (${
+        params.pattern === 'AB' ? 'A - B' : params.pattern === 'ABCD' ? 'A - B - C - D' : 'Tek A'
+      } dağıtımı uygulandı).`
+    );
+  };
+
+  const handleGenerateGoogleFormsOpticalPdf = async (
+    submissions: GoogleFormStudentSubmission[]
+  ) => {
+    if (submissions.length === 0) {
+      showToast('Optik oluşturmak için önce Google Form yanıtlarını yükleyin.');
+      return;
+    }
+    setExportBusy(true);
+    try {
+      const entries = submissions.map((s, idx) => ({
+        bookletCode: s.bookletCode,
+        bookletNumber: normalizeBookletNumber(s.bookletNumber, idx + 1),
+        studentName: s.fullName,
+        studentNumber8: s.studentNumber8,
+        classroom: s.classroom,
+      }));
+      const effectiveTitle =
+        examSourceMode === 'farkli-yayin'
+          ? externalPublisherConfig.examTitle ||
+            externalPublisherConfig.publisherName ||
+            cover.examTitle
+          : cover.examTitle;
+      const bytes = await generateMultiBookletOpticalPdf({
+        cover: { ...cover, examTitle: effectiveTitle },
+        totalQuestions: Math.max(questions.length, 120),
+        optionCount: gradeProfile.optionCount,
+        gradeProfile,
+        institutionCode8: activeInstitution.code8,
+        entries,
+      });
+      const blob = uint8ArrayToPdfBlob(bytes);
+      triggerDownload(
+        blob,
+        `Google-Form-Otomatik-Optikler-${entries.length}-Sayfa-${activeInstitution.code8}.pdf`
+      );
+      showToast(
+        `${entries.length} Google Form katılımcısı için kişiye özel otomatik optik formlar (.PDF) indirildi.`
+      );
+    } catch (err) {
+      console.error('Google Form optik PDF hatası:', err);
+      showToast('Google Form otomatik optik PDF oluşturulurken bir hata oluştu.');
+    } finally {
+      setExportBusy(false);
+    }
   };
 
   const handleReshuffleBookletOrder = () => {
@@ -1841,7 +2030,8 @@ export default function App() {
     { id: 'td-editor', label: 'Deneme Editörü', sublabel: 'Grafik, tablo, matematik ve resimli İngilizce', tab: 'editor', icon: PenSquare },
     { id: 'td-reports', label: 'Karne & Veli Mesaj Şablonları', sublabel: 'WhatsApp / SMS taslakları ve PDF karne', tab: 'reports', icon: Award },
     { id: 'td-calendar', label: 'Eğitim Takvimi', sublabel: 'Deneme ve telafi etüt programı', tab: 'calendar', icon: CalendarDays },
-    { id: 'td-poster', label: '3D Afiş & QR', sublabel: 'Kurumsal afiş ve QR kod oluşturucu', tab: 'poster', icon: ImageIcon },
+    { id: 'td-poster', label: '3D Afiş & QR', sublabel: 'Kurumsal afiş, Google Form linki ve QR kod', tab: 'poster', icon: ImageIcon },
+    { id: 'td-forms', label: 'Google Formlar & Otomatik Optik', sublabel: 'Excel başvuru yükleme ve A-B optik üretici', tab: 'forms', icon: FileSpreadsheet },
     { id: 'td-drive', label: 'Yedek, Telefon & PC (PWA Kur)', sublabel: 'Google Drive yedek & uygulama yükleme', tab: 'drive', icon: Cloud },
     { id: 'td-sample', label: 'Örnek Sayfa (Demo & Türkiye Geneli)', sublabel: 'Kurum verilerinden bağımsız örnek analiz sayfası', tab: 'sample', icon: FlaskConical },
   ];
@@ -1864,10 +2054,11 @@ export default function App() {
     shortLabel: string;
     icon: typeof LayoutDashboard;
   }> = [
+    { id: 'forms', label: 'Google Formlar', shortLabel: 'Google Formlar', icon: FileSpreadsheet },
+    { id: 'poster', label: '3D Afiş & QR', shortLabel: '3D Afiş', icon: ImageIcon },
     { id: 'generator', label: 'Deneme & PDF', shortLabel: 'Deneme & PDF', icon: FilePlus2 },
     { id: 'editor', label: 'Deneme Editörü', shortLabel: 'Deneme Editörü', icon: PenSquare },
     { id: 'calendar', label: 'Eğitim Takvimi', shortLabel: 'Eğitim Takvimi', icon: CalendarDays },
-    { id: 'poster', label: '3D Afiş & QR', shortLabel: '3D Afiş', icon: ImageIcon },
     { id: 'drive', label: 'Yedek, Telefon & PC', shortLabel: 'Yedek & Kur', icon: Cloud },
     { id: 'sample', label: 'Örnek Sayfa', shortLabel: 'Örnek Sayfa', icon: FlaskConical },
   ];
@@ -2558,6 +2749,8 @@ export default function App() {
               batchAssignments={batchAssignments}
               examSourceMode={examSourceMode}
               externalPublisherConfig={externalPublisherConfig}
+              publisherPresets={publisherPresets}
+              activePublisherPresetId={activePublisherPresetId}
               exportBusy={exportBusy}
               onChangeExamSourceMode={(mode) => {
                 setExamSourceMode(mode);
@@ -2573,7 +2766,7 @@ export default function App() {
                 setAnswerKeyRaw(nextKey);
                 showToast(
                   mode === 'farkli-yayin'
-                    ? 'Farklı Yayın Denemesi modu açıldı: A, B, C ve D kitapçıkları için yayın cevap anahtarlarını ayrı ayrı kullanabilirsiniz.'
+                    ? 'Farklı Yayın Denemesi modu açıldı: Yayın kütüphanesinden deneme seçebilir veya A-B / A-B-C-D cevap anahtarlarını yükleyebilirsiniz.'
                     : 'Kurum Denemesi moduna geçildi: A-B-C-D cevap anahtarları soru sırasıyla otomatik eşleşir.'
                 );
               }}
@@ -2586,6 +2779,10 @@ export default function App() {
                     : prev.answerKeys,
                 }))
               }
+              onSelectPublisherPreset={handleSelectPublisherPreset}
+              onSavePublisherPreset={handleSavePublisherPreset}
+              onDeletePublisherPreset={handleDeletePublisherPreset}
+              onOpenGoogleFormsPanel={() => handleTabNavigation('forms')}
               onAutoAssignRegisteredStudents={handleAutoAssignRegisteredStudents}
               onSelectBookletVariant={handleSelectBookletVariant}
               onUpdateCover={(patch) => setCover((prev) => ({ ...prev, ...patch }))}
@@ -2599,6 +2796,15 @@ export default function App() {
                   `${res.studentName} için 10 soruluk açık uçlu kağıt analiz edildi (${res.totalScore}/${res.maxTotalScore}).`
                 );
               }}
+              baseQuestions={baseExamQuestions}
+              bookletOrderSeed={bookletOrderSeed}
+              onImportOmrStudents={(rows) => {
+                const merged = mergeImportedOmrStudents(students, rows, activeInstitution);
+                setStudents(merged.nextStudents);
+                showToast(
+                  `Excel'den ${merged.addedCount} yeni öğrenci eklendi, ${merged.updatedCount} kayıt güncellendi (A-B-C-D kitapçık otomatik atandı).`
+                );
+              }}
               onUpdateOmrState={(patch) => {
                 if (patch.studentAnswersRaw !== undefined)
                   setStudentAnswersRaw(patch.studentAnswersRaw);
@@ -2608,21 +2814,30 @@ export default function App() {
                 if (patch.classroom !== undefined) setClassroom(patch.classroom);
                 if (patch.penaltyDivisor !== undefined) setPenaltyDivisor(patch.penaltyDivisor);
               }}
-              onEvaluateNow={() => {
-                if (!studentAnswersRaw.trim()) {
+              onEvaluateNow={(override) => {
+                const effectiveStudentAnswers = override?.studentAnswersRaw ?? studentAnswersRaw;
+                const effectiveAnswerKey = override?.answerKeyRaw ?? answerKeyRaw;
+                const effectiveStudentNo = override?.studentNumber ?? studentNumber;
+                if (!effectiveStudentAnswers.trim()) {
                   showToast('Lütfen önce öğrenci optik cevaplarını yükleyin veya girin.');
                   return;
                 }
+                if (override?.studentAnswersRaw !== undefined) {
+                  setStudentAnswersRaw(effectiveStudentAnswers);
+                }
+                if (override?.answerKeyRaw !== undefined) {
+                  setAnswerKeyRaw(effectiveAnswerKey);
+                }
                 setEvalTick((t) => t + 1);
                 setHasLiveAnalysis(true);
-                if (studentNumber) {
+                if (effectiveStudentNo) {
                   setStudents((prev) =>
                     prev.map((s) =>
-                      s.studentNumber8 === studentNumber
+                      s.studentNumber8 === effectiveStudentNo
                         ? {
                             ...s,
-                            lastOmrAnswers: studentAnswersRaw,
-                            lastAnswerKey: answerKeyRaw,
+                            lastOmrAnswers: effectiveStudentAnswers,
+                            lastAnswerKey: effectiveAnswerKey,
                             lastExamTitle: cover.examTitle,
                             lastEvaluatedAt: new Date().toLocaleDateString('tr-TR'),
                           }
@@ -2816,6 +3031,45 @@ export default function App() {
               gradeProfile={gradeProfile}
               analysis={analysis}
               cover={cover}
+              googleFormUrl={posterGoogleFormUrl}
+              onChangeGoogleFormUrl={setPosterGoogleFormUrl}
+              onOpenGoogleFormsPanel={() => handleTabNavigation('forms')}
+            />
+          )}
+
+          {activeTab === 'forms' && (
+            <GoogleFormsPanel
+              institution={activeInstitution}
+              gradeProfile={gradeProfile}
+              cover={cover}
+              questionsCount={questions.length}
+              students={students}
+              posterGoogleFormUrl={posterGoogleFormUrl}
+              onChangePosterGoogleFormUrl={setPosterGoogleFormUrl}
+              examSourceMode={examSourceMode}
+              onChangeExamSourceMode={(mode) => {
+                setExamSourceMode(mode);
+                const nextKey = resolveActiveAnswerKeyByMode({
+                  examSourceMode: mode,
+                  bookletCode: cover.bookletCode,
+                  baseQuestions: baseExamQuestions,
+                  orderSeed: bookletOrderSeed,
+                  externalKeys: externalPublisherConfig.answerKeys,
+                  optionCount: gradeProfile.optionCount,
+                  fallbackKey: answerKeyRaw,
+                });
+                setAnswerKeyRaw(nextKey);
+              }}
+              externalPublisherConfig={externalPublisherConfig}
+              publisherPresets={publisherPresets}
+              activePublisherPresetId={activePublisherPresetId}
+              onSelectPublisherPreset={handleSelectPublisherPreset}
+              onApplySubmissionsToInstitution={handleApplyGoogleFormSubmissions}
+              onGenerateGoogleFormsOpticalPdf={handleGenerateGoogleFormsOpticalPdf}
+              onGoToPoster={() => handleTabNavigation('poster')}
+              onGoToOmr={() => handleTabNavigation('omr', 'omr')}
+              exportBusy={exportBusy}
+              onToast={showToast}
             />
           )}
 

@@ -50,6 +50,16 @@ import {
   drawCanvasWatermark,
   resolvePdfWatermarkConfig,
 } from './pdfWatermark';
+import {
+  drawInlineProgressBar,
+  drawKarneSuccessBanner,
+  drawStarRatingRow,
+  drawTierPillBadge,
+} from './karnePdfVisuals';
+import {
+  resolveSubjectProgressVisual,
+  resolveTopicProgressVisual,
+} from './karneVisualMetrics';
 import { NextStudySessionSummary } from './weeklyAnalysis';
 
 export { triggerDownload, triggerStaggeredDownloads };
@@ -2483,43 +2493,69 @@ export async function generateStudentReportCardPdfWithPreview(
     ctx1.fillText(k.sub, kx + 18, ky + 100);
   });
 
+  // Overall Exam Success Progress Bar + 5-Star Rating Banner
+  const overallSuccessPct =
+    analysis.totalQuestions > 0
+      ? Math.max(0, Math.round((analysis.totalNet / analysis.totalQuestions) * 100))
+      : 0;
+  drawKarneSuccessBanner(ctx1, {
+    x: 58,
+    y: 476,
+    w: A4_W - 116,
+    h: 78,
+    successPct: overallSuccessPct,
+    hasExamData: analysis.totalQuestions > 0,
+    title: 'SINAV BAŞARI İLERLEMESİ & YILDIZ PUANI',
+  });
+
   // Subject Performance Table
-  let y1 = 502;
+  let y1 = 584;
   ctx1.fillStyle = '#0f172a';
-  ctx1.font = '800 22px "Plus Jakarta Sans", sans-serif';
+  ctx1.font = '800 21px "Plus Jakarta Sans", sans-serif';
   ctx1.textAlign = 'left';
-  ctx1.fillText('1. DERS BAZLI NET VE KURUMSAL KARŞILAŞTIRMA TABLOSU', 58, y1);
-  y1 += 18;
+  ctx1.fillText('1. DERS BAZLI NET, İLERLEME ÇUBUĞU VE YILDIZ DEĞERLENDİRMESİ', 58, y1);
+  y1 += 14;
 
-  const colOffsets = [58, 350, 440, 520, 600, 680, 780, 900, 1020, 1182];
-  const headers = ['Ders Adı', 'Soru', 'Doğru', 'Yanlış', 'Boş', 'Net', 'Sınıf Ort.', 'Akademi Ort.', 'Başarı %'];
+  const colOffsets = [58, 250, 312, 376, 440, 504, 582, 682, 796, 1182];
+  const headers = [
+    'Ders Adı',
+    'Soru',
+    'Doğru',
+    'Yanlış',
+    'Boş',
+    'Net',
+    'Sınıf Ort.',
+    'Akademi Ort.',
+    'İlerleme, Yıldız & Durum',
+  ];
 
-  const tblGrad = ctx1.createLinearGradient(58, y1, A4_W - 58, y1 + 42);
+  const tblGrad = ctx1.createLinearGradient(58, y1, A4_W - 58, y1 + 38);
   tblGrad.addColorStop(0, '#1e3a8a');
   tblGrad.addColorStop(1, '#0f766e');
   ctx1.fillStyle = tblGrad;
-  ctx1.fillRect(58, y1, A4_W - 116, 42);
+  ctx1.fillRect(58, y1, A4_W - 116, 38);
   ctx1.fillStyle = '#ffffff';
-  ctx1.font = '700 15px "DM Sans", sans-serif';
+  ctx1.font = '700 14px "DM Sans", sans-serif';
   headers.forEach((h, i) => {
-    ctx1.textAlign = i === 0 ? 'left' : 'right';
-    const tx = i === 0 ? colOffsets[0] + 14 : colOffsets[i + 1] - 12;
-    ctx1.fillText(h, tx, y1 + 26);
+    const isLeft = i === 0 || i === 8;
+    ctx1.textAlign = isLeft ? 'left' : 'right';
+    const tx = i === 0 ? colOffsets[0] + 14 : i === 8 ? colOffsets[8] + 12 : colOffsets[i + 1] - 10;
+    ctx1.fillText(h, tx, y1 + 24);
   });
-  y1 += 42;
+  y1 += 38;
 
-  analysis.subjectMetrics.forEach((s, idx) => {
-    const rowH = 40;
-    ctx1.fillStyle = idx % 2 === 0 ? '#ffffff' : '#f1f5f9';
+  analysis.subjectMetrics.slice(0, 7).forEach((s, idx) => {
+    const rowH = 44;
+    ctx1.fillStyle = idx % 2 === 0 ? '#ffffff' : '#f8fafc';
     ctx1.fillRect(58, y1, A4_W - 116, rowH);
     ctx1.strokeStyle = '#cbd5e1';
     ctx1.lineWidth = 1;
     ctx1.strokeRect(58, y1, A4_W - 116, rowH);
 
     ctx1.fillStyle = '#0f172a';
-    ctx1.font = '700 15px "DM Sans", sans-serif';
+    ctx1.font = '700 14.5px "DM Sans", sans-serif';
     ctx1.textAlign = 'left';
-    ctx1.fillText(s.subject.slice(0, 26), colOffsets[0] + 14, y1 + 25);
+    ctx1.fillText(s.subject.slice(0, 22), colOffsets[0] + 14, y1 + 27);
 
     const vals = [
       String(s.total),
@@ -2529,27 +2565,68 @@ export async function generateStudentReportCardPdfWithPreview(
       s.net.toFixed(2),
       s.classAvgNet.toFixed(2),
       s.academyAvgNet.toFixed(2),
-      `%${s.accuracyPct}`,
     ];
     vals.forEach((v, vi) => {
       ctx1.textAlign = 'right';
       ctx1.fillStyle =
-        vi === 4 ? '#1d4ed8' : vi === 1 ? '#059669' : vi === 2 ? '#e11d48' : vi === 7 ? '#0f766e' : '#334155';
-      ctx1.font = vi === 4 || vi === 7 ? '800 15px "JetBrains Mono", monospace' : '600 15px "JetBrains Mono", monospace';
-      ctx1.fillText(v, colOffsets[vi + 2] - 12, y1 + 25);
+        vi === 4 ? '#1d4ed8' : vi === 1 ? '#059669' : vi === 2 ? '#e11d48' : '#334155';
+      ctx1.font = vi === 4 ? '800 14.5px "JetBrains Mono", monospace' : '600 14px "JetBrains Mono", monospace';
+      ctx1.fillText(v, colOffsets[vi + 2] - 10, y1 + 27);
     });
+
+    const subjVisual = resolveSubjectProgressVisual(s.accuracyPct, s.total > 0);
+    // Top-left inside visual cell: Graphical progress bar + %
+    drawInlineProgressBar(ctx1, {
+      x: colOffsets[8] + 12,
+      y: y1 + 8,
+      w: 118,
+      h: 9,
+      pct: s.accuracyPct,
+      visual: subjVisual,
+    });
+    ctx1.textAlign = 'left';
+    ctx1.fillStyle = subjVisual.accentColor;
+    ctx1.font = '800 13px "JetBrains Mono", monospace';
+    ctx1.fillText(`%${s.accuracyPct}`, colOffsets[8] + 138, y1 + 17);
+
+    // Bottom-left inside visual cell: 5 Vector Stars + numeric score
+    drawStarRatingRow(ctx1, {
+      x: colOffsets[8] + 12,
+      cy: y1 + 32,
+      stars: subjVisual.stars,
+      maxStars: 5,
+      radius: 5.5,
+      gap: 3,
+      fillColor: subjVisual.starFillColor,
+      emptyColor: subjVisual.starEmptyColor,
+      label: `${subjVisual.stars}/5`,
+      labelColor: '#475569',
+      labelFont: '700 11.5px "JetBrains Mono", monospace',
+    });
+
+    // Right inside visual cell: Başarılı / Gelişmekte / Tekrar Pill Badge
+    drawTierPillBadge(ctx1, {
+      x: colOffsets[9] - 172,
+      y: y1 + 11,
+      w: 160,
+      h: 22,
+      visual: subjVisual,
+      text: subjVisual.label.toUpperCase(),
+      fontSize: 10.5,
+    });
+
     y1 += rowH;
   });
 
   // Bar Chart Comparison: Öğrenci vs Akademi Ortalaması (Vibrant Multi-Color 3D Bars)
-  y1 += 38;
+  y1 += 28;
   ctx1.fillStyle = '#0f172a';
-  ctx1.font = '800 22px "Plus Jakarta Sans", sans-serif';
+  ctx1.font = '800 21px "Plus Jakarta Sans", sans-serif';
   ctx1.textAlign = 'left';
   ctx1.fillText('2. ÖĞRENCİ NETİ VS AKADEMİ ORTALAMASI GRAFİĞİ', 58, y1);
-  y1 += 18;
+  y1 += 16;
 
-  const chartBoxH = Math.min(340, 44 + analysis.subjectMetrics.length * 46);
+  const chartBoxH = Math.min(282, 42 + Math.min(6, analysis.subjectMetrics.length) * 39);
   ctx1.fillStyle = '#f8fafc';
   ctx1.fillRect(58, y1, A4_W - 116, chartBoxH);
   ctx1.strokeStyle = '#93c5fd';
@@ -2557,25 +2634,25 @@ export async function generateStudentReportCardPdfWithPreview(
   ctx1.strokeRect(58, y1, A4_W - 116, chartBoxH);
 
   ctx1.fillStyle = '#1d4ed8';
-  ctx1.fillRect(76, y1 + 14, 16, 12);
+  ctx1.fillRect(76, y1 + 12, 16, 12);
   ctx1.fillStyle = '#334155';
-  ctx1.font = '600 14px "DM Sans", sans-serif';
-  ctx1.fillText('Öğrenci Neti', 100, y1 + 25);
+  ctx1.font = '600 13.5px "DM Sans", sans-serif';
+  ctx1.fillText('Öğrenci Neti', 100, y1 + 23);
 
   ctx1.fillStyle = '#10b981';
-  ctx1.fillRect(220, y1 + 14, 16, 12);
+  ctx1.fillRect(220, y1 + 12, 16, 12);
   ctx1.fillStyle = '#334155';
-  ctx1.fillText('Akademi Ortalaması', 244, y1 + 25);
+  ctx1.fillText('Akademi Ortalaması', 244, y1 + 23);
 
   const subjPalette = ['#2563eb', '#0d9488', '#7c3aed', '#d97706', '#e11d48', '#0284c7'];
   const maxSubjQ = Math.max(1, ...analysis.subjectMetrics.map((s) => s.total));
   analysis.subjectMetrics.slice(0, 6).forEach((s, idx) => {
-    const ry = y1 + 48 + idx * 45;
+    const ry = y1 + 42 + idx * 39;
     const barColor = subjPalette[idx % subjPalette.length];
     ctx1.fillStyle = '#0f172a';
-    ctx1.font = '700 14px "DM Sans", sans-serif';
+    ctx1.font = '700 13.5px "DM Sans", sans-serif';
     ctx1.textAlign = 'left';
-    ctx1.fillText(s.subject.slice(0, 22), 76, ry + 18);
+    ctx1.fillText(s.subject.slice(0, 22), 76, ry + 16);
 
     const barStart = 290;
     const barMaxW = 720;
@@ -2583,25 +2660,25 @@ export async function generateStudentReportCardPdfWithPreview(
     const avgW = Math.max(8, (Math.max(0, s.academyAvgNet) / maxSubjQ) * barMaxW);
 
     ctx1.fillStyle = '#e2e8f0';
-    ctx1.fillRect(barStart, ry + 2, barMaxW, 13);
+    ctx1.fillRect(barStart, ry + 2, barMaxW, 12);
     ctx1.fillStyle = 'rgba(15, 23, 42, 0.14)';
-    ctx1.fillRect(barStart + 2, ry + 4, stuW, 13);
+    ctx1.fillRect(barStart + 2, ry + 4, stuW, 12);
     ctx1.fillStyle = barColor;
-    ctx1.fillRect(barStart, ry + 2, stuW, 13);
+    ctx1.fillRect(barStart, ry + 2, stuW, 12);
 
     ctx1.fillStyle = '#e2e8f0';
-    ctx1.fillRect(barStart, ry + 19, barMaxW, 10);
+    ctx1.fillRect(barStart, ry + 18, barMaxW, 9);
     ctx1.fillStyle = '#10b981';
-    ctx1.fillRect(barStart, ry + 19, avgW, 10);
+    ctx1.fillRect(barStart, ry + 18, avgW, 9);
 
     ctx1.textAlign = 'right';
     ctx1.fillStyle = '#0f172a';
-    ctx1.font = '700 13.5px "JetBrains Mono", monospace';
-    ctx1.fillText(`${s.net.toFixed(1)} / Ort: ${s.academyAvgNet.toFixed(1)}`, A4_W - 76, ry + 19);
+    ctx1.font = '700 13px "JetBrains Mono", monospace';
+    ctx1.fillText(`${s.net.toFixed(1)} / Ort: ${s.academyAvgNet.toFixed(1)}`, A4_W - 76, ry + 17);
   });
 
   // Difficulty & Error Type Colorful 3D Cards
-  const bottomBlockY = Math.max(y1 + chartBoxH + 26, 1210);
+  const bottomBlockY = Math.min(Math.max(y1 + chartBoxH + 22, 1290), A4_H - 90 - 262);
   const halfW = (A4_W - 116 - 20) / 2;
 
   ctx1.fillStyle = '#dbeafe';
@@ -2718,16 +2795,16 @@ export async function generateStudentReportCardPdfWithPreview(
   ctx2.fillText('5. KONU BAZLI KAZANIM MATRİSİ (ÖNCELİKLİ SIRALAMA)', 58, y2);
   y2 += 16;
 
-  const tCols = [58, 250, 620, 745, 815, 885, 955, 1045, 1182];
-  const tHeaders = ['Ders', 'Konu / Kazanım', 'Kod', 'Soru', 'D', 'Y', 'B', 'Başarı %', 'Durum'];
+  const tCols = [58, 225, 535, 635, 690, 745, 800, 855, 1020, 1182];
+  const tHeaders = ['Ders', 'Konu / Kazanım', 'Kod', 'Soru', 'D', 'Y', 'B', 'İlerleme %', 'Başarı Durumu'];
   ctx2.fillStyle = preset.secondaryColor;
   ctx2.fillRect(58, y2, A4_W - 116, 38);
   ctx2.fillStyle = '#ffffff';
-  ctx2.font = '700 14px "DM Sans", sans-serif';
+  ctx2.font = '700 13.5px "DM Sans", sans-serif';
   tHeaders.forEach((h, idx) => {
-    const alignRight = idx >= 3 && idx <= 7;
+    const alignRight = idx >= 3 && idx <= 6;
     ctx2.textAlign = alignRight ? 'right' : 'left';
-    const tx = alignRight ? tCols[idx + 1] - 10 : tCols[idx] + 10;
+    const tx = alignRight ? tCols[idx + 1] - 10 : idx === 7 || idx === 8 ? tCols[idx] + 10 : tCols[idx] + 10;
     ctx2.fillText(h, tx, y2 + 24);
   });
   y2 += 38;
@@ -2746,31 +2823,46 @@ export async function generateStudentReportCardPdfWithPreview(
 
     ctx2.textAlign = 'left';
     ctx2.fillStyle = '#0f172a';
-    ctx2.font = '700 13.5px "DM Sans", sans-serif';
-    ctx2.fillText(t.subject.slice(0, 20), tCols[0] + 10, y2 + 23);
-    ctx2.font = '500 13.5px "DM Sans", sans-serif';
-    ctx2.fillText(t.topic.slice(0, 42), tCols[1] + 10, y2 + 23);
+    ctx2.font = '700 13px "DM Sans", sans-serif';
+    ctx2.fillText(t.subject.slice(0, 18), tCols[0] + 10, y2 + 23);
+    ctx2.font = '500 13px "DM Sans", sans-serif';
+    ctx2.fillText(t.topic.slice(0, 38), tCols[1] + 10, y2 + 23);
     ctx2.fillStyle = '#64748b';
-    ctx2.font = '600 13px "JetBrains Mono", monospace';
-    ctx2.fillText(t.gainCode.slice(0, 14), tCols[2] + 10, y2 + 23);
+    ctx2.font = '600 12.5px "JetBrains Mono", monospace';
+    ctx2.fillText(t.gainCode.slice(0, 12), tCols[2] + 10, y2 + 23);
 
-    const nums = [String(t.total), String(t.correct), String(t.wrong), String(t.blank), `%${t.masteryPct}`];
+    const nums = [String(t.total), String(t.correct), String(t.wrong), String(t.blank)];
     nums.forEach((nv, ni) => {
       ctx2.textAlign = 'right';
       ctx2.fillStyle = ni === 1 ? '#047857' : ni === 2 ? '#be123c' : '#0f172a';
-      ctx2.font = '700 13.5px "JetBrains Mono", monospace';
+      ctx2.font = '700 13px "JetBrains Mono", monospace';
       ctx2.fillText(nv, tCols[ni + 4] - 10, y2 + 23);
     });
 
-    ctx2.textAlign = 'left';
-    ctx2.fillStyle =
-      t.status === 'Kritik Eksik'
-        ? '#be123c'
-        : t.status === 'Geliştirilmeli'
-          ? '#b45309'
-          : '#047857';
-    ctx2.font = '700 13.5px "DM Sans", sans-serif';
-    ctx2.fillText(t.status, tCols[8] - 125, y2 + 23);
+    const topicVisual = resolveTopicProgressVisual(t.masteryPct);
+    drawInlineProgressBar(ctx2, {
+      x: tCols[7] + 10,
+      y: y2 + 13,
+      w: 92,
+      h: 9,
+      pct: t.masteryPct,
+      visual: topicVisual,
+    });
+    ctx2.textAlign = 'right';
+    ctx2.fillStyle = topicVisual.accentColor;
+    ctx2.font = '800 13px "JetBrains Mono", monospace';
+    ctx2.fillText(`%${t.masteryPct}`, tCols[8] - 10, y2 + 22);
+
+    drawTierPillBadge(ctx2, {
+      x: tCols[8] + 10,
+      y: y2 + 7,
+      w: 142,
+      h: 22,
+      visual: topicVisual,
+      text: topicVisual.label.toUpperCase(),
+      fontSize: 9.8,
+    });
+
     y2 += rowH;
   });
 
@@ -4076,30 +4168,52 @@ export async function generateParentInformationReportPdf(
     ctx1.fillText(k.sub.slice(0, 34), kx + 16, ky + 99);
   });
 
-  // 1. Ders Bazlı Başarı Tablosu
-  let y1 = 510;
-  ctx1.fillStyle = '#0f172a';
-  ctx1.font = '800 21px "Plus Jakarta Sans", sans-serif';
-  ctx1.textAlign = 'left';
-  ctx1.fillText('1. DERS BAZLI BAŞARI VE KURUMSAL KARŞILAŞTIRMA TABLOSU', 58, y1);
-  y1 += 16;
+  // Overall Exam Success Progress Bar + 5-Star Rating Banner
+  const hasAnyEvaluatedData = hasLiveAnalysis || Boolean(!hasLiveAnalysis && openEndedAnalysis);
+  drawKarneSuccessBanner(ctx1, {
+    x: 58,
+    y: 482,
+    w: A4_W - 116,
+    h: 78,
+    successPct: report.metrics.successPct,
+    hasExamData: hasAnyEvaluatedData,
+    title: 'SINAV BAŞARI İLERLEMESİ & YILDIZ PUANI',
+  });
 
-  const colOffsets = [58, 340, 420, 495, 570, 645, 745, 870, 995, 1182];
-  const headers = ['Ders Adı', 'Soru', 'Doğru', 'Yanlış', 'Boş', 'Net', 'Kurum Ort.', 'Başarı %', 'Değerlendirme'];
-  const tblGrad = ctx1.createLinearGradient(58, y1, A4_W - 58, y1 + 40);
+  // 1. Ders Bazlı Başarı Tablosu
+  let y1 = 590;
+  ctx1.fillStyle = '#0f172a';
+  ctx1.font = '800 20px "Plus Jakarta Sans", sans-serif';
+  ctx1.textAlign = 'left';
+  ctx1.fillText('1. DERS BAZLI BAŞARI, İLERLEME ÇUBUĞU VE YILDIZ DEĞERLENDİRMESİ', 58, y1);
+  y1 += 14;
+
+  const colOffsets = [58, 252, 314, 378, 442, 506, 586, 690, 862, 1182];
+  const headers = [
+    'Ders Adı',
+    'Soru',
+    'Doğru',
+    'Yanlış',
+    'Boş',
+    'Net',
+    'Kurum Ort.',
+    'Başarı & İlerleme',
+    'Yıldız & Durum',
+  ];
+  const tblGrad = ctx1.createLinearGradient(58, y1, A4_W - 58, y1 + 38);
   tblGrad.addColorStop(0, '#0f172a');
   tblGrad.addColorStop(1, '#047857');
   ctx1.fillStyle = tblGrad;
-  ctx1.fillRect(58, y1, A4_W - 116, 40);
+  ctx1.fillRect(58, y1, A4_W - 116, 38);
   ctx1.fillStyle = '#ffffff';
-  ctx1.font = '700 14px "DM Sans", sans-serif';
+  ctx1.font = '700 13.5px "DM Sans", sans-serif';
   headers.forEach((h, i) => {
-    const isTextCol = i === 0 || i === 8;
+    const isTextCol = i === 0 || i === 7 || i === 8;
     ctx1.textAlign = isTextCol ? 'left' : 'right';
-    const tx = i === 0 ? colOffsets[0] + 12 : i === 8 ? colOffsets[8] + 12 : colOffsets[i + 1] - 10;
-    ctx1.fillText(h, tx, y1 + 25);
+    const tx = i === 0 ? colOffsets[0] + 12 : i === 7 || i === 8 ? colOffsets[i] + 12 : colOffsets[i + 1] - 10;
+    ctx1.fillText(h, tx, y1 + 24);
   });
-  y1 += 40;
+  y1 += 38;
 
   report.subjectRows.slice(0, 8).forEach((s, idx) => {
     const rowH = 38;
@@ -4110,9 +4224,9 @@ export async function generateParentInformationReportPdf(
     ctx1.strokeRect(58, y1, A4_W - 116, rowH);
 
     ctx1.fillStyle = '#0f172a';
-    ctx1.font = '700 14.5px "DM Sans", sans-serif';
+    ctx1.font = '700 14px "DM Sans", sans-serif';
     ctx1.textAlign = 'left';
-    ctx1.fillText(s.subject.slice(0, 25), colOffsets[0] + 12, y1 + 24);
+    ctx1.fillText(s.subject.slice(0, 21), colOffsets[0] + 12, y1 + 24);
 
     const vals = [
       String(s.total),
@@ -4121,37 +4235,66 @@ export async function generateParentInformationReportPdf(
       String(s.blank),
       s.net.toFixed(2),
       s.academyAvgNet.toFixed(2),
-      `%${s.accuracyPct}`,
     ];
     vals.forEach((v, vi) => {
       ctx1.textAlign = 'right';
       ctx1.fillStyle =
-        vi === 4 ? '#1d4ed8' : vi === 1 ? '#059669' : vi === 2 ? '#e11d48' : vi === 6 ? '#0f766e' : '#334155';
-      ctx1.font = vi === 4 || vi === 6 ? '800 14.5px "JetBrains Mono", monospace' : '600 14.5px "JetBrains Mono", monospace';
+        vi === 4 ? '#1d4ed8' : vi === 1 ? '#059669' : vi === 2 ? '#e11d48' : '#334155';
+      ctx1.font = vi === 4 ? '800 14px "JetBrains Mono", monospace' : '600 14px "JetBrains Mono", monospace';
       ctx1.fillText(v, colOffsets[vi + 2] - 10, y1 + 24);
     });
 
-    ctx1.textAlign = 'left';
-    ctx1.fillStyle =
-      s.accuracyPct >= 80
-        ? '#047857'
-        : s.accuracyPct >= 62
-          ? '#1d4ed8'
-          : s.accuracyPct >= 45
-            ? '#b45309'
-            : '#be123c';
-    ctx1.font = '700 13.5px "DM Sans", sans-serif';
-    ctx1.fillText(s.statusLabel, colOffsets[8] + 12, y1 + 24);
+    const subjVisual = resolveSubjectProgressVisual(s.accuracyPct, hasAnyEvaluatedData);
+
+    // Col 7: Inline Graphical Progress Bar + Percentage
+    drawInlineProgressBar(ctx1, {
+      x: colOffsets[7] + 12,
+      y: y1 + 14,
+      w: 98,
+      h: 10,
+      pct: s.accuracyPct,
+      visual: subjVisual,
+    });
+    ctx1.textAlign = 'right';
+    ctx1.fillStyle = subjVisual.accentColor;
+    ctx1.font = '800 13.5px "JetBrains Mono", monospace';
+    ctx1.fillText(`%${s.accuracyPct}`, colOffsets[8] - 10, y1 + 24);
+
+    // Col 8: 5 Vector Stars + Tier Pill (Başarılı / Gelişmekte / Tekrar)
+    drawStarRatingRow(ctx1, {
+      x: colOffsets[8] + 12,
+      cy: y1 + 19,
+      stars: subjVisual.stars,
+      maxStars: 5,
+      radius: 5.5,
+      gap: 3,
+      fillColor: subjVisual.starFillColor,
+      emptyColor: subjVisual.starEmptyColor,
+      label: `${subjVisual.stars}/5`,
+      labelColor: '#475569',
+      labelFont: '700 11.5px "JetBrains Mono", monospace',
+    });
+
+    drawTierPillBadge(ctx1, {
+      x: colOffsets[9] - 166,
+      y: y1 + 8,
+      w: 154,
+      h: 22,
+      visual: subjVisual,
+      text: subjVisual.label.toUpperCase(),
+      fontSize: 10,
+    });
+
     y1 += rowH;
   });
 
   // 2. Dönemsel Net Gelişim Çizelgesi (Canvas Chart)
-  y1 += 36;
+  y1 += 32;
   ctx1.fillStyle = '#0f172a';
-  ctx1.font = '800 21px "Plus Jakarta Sans", sans-serif';
+  ctx1.font = '800 20px "Plus Jakarta Sans", sans-serif';
   ctx1.textAlign = 'left';
   ctx1.fillText('2. DÖNEMSEL NET GELİŞİM ÇİZELGESİ VE HEDEF PROJEKSİYONU', 58, y1);
-  y1 += 16;
+  y1 += 14;
 
   const chartBoxY = y1;
   const chartBoxH = Math.max(260, A4_H - 115 - chartBoxY);
@@ -4310,16 +4453,16 @@ export async function generateParentInformationReportPdf(
   ctx2.fillText('3. ÖNCELİKLİ KONU EKSİKLERİ VE KAZANIM ANALİZİ', 58, y2);
   y2 += 14;
 
-  const tCols = [58, 240, 620, 740, 815, 890, 965, 1055, 1182];
-  const tHeaders = ['Ders', 'Konu / Kazanım Başlığı', 'Kod', 'D', 'Y', 'B', 'Başarı %', 'Durum'];
+  const tCols = [58, 225, 535, 645, 705, 765, 825, 1005, 1182];
+  const tHeaders = ['Ders', 'Konu / Kazanım Başlığı', 'Kod', 'D', 'Y', 'B', 'İlerleme %', 'Başarı Durumu'];
   ctx2.fillStyle = '#0f172a';
   ctx2.fillRect(58, y2, A4_W - 116, 36);
   ctx2.fillStyle = '#ffffff';
   ctx2.font = '700 13.5px "DM Sans", sans-serif';
   tHeaders.forEach((h, idx) => {
-    const isNum = idx >= 3 && idx <= 6;
+    const isNum = idx >= 3 && idx <= 5;
     ctx2.textAlign = isNum ? 'right' : 'left';
-    const tx = isNum ? tCols[idx + 1] - 10 : idx === 7 ? tCols[7] + 12 : tCols[idx] + 10;
+    const tx = isNum ? tCols[idx + 1] - 10 : idx === 6 || idx === 7 ? tCols[idx] + 10 : tCols[idx] + 10;
     ctx2.fillText(h, tx, y2 + 23);
   });
   y2 += 36;
@@ -4352,14 +4495,14 @@ export async function generateParentInformationReportPdf(
       ctx2.textAlign = 'left';
       ctx2.fillStyle = '#0f172a';
       ctx2.font = '700 13.5px "DM Sans", sans-serif';
-      ctx2.fillText(t.subject.slice(0, 19), tCols[0] + 10, y2 + 24);
+      ctx2.fillText(t.subject.slice(0, 18), tCols[0] + 10, y2 + 24);
       ctx2.font = '500 13.5px "DM Sans", sans-serif';
-      ctx2.fillText(t.topic.slice(0, 42), tCols[1] + 10, y2 + 24);
+      ctx2.fillText(t.topic.slice(0, 38), tCols[1] + 10, y2 + 24);
       ctx2.fillStyle = '#64748b';
       ctx2.font = '600 12.5px "JetBrains Mono", monospace';
-      ctx2.fillText(t.gainCode.slice(0, 14), tCols[2] + 10, y2 + 24);
+      ctx2.fillText(t.gainCode.slice(0, 13), tCols[2] + 10, y2 + 24);
 
-      const nums = [String(t.correct), String(t.wrong), String(t.blank), `%${t.masteryPct}`];
+      const nums = [String(t.correct), String(t.wrong), String(t.blank)];
       nums.forEach((nv, ni) => {
         ctx2.textAlign = 'right';
         ctx2.fillStyle = ni === 0 ? '#047857' : ni === 1 ? '#be123c' : '#0f172a';
@@ -4367,15 +4510,30 @@ export async function generateParentInformationReportPdf(
         ctx2.fillText(nv, tCols[ni + 4] - 10, y2 + 24);
       });
 
-      ctx2.textAlign = 'left';
-      ctx2.fillStyle =
-        t.status === 'Kritik Eksik'
-          ? '#be123c'
-          : t.status === 'Geliştirilmeli'
-            ? '#b45309'
-            : '#047857';
-      ctx2.font = '700 13px "DM Sans", sans-serif';
-      ctx2.fillText(t.status, tCols[7] + 12, y2 + 24);
+      const topicVisual = resolveTopicProgressVisual(t.masteryPct);
+      drawInlineProgressBar(ctx2, {
+        x: tCols[6] + 10,
+        y: y2 + 14,
+        w: 102,
+        h: 10,
+        pct: t.masteryPct,
+        visual: topicVisual,
+      });
+      ctx2.textAlign = 'right';
+      ctx2.fillStyle = topicVisual.accentColor;
+      ctx2.font = '800 13.5px "JetBrains Mono", monospace';
+      ctx2.fillText(`%${t.masteryPct}`, tCols[7] - 10, y2 + 24);
+
+      drawTierPillBadge(ctx2, {
+        x: tCols[7] + 12,
+        y: y2 + 8,
+        w: 152,
+        h: 22,
+        visual: topicVisual,
+        text: topicVisual.label.toUpperCase(),
+        fontSize: 10,
+      });
+
       y2 += rowH;
     });
   }

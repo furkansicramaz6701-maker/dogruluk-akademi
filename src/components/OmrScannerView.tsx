@@ -12,14 +12,19 @@ import {
   BookOpen,
   Shuffle,
   FileDown,
+  FileSpreadsheet,
+  Upload,
+  AlertTriangle,
 } from 'lucide-react';
 import {
   BookletCode,
+  BookletDistributionPattern,
   CoverConfig,
   ExamAnalysisResult,
   ExamQuestion,
   ExamSourceMode,
   ExternalPublisherExamConfig,
+  ExternalPublisherExamPreset,
   GradeProfile,
   OpenEndedPaperAnalysis,
   OpenEndedQuestion,
@@ -35,6 +40,22 @@ import {
   resolveCoverColorPalette,
 } from '../utils/bookletDistribution';
 import { generateSampleOmrPair, parseAnswerString } from '../utils/examAnalysis';
+import {
+  deriveBookletAnswerKeysFromBase,
+  downloadOmrExcelTemplate,
+  ImportedOmrStudentRow,
+  parseOmrExcelOrCsvBuffer,
+} from '../utils/omrSpreadsheet';
+import {
+  countDistinctErrorRows,
+  inspectAnswerStringReadability,
+  OMR_ERROR_CATEGORY_LABELS,
+  OmrScanErrorItem,
+  OmrScanErrorReport,
+  validateManualOmrInputs,
+} from '../utils/omrValidation';
+import { ExternalPublisherHub } from './ExternalPublisherHub';
+import { OmrErrorReportModal } from './OmrErrorReportModal';
 import { OpenEndedPaperPanel } from './OpenEndedPaperPanel';
 import { OpticalFormPreview } from './OpticalFormPreview';
 
@@ -57,10 +78,19 @@ interface OmrScannerViewProps {
   batchAssignments?: StudentBookletAssignment[];
   examSourceMode?: ExamSourceMode;
   externalPublisherConfig?: ExternalPublisherExamConfig;
+  publisherPresets?: ExternalPublisherExamPreset[];
+  activePublisherPresetId?: string | null;
   exportBusy?: boolean;
   onChangeExamSourceMode?: (mode: ExamSourceMode) => void;
   onUpdateExternalPublisher?: (patch: Partial<ExternalPublisherExamConfig>) => void;
-  onAutoAssignRegisteredStudents?: (opts?: { includeAllGrades?: boolean }) => void;
+  onSelectPublisherPreset?: (preset: ExternalPublisherExamPreset) => void;
+  onSavePublisherPreset?: (asNew?: boolean) => void;
+  onDeletePublisherPreset?: (presetId: string) => void;
+  onOpenGoogleFormsPanel?: () => void;
+  onAutoAssignRegisteredStudents?: (opts?: {
+    includeAllGrades?: boolean;
+    distributionPattern?: BookletDistributionPattern;
+  }) => void;
   onSelectBookletVariant?: (
     code: BookletCode,
     opts?: {
@@ -77,6 +107,9 @@ interface OmrScannerViewProps {
   externalOpenEndedQuestions?: OpenEndedQuestion[] | null;
   onSyncOpenEndedQuestions?: (next: OpenEndedQuestion[]) => void;
   onSaveOpenEndedAnalysis?: (result: OpenEndedPaperAnalysis) => void;
+  baseQuestions?: ExamQuestion[];
+  bookletOrderSeed?: number;
+  onImportOmrStudents?: (rows: ImportedOmrStudentRow[]) => void;
   onUpdateOmrState: (patch: {
     studentAnswersRaw?: string;
     answerKeyRaw?: string;
@@ -85,7 +118,11 @@ interface OmrScannerViewProps {
     classroom?: string;
     penaltyDivisor?: PenaltyDivisor;
   }) => void;
-  onEvaluateNow: () => void;
+  onEvaluateNow: (override?: {
+    studentAnswersRaw?: string;
+    answerKeyRaw?: string;
+    studentNumber?: string;
+  }) => void;
   onGoToReports: () => void;
   onDownloadOpticalPdf: (
     targetCode?: BookletCode,
@@ -131,9 +168,15 @@ export function OmrScannerView({
     examTitle: '',
     answerKeys: { A: '', B: '', C: '', D: '' },
   },
+  publisherPresets = [],
+  activePublisherPresetId = null,
   exportBusy = false,
   onChangeExamSourceMode,
   onUpdateExternalPublisher,
+  onSelectPublisherPreset,
+  onSavePublisherPreset,
+  onDeletePublisherPreset,
+  onOpenGoogleFormsPanel,
   onAutoAssignRegisteredStudents,
   onSelectBookletVariant,
   onUpdateCover,
@@ -142,6 +185,9 @@ export function OmrScannerView({
   externalOpenEndedQuestions = null,
   onSyncOpenEndedQuestions,
   onSaveOpenEndedAnalysis,
+  baseQuestions,
+  bookletOrderSeed = 0,
+  onImportOmrStudents,
   onUpdateOmrState,
   onEvaluateNow,
   onGoToReports,
@@ -151,10 +197,15 @@ export function OmrScannerView({
   onDownloadRegisteredOpticalPdf,
 }: OmrScannerViewProps) {
   const [scannerMode, setScannerMode] = useState<'omr' | 'open-ended'>(initialMode);
-  const [loadingMode, setLoadingMode] = useState<'student' | 'key' | null>(null);
+  const [loadingMode, setLoadingMode] = useState<'student' | 'key' | 'excel' | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [includeAllGrades, setIncludeAllGrades] = useState<boolean>(false);
+  const [registeredPattern, setRegisteredPattern] = useState<BookletDistributionPattern>('AB');
+  const [autoAnalyzeOnPhoto, setAutoAnalyzeOnPhoto] = useState<boolean>(true);
+  const [lastExcelSummary, setLastExcelSummary] = useState<string | null>(null);
+  const [errorReport, setErrorReport] = useState<OmrScanErrorReport | null>(null);
+  const [errorModalOpen, setErrorModalOpen] = useState<boolean>(false);
 
   useEffect(() => {
     setScannerMode(initialMode);
@@ -177,25 +228,162 @@ export function OmrScannerView({
   );
   const allInstStudentsCount = students.filter((s) => s.institutionId === institutionId).length;
 
-  const handleFileUpload = async (
-    e: ChangeEvent<HTMLInputElement>,
-    mode: 'student' | 'key'
-  ) => {
+  const applyParsedSpreadsheet = (buf: ArrayBuffer, fileName: string, targetFocus?: 'student' | 'key') => {
+    const parsed = parseOmrExcelOrCsvBuffer(buf, {
+      expectedCount,
+      optionCount: gradeProfile.optionCount,
+      activeBookletCode: cover.bookletCode,
+      fallbackGradeId: gradeProfile.id,
+      institution: {
+        id: institutionId,
+        name: institutionName,
+        code8: institutionCode8,
+        city: '',
+        createdAt: '',
+      },
+      existingStudents: students,
+      baseQuestions,
+      orderSeed: bookletOrderSeed,
+      autoDeriveMissingBooklets: true,
+    });
+
+    const hasKeys = Object.values(parsed.answerKeysByBooklet).some((v) => Boolean(v && v.length > 0));
+    if (hasKeys && onUpdateExternalPublisher) {
+      onUpdateExternalPublisher({
+        answerKeys: {
+          ...externalPublisherConfig.answerKeys,
+          ...parsed.answerKeysByBooklet,
+        },
+      });
+    }
+    if (parsed.hasExplicitMultiBookletKeys && examSourceMode !== 'farkli-yayin') {
+      onChangeExamSourceMode?.('farkli-yayin');
+    }
+
+    if (parsed.importedStudents.length > 0) {
+      onImportOmrStudents?.(parsed.importedStudents);
+    }
+
+    const firstWithAnswers =
+      parsed.importedStudents.find((s) => s.studentAnswersRaw.length > 0) ?? parsed.importedStudents[0];
+
+    const nextStudentAns =
+      targetFocus === 'key'
+        ? studentAnswersRaw
+        : parsed.studentAnswersRaw || studentAnswersRaw;
+    const nextAnswerKey =
+      targetFocus === 'student'
+        ? parsed.answerKeyRaw || answerKeyRaw
+        : parsed.answerKeyRaw || answerKeyRaw;
+
+    if (firstWithAnswers && targetFocus !== 'key') {
+      onUpdateOmrState({
+        studentName: firstWithAnswers.fullName,
+        studentNumber: firstWithAnswers.studentNumber8,
+        classroom: firstWithAnswers.classroom,
+        studentAnswersRaw: nextStudentAns,
+        answerKeyRaw: nextAnswerKey,
+      });
+      onUpdateCover?.({
+        bookletCode: firstWithAnswers.bookletCode,
+        bookletNumber: firstWithAnswers.bookletNumber,
+      });
+    } else {
+      onUpdateOmrState({
+        ...(parsed.studentAnswersRaw && targetFocus !== 'key'
+          ? { studentAnswersRaw: parsed.studentAnswersRaw }
+          : {}),
+        ...(parsed.answerKeyRaw && targetFocus !== 'student'
+          ? { answerKeyRaw: parsed.answerKeyRaw }
+          : {}),
+      });
+    }
+
+    const msg = `${fileName}: ${parsed.summaryMessage}`;
+    setLastExcelSummary(msg);
+    setStatusMessage(msg);
+
+    if (parsed.errors.length > 0) {
+      const report: OmrScanErrorReport = {
+        sourceName: fileName,
+        scannedAt: new Date().toLocaleTimeString('tr-TR', {
+          hour: '2-digit',
+          minute: '2-digit',
+          second: '2-digit',
+        }),
+        totalRowsChecked: parsed.totalRowsChecked,
+        validRowsCount: Math.max(0, parsed.totalRowsChecked - countDistinctErrorRows(parsed.errors)),
+        errors: parsed.errors,
+      };
+      setErrorReport(report);
+      setErrorModalOpen(true);
+      setErrorMsg(
+        `${fileName}: ${parsed.errors.length} satırda geçersiz öğrenci numarası veya okunmayan cevap tespit edildi.`
+      );
+    } else {
+      setErrorReport(null);
+      setErrorModalOpen(false);
+      setErrorMsg(null);
+    }
+
+    const hasReadableStudentMarks =
+      parseAnswerString(nextStudentAns, expectedCount, gradeProfile.optionCount).some(Boolean);
+    const hasReadableKeyMarks =
+      parseAnswerString(nextAnswerKey, expectedCount, gradeProfile.optionCount).some(Boolean);
+
+    if (autoAnalyzeOnPhoto && hasReadableStudentMarks && hasReadableKeyMarks) {
+      onEvaluateNow({
+        studentAnswersRaw: nextStudentAns,
+        answerKeyRaw: nextAnswerKey,
+        studentNumber: firstWithAnswers?.studentNumber8 ?? studentNumber,
+      });
+    }
+  };
+
+  const handleExcelBulkUpload = async (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     setErrorMsg(null);
     setStatusMessage(null);
+    setLoadingMode('excel');
+    try {
+      const buf = await file.arrayBuffer();
+      applyParsedSpreadsheet(buf, file.name);
+    } catch (err) {
+      setErrorMsg(
+        err instanceof Error
+          ? `Excel/CSV dosyası okunamadı: ${err.message}`
+          : 'Excel/CSV dosyası işlenemedi.'
+      );
+    } finally {
+      setLoadingMode(null);
+      e.target.value = '';
+    }
+  };
+
+  const processSingleUploadedFile = async (
+    file: File,
+    mode: 'student' | 'key'
+  ) => {
+    setErrorMsg(null);
+    setStatusMessage(null);
 
     try {
+      const lowerName = file.name.toLowerCase();
+      if (lowerName.endsWith('.xlsx') || lowerName.endsWith('.xls') || lowerName.endsWith('.csv')) {
+        const buf = await file.arrayBuffer();
+        applyParsedSpreadsheet(buf, file.name, mode);
+        return;
+      }
+
       if (
         file.type.startsWith('text/') ||
-        file.name.endsWith('.csv') ||
-        file.name.endsWith('.txt') ||
-        file.name.endsWith('.json')
+        lowerName.endsWith('.txt') ||
+        lowerName.endsWith('.json')
       ) {
         const text = await file.text();
         let extracted = text;
-        if (file.name.endsWith('.json')) {
+        if (lowerName.endsWith('.json')) {
           try {
             const json = JSON.parse(text);
             if (Array.isArray(json.questions)) {
@@ -211,20 +399,77 @@ export function OmrScannerView({
         }
         if (mode === 'student') {
           onUpdateOmrState({ studentAnswersRaw: extracted });
+          const validationReport = validateManualOmrInputs({
+            sourceName: file.name,
+            studentName,
+            studentNumber,
+            studentAnswersRaw: extracted,
+            optionCount: gradeProfile.optionCount,
+            requireStudentAnswers: true,
+            validateAnswerKey: false,
+          });
+          if (validationReport.errors.length > 0) {
+            setErrorReport(validationReport);
+            setErrorModalOpen(true);
+            setErrorMsg(
+              `${file.name}: ${validationReport.errors.length} satırda geçersiz öğrenci numarası veya okunmayan cevap tespit edildi.`
+            );
+          } else {
+            setErrorReport(null);
+            setErrorModalOpen(false);
+            setStatusMessage(`${file.name} dosyasından öğrenci optiği okundu.`);
+            if (autoAnalyzeOnPhoto && extracted.trim() && answerKeyRaw.trim()) {
+              onEvaluateNow({ studentAnswersRaw: extracted, answerKeyRaw });
+            }
+          }
         } else {
+          const validationReport = validateManualOmrInputs({
+            sourceName: file.name,
+            studentAnswersRaw: '',
+            answerKeyRaw: extracted,
+            optionCount: gradeProfile.optionCount,
+            requireStudentAnswers: false,
+            validateAnswerKey: true,
+          });
+          const derived = deriveBookletAnswerKeysFromBase(
+            extracted,
+            gradeProfile.optionCount,
+            baseQuestions,
+            bookletOrderSeed
+          );
           onUpdateOmrState({ answerKeyRaw: extracted });
-          if (examSourceMode === 'farkli-yayin' && onUpdateExternalPublisher) {
+          if (onUpdateExternalPublisher) {
             onUpdateExternalPublisher({
               answerKeys: {
                 ...externalPublisherConfig.answerKeys,
-                [cover.bookletCode]: normalizeExternalAnswerKeyString(extracted, gradeProfile.optionCount),
+                ...(cover.bookletCode === 'A'
+                  ? derived
+                  : {
+                      [cover.bookletCode]: normalizeExternalAnswerKeyString(
+                        extracted,
+                        gradeProfile.optionCount
+                      ),
+                    }),
               },
             });
           }
+          if (validationReport.errors.length > 0) {
+            setErrorReport(validationReport);
+            setErrorModalOpen(true);
+            setErrorMsg(
+              `${file.name}: Cevap anahtarı dosyasında ${validationReport.errors.length} hatalı/okunmayan satır bulundu.`
+            );
+          } else {
+            setErrorReport(null);
+            setErrorModalOpen(false);
+            setStatusMessage(
+              `${file.name} dosyasından ${cover.bookletCode} kitapçığı cevap anahtarı okundu.`
+            );
+            if (autoAnalyzeOnPhoto && studentAnswersRaw.trim() && extracted.trim()) {
+              onEvaluateNow({ studentAnswersRaw, answerKeyRaw: extracted });
+            }
+          }
         }
-        setStatusMessage(
-          `${file.name} dosyasından ${mode === 'student' ? 'öğrenci optiği' : `${cover.bookletCode} kitapçığı cevap anahtarı`} okundu.`
-        );
         return;
       }
 
@@ -245,35 +490,183 @@ export function OmrScannerView({
       if (!resp.ok) {
         throw new Error(data.error || 'Optik dosya okunamadı');
       }
+
+      const rawCode = String(data.bookletCode || '').trim().toUpperCase();
+      const detectedCode: BookletCode | null = (BOOKLET_CODES as string[]).includes(rawCode)
+        ? (rawCode as BookletCode)
+        : null;
+      const targetBooklet = detectedCode ?? cover.bookletCode;
+      if (detectedCode && detectedCode !== cover.bookletCode) {
+        onUpdateCover?.({ bookletCode: detectedCode });
+      }
+
       if (mode === 'student') {
-        onUpdateOmrState({ studentAnswersRaw: data.answersString });
+        const nextAns = String(data.answersString || '');
+        const scanErrors: OmrScanErrorItem[] = [];
+        const issue = nextAns.trim()
+          ? inspectAnswerStringReadability(nextAns, gradeProfile.optionCount)
+          : null;
+        if (Number(data.detectedCount || 0) === 0 || !nextAns.trim()) {
+          scanErrors.push({
+            id: `photo-stu-empty`,
+            rowNumber: 1,
+            sheetName: 'Optik Form Fotoğrafı',
+            studentName: studentName.trim() || undefined,
+            studentNumberRaw: studentNumber.trim() || undefined,
+            rawExcerpt: nextAns.trim() || '(Cevap işareti algılanamadı)',
+            category: 'unreadable-answers',
+            categoryLabel: OMR_ERROR_CATEGORY_LABELS['unreadable-answers'],
+            reason:
+              'Fotoğraftan geçerli bir optik cevap işareti okunamadı. Kağıdın aydınlatmasını ve netliğini kontrol edip tekrar deneyin.',
+          });
+        } else if (issue) {
+          scanErrors.push({
+            id: `photo-stu-issue`,
+            rowNumber: 1,
+            sheetName: 'Optik Form Fotoğrafı',
+            studentName: studentName.trim() || undefined,
+            studentNumberRaw: studentNumber.trim() || undefined,
+            rawExcerpt: nextAns.slice(0, 48),
+            category: issue.category,
+            categoryLabel: OMR_ERROR_CATEGORY_LABELS[issue.category],
+            reason: issue.reason,
+          });
+        }
+
+        const effectiveKey =
+          (detectedCode && externalPublisherConfig.answerKeys[detectedCode]) || answerKeyRaw;
+        onUpdateOmrState({
+          studentAnswersRaw: nextAns,
+          ...(detectedCode && externalPublisherConfig.answerKeys[detectedCode]
+            ? { answerKeyRaw: externalPublisherConfig.answerKeys[detectedCode] }
+            : {}),
+        });
+
+        if (scanErrors.length > 0) {
+          setErrorReport({
+            sourceName: file.name,
+            scannedAt: new Date().toLocaleTimeString('tr-TR', {
+              hour: '2-digit',
+              minute: '2-digit',
+              second: '2-digit',
+            }),
+            totalRowsChecked: 1,
+            validRowsCount: 0,
+            errors: scanErrors,
+          });
+          setErrorModalOpen(true);
+          setErrorMsg(`${file.name}: Optik formda okunamayan cevap satırı tespit edildi.`);
+        } else {
+          setErrorReport(null);
+          setErrorModalOpen(false);
+          if (autoAnalyzeOnPhoto && nextAns.trim() && effectiveKey.trim()) {
+            onEvaluateNow({ studentAnswersRaw: nextAns, answerKeyRaw: effectiveKey });
+            setStatusMessage(
+              `${file.name} fotoğrafından ${data.detectedCount} soru (${targetBooklet} kitapçığı) okundu ve otomatik analiz edilip karneler güncellendi.`
+            );
+          } else {
+            setStatusMessage(
+              `${file.name} fotoğrafından ${data.detectedCount} soru tespit edildi (${targetBooklet} kitapçığı).`
+            );
+          }
+        }
       } else {
-        onUpdateOmrState({ answerKeyRaw: data.answersString });
-        if (examSourceMode === 'farkli-yayin' && onUpdateExternalPublisher) {
+        const nextKey = String(data.answersString || '');
+        const scanErrors: OmrScanErrorItem[] = [];
+        const issue = nextKey.trim()
+          ? inspectAnswerStringReadability(nextKey, gradeProfile.optionCount)
+          : null;
+        if (Number(data.detectedCount || 0) === 0 || !nextKey.trim()) {
+          scanErrors.push({
+            id: `photo-key-empty`,
+            rowNumber: 1,
+            sheetName: 'Cevap Anahtarı Fotoğrafı',
+            rawExcerpt: nextKey.trim() || '(Anahtar algılanamadı)',
+            category: 'unreadable-answers',
+            categoryLabel: OMR_ERROR_CATEGORY_LABELS['unreadable-answers'],
+            reason: 'Cevap anahtarı görselinden okunabilir şık dizisi algılanamadı.',
+          });
+        } else if (issue) {
+          scanErrors.push({
+            id: `photo-key-issue`,
+            rowNumber: 1,
+            sheetName: 'Cevap Anahtarı Fotoğrafı',
+            rawExcerpt: nextKey.slice(0, 48),
+            category: issue.category,
+            categoryLabel: OMR_ERROR_CATEGORY_LABELS[issue.category],
+            reason: issue.reason,
+          });
+        }
+
+        const normalizedKey = normalizeExternalAnswerKeyString(nextKey, gradeProfile.optionCount);
+        const derived = deriveBookletAnswerKeysFromBase(
+          normalizedKey,
+          gradeProfile.optionCount,
+          baseQuestions,
+          bookletOrderSeed
+        );
+        onUpdateOmrState({ answerKeyRaw: nextKey });
+        if (onUpdateExternalPublisher) {
           onUpdateExternalPublisher({
             answerKeys: {
               ...externalPublisherConfig.answerKeys,
-              [cover.bookletCode]: normalizeExternalAnswerKeyString(
-                data.answersString,
-                gradeProfile.optionCount
-              ),
+              ...(targetBooklet === 'A'
+                ? derived
+                : { [targetBooklet]: normalizedKey }),
             },
           });
         }
+
+        if (scanErrors.length > 0) {
+          setErrorReport({
+            sourceName: file.name,
+            scannedAt: new Date().toLocaleTimeString('tr-TR', {
+              hour: '2-digit',
+              minute: '2-digit',
+              second: '2-digit',
+            }),
+            totalRowsChecked: 1,
+            validRowsCount: 0,
+            errors: scanErrors,
+          });
+          setErrorModalOpen(true);
+          setErrorMsg(`${file.name}: Cevap anahtarı görselinde okunamayan satır tespit edildi.`);
+        } else {
+          setErrorReport(null);
+          setErrorModalOpen(false);
+          if (autoAnalyzeOnPhoto && studentAnswersRaw.trim() && nextKey.trim()) {
+            onEvaluateNow({ studentAnswersRaw, answerKeyRaw: nextKey });
+            setStatusMessage(
+              `Cevap anahtarı fotoğrafı okundu (${data.detectedCount} soru · ${targetBooklet} kitapçığı) ve mevcut öğrenci optiğiyle otomatik analiz edildi.`
+            );
+          } else {
+            setStatusMessage(
+              `Cevap anahtarı fotoğrafı okundu (${data.detectedCount} soru · ${targetBooklet} kitapçığı${
+                targetBooklet === 'A' ? ' + B-C-D otomatik türetildi' : ''
+              }). Şimdi öğrenci cevap kağıdı fotoğrafını çekebilirsiniz.`
+            );
+          }
+        }
       }
-      setStatusMessage(
-        `${file.name} yapay zeka optik okuyucu ile tarandı (${data.detectedCount} soru tespit edildi).`
-      );
     } catch (err) {
       setErrorMsg(
         err instanceof Error
           ? err.message
-          : 'Dosya işlenemedi. Metin veya CSV olarak yapıştırabilirsiniz.'
+          : 'Dosya işlenemedi. Excel, CSV veya metin olarak yükleyebilirsiniz.'
       );
     } finally {
       setLoadingMode(null);
-      e.target.value = '';
     }
+  };
+
+  const handleFileUpload = async (
+    e: ChangeEvent<HTMLInputElement>,
+    mode: 'student' | 'key'
+  ) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    await processSingleUploadedFile(file, mode);
   };
 
   const handleLoadSample = (accuracy: number) => {
@@ -282,10 +675,37 @@ export function OmrScannerView({
       studentAnswersRaw: sample.studentString,
       answerKeyRaw: sample.keyString,
     });
+    setErrorReport(null);
+    setErrorModalOpen(false);
     setErrorMsg(null);
     setStatusMessage(
       `${questions.length} soruluk örnek ${gradeProfile.shortLabel} optik formu ve cevap anahtarı yüklendi.`
     );
+  };
+
+  const handleEvaluateWithValidation = () => {
+    const report = validateManualOmrInputs({
+      sourceName: 'Manuel Optik Girişi',
+      studentName,
+      studentNumber,
+      studentAnswersRaw,
+      answerKeyRaw,
+      optionCount: gradeProfile.optionCount,
+      requireStudentAnswers: true,
+      validateAnswerKey: true,
+    });
+    if (report.errors.length > 0) {
+      setErrorReport(report);
+      setErrorModalOpen(true);
+      setErrorMsg(
+        `Optik doğrulamada ${report.errors.length} hata tespit edildi (geçersiz öğrenci numarası veya okunmayan cevap satırı).`
+      );
+      return;
+    }
+    setErrorReport(null);
+    setErrorModalOpen(false);
+    setErrorMsg(null);
+    onEvaluateNow();
   };
 
   const handleSelectBookletCode = (code: BookletCode) => {
@@ -294,6 +714,7 @@ export function OmrScannerView({
     } else {
       onUpdateCover?.({ bookletCode: code });
     }
+    setErrorReport(null);
     setErrorMsg(null);
     setStatusMessage(
       examSourceMode === 'farkli-yayin'
@@ -363,8 +784,21 @@ export function OmrScannerView({
             <span>10 Soruluk Açık Uçlu Kağıt &amp; Çözüm Analizi</span>
           </button>
         </div>
-        <div className="text-[11px] font-mono-num" style={{ color: 'var(--text-secondary)' }}>
-          {gradeProfile.shortLabel} · {studentName || 'Öğrenci Seçilmedi'}
+        <div className="flex flex-wrap items-center gap-2">
+          {onOpenGoogleFormsPanel && (
+            <button
+              type="button"
+              data-testid="omr-open-gforms-shortcut-btn"
+              onClick={onOpenGoogleFormsPanel}
+              className="btn-3d-secondary px-3 py-1.5 rounded-lg text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer"
+            >
+              <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" aria-hidden="true" />
+              <span>Google Formlar Excel Paneli</span>
+            </button>
+          )}
+          <div className="text-[11px] font-mono-num" style={{ color: 'var(--text-secondary)' }}>
+            {gradeProfile.shortLabel} · {studentName || 'Öğrenci Seçilmedi'}
+          </div>
         </div>
       </div>
 
@@ -457,88 +891,38 @@ export function OmrScannerView({
               </div>
 
               {examSourceMode === 'farkli-yayin' && (
-                <div
-                  data-testid="external-publisher-keys-panel"
-                  className="surface-card rounded-xl p-3.5 space-y-3 border"
-                  style={{ borderColor: 'var(--accent-primary)' }}
-                >
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                    <label className="block text-xs font-semibold">
-                      <span style={{ color: 'var(--text-secondary)' }}>Farklı Yayın / Deneme Adı</span>
-                      <input
-                        type="text"
-                        data-testid="external-publisher-name-input"
-                        value={externalPublisherConfig.publisherName}
-                        onChange={(e) => {
-                          const nextPub = e.target.value;
-                          onUpdateExternalPublisher?.({ publisherName: nextPub });
-                          if (nextPub.trim()) {
-                            onUpdateCover?.({ examTitle: nextPub.trim() });
-                          }
-                        }}
-                        placeholder="Örn: Özdebir / Hız / Palme 5. Sınıf TG Deneme-3"
-                        className="mt-1 w-full rounded-lg px-3 py-1.5 text-xs surface-alt font-semibold"
-                      />
-                    </label>
-                    <div className="flex items-end justify-between gap-2 text-[11px]" style={{ color: 'var(--text-secondary)' }}>
-                      <span>
-                        Her kitapçığın (A, B, C, D) cevap anahtarını aşağıya girin; öğrenci hangi kitapçıktaysa analizi o kitapçığın yayın anahtarıyla yapılır.
-                      </span>
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
-                    {BOOKLET_CODES.map((code) => {
-                      const pal = resolveCoverColorPalette(
-                        { bookletCode: code, coverColorThemeId: 'otomatik-abcd' },
-                        getLogoPreset(cover.logoStyleId)
-                      );
-                      const val = externalPublisherConfig.answerKeys[code] ?? '';
-                      const isActive = cover.bookletCode === code;
-                      return (
-                        <div
-                          key={code}
-                          className={`rounded-lg p-2.5 border ${isActive ? 'ring-1' : ''}`}
-                          style={{
-                            borderColor: isActive ? pal.primaryColor : 'var(--border-subtle)',
-                            backgroundColor: isActive ? pal.softBg : undefined,
-                          }}
-                        >
-                          <div className="flex items-center justify-between gap-1 mb-1">
-                            <span className="text-[11px] font-extrabold" style={{ color: pal.primaryColor }}>
-                              {code} Kitapçığı Anahtarı
-                            </span>
-                            <span className="text-[10px] font-mono-num" style={{ color: 'var(--text-secondary)' }}>
-                              {val.length}/{expectedCount}
-                            </span>
-                          </div>
-                          <input
-                            type="text"
-                            data-testid={`external-key-input-${code}`}
-                            value={val}
-                            onChange={(e) => {
-                              const cleaned = normalizeExternalAnswerKeyString(
-                                e.target.value,
-                                gradeProfile.optionCount
-                              );
-                              onUpdateExternalPublisher?.({
-                                answerKeys: {
-                                  ...externalPublisherConfig.answerKeys,
-                                  [code]: cleaned,
-                                },
-                              });
-                              if (cover.bookletCode === code && cleaned.length > 0) {
-                                onUpdateOmrState({ answerKeyRaw: cleaned });
-                              }
-                            }}
-                            placeholder={`${code} şıkları (örn. ABCD...)`}
-                            className="w-full rounded px-2 py-1 text-xs font-mono-num font-bold surface-alt"
-                          />
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
+                <ExternalPublisherHub
+                  gradeProfile={gradeProfile}
+                  questionsCount={expectedCount}
+                  activeBookletCode={cover.bookletCode}
+                  logoStyleId={cover.logoStyleId}
+                  externalPublisherConfig={externalPublisherConfig}
+                  presets={publisherPresets}
+                  activePresetId={activePublisherPresetId}
+                  onUpdateConfig={(patch) => {
+                    onUpdateExternalPublisher?.(patch);
+                    if (patch.publisherName?.trim() || patch.examTitle?.trim()) {
+                      onUpdateCover?.({
+                        examTitle:
+                          patch.examTitle?.trim() ||
+                          patch.publisherName?.trim() ||
+                          cover.examTitle,
+                      });
+                    }
+                    if (patch.bookletMode === 'AB') {
+                      setRegisteredPattern('AB');
+                    } else if (patch.bookletMode === 'ABCD') {
+                      setRegisteredPattern('ABCD');
+                    }
+                  }}
+                  onSelectPreset={(preset) => onSelectPublisherPreset?.(preset)}
+                  onSavePreset={(asNew) => onSavePublisherPreset?.(asNew)}
+                  onDeletePreset={(id) => onDeletePublisherPreset?.(id)}
+                  onSyncActiveAnswerKey={(key) => onUpdateOmrState({ answerKeyRaw: key })}
+                  onTriggerPhotoKeyFile={(file) => void processSingleUploadedFile(file, 'key')}
+                  photoLoading={loadingMode === 'key'}
+                  onToast={(msg) => setStatusMessage(msg)}
+                />
               )}
             </div>
 
@@ -674,21 +1058,52 @@ export function OmrScannerView({
                     </label>
                   )}
 
+                  <select
+                    data-testid="omr-registered-pattern-select"
+                    value={registeredPattern}
+                    onChange={(e) =>
+                      setRegisteredPattern(e.target.value as BookletDistributionPattern)
+                    }
+                    aria-label="Kayıtlı öğrenciler kitapçık dağıtım düzeni"
+                    className="rounded-lg px-2.5 py-1.5 text-xs font-bold surface-card"
+                  >
+                    <option value="AB">A - B (2 Kitapçık)</option>
+                    <option value="ABCD">A - B - C - D (4 Kitapçık)</option>
+                    <option value="A">Tek Kitapçık (A)</option>
+                  </select>
+
                   {onAutoAssignRegisteredStudents && (
                     <button
                       type="button"
                       disabled={institutionStudents.length === 0 && allInstStudentsCount === 0}
                       onClick={() => {
-                        onAutoAssignRegisteredStudents({ includeAllGrades });
+                        onAutoAssignRegisteredStudents({
+                          includeAllGrades,
+                          distributionPattern: registeredPattern,
+                        });
                         setStatusMessage(
-                          `${institutionName} kayıtlı öğrencileri için A-B-C-D kitapçık kodları ve kitapçık numaraları otomatik yerleştirildi.`
+                          `${institutionName} kayıtlı öğrencileri için ${
+                            registeredPattern === 'AB'
+                              ? 'A - B'
+                              : registeredPattern === 'ABCD'
+                                ? 'A - B - C - D'
+                                : 'Tek A'
+                          } kitapçık kodları ve kitapçık numaraları otomatik yerleştirildi.`
                         );
                       }}
                       data-testid="omr-auto-assign-registered-btn"
                       className="btn-3d px-3 py-1.5 rounded-lg text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
                     >
                       <Shuffle className="w-3.5 h-3.5" aria-hidden="true" />
-                      <span>Kayıtlı Öğrencilere Otomatik A-B-C-D Yerleştir</span>
+                      <span>
+                        Kayıtlı Öğrencilere Otomatik{' '}
+                        {registeredPattern === 'AB'
+                          ? 'A-B'
+                          : registeredPattern === 'ABCD'
+                            ? 'A-B-C-D'
+                            : 'A'}{' '}
+                        Yerleştir
+                      </span>
                     </button>
                   )}
 
@@ -845,11 +1260,110 @@ export function OmrScannerView({
               </div>
             )}
             {errorMsg && (
-              <div className="mb-4 rounded-lg p-3 text-xs font-semibold flex items-center gap-2 bg-rose-50 text-rose-800 border border-rose-200">
-                <AlertCircle className="w-4 h-4 shrink-0" aria-hidden="true" />
-                <span>{errorMsg}</span>
+              <div className="mb-4 rounded-lg p-3 text-xs font-semibold flex flex-wrap items-center justify-between gap-2 bg-rose-50 text-rose-800 border border-rose-200 dark:bg-rose-950/40 dark:text-rose-200 dark:border-rose-800">
+                <div className="flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 shrink-0" aria-hidden="true" />
+                  <span>{errorMsg}</span>
+                </div>
+                {errorReport && errorReport.errors.length > 0 && (
+                  <button
+                    type="button"
+                    data-testid="omr-open-error-report-btn"
+                    onClick={() => setErrorModalOpen(true)}
+                    className="px-3 py-1.5 rounded-lg bg-rose-700 hover:bg-rose-800 text-white text-xs font-extrabold inline-flex items-center gap-1.5 cursor-pointer shrink-0"
+                  >
+                    <AlertTriangle className="w-3.5 h-3.5" aria-hidden="true" />
+                    <span>Hata Raporu ({errorReport.errors.length})</span>
+                  </button>
+                )}
               </div>
             )}
+
+            {/* Excel / CSV Toplu Aktarım (Öğrenci + A-B-C-D Cevap Anahtarı) & Fotoğraf Otomatik Analiz */}
+            <div
+              data-testid="omr-excel-import-panel"
+              className="surface-alt rounded-xl p-4 mb-5 border space-y-3"
+              style={{ borderColor: 'var(--border-subtle)' }}
+            >
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="flex items-start gap-2.5">
+                  <FileSpreadsheet
+                    className="w-5 h-5 shrink-0 mt-0.5"
+                    style={{ color: '#059669' }}
+                    aria-hidden="true"
+                  />
+                  <div>
+                    <div className="text-xs font-extrabold">
+                      Excel / CSV ile Öğrenci &amp; A-B-C-D Cevap Anahtarı Toplu Aktarımı + Fotoğraf Otomatik Analiz
+                    </div>
+                    <p className="text-[11px] mt-0.5" style={{ color: 'var(--text-secondary)' }}>
+                      Öğrenci listesini, A-B-C-D kitapçıklarını ve optik cevapları/anahtarlarını tek Excel veya CSV dosyasıyla yükleyin; ya da önce cevap anahtarının fotoğrafını çekip ardından öğrenci cevap kağıdı fotoğrafıyla otomatik analiz başlatın.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <label
+                    data-testid="omr-excel-choose-btn"
+                    className="btn-3d px-3.5 py-2 rounded-lg text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer"
+                  >
+                    {loadingMode === 'excel' ? (
+                      <>
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
+                        <span>Excel İşleniyor...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Upload className="w-3.5 h-3.5" aria-hidden="true" />
+                        <span>Dosya Seç (Excel / CSV)</span>
+                      </>
+                    )}
+                    <input
+                      type="file"
+                      data-testid="omr-excel-file-input"
+                      accept=".xlsx,.xls,.csv,.txt"
+                      onChange={handleExcelBulkUpload}
+                      className="sr-only"
+                    />
+                  </label>
+
+                  <button
+                    type="button"
+                    data-testid="omr-excel-template-btn"
+                    onClick={() =>
+                      downloadOmrExcelTemplate({
+                        bookletKeys: externalPublisherConfig.answerKeys,
+                        gradeId: gradeProfile.id,
+                        optionCount: gradeProfile.optionCount,
+                        questionCount: expectedCount,
+                      })
+                    }
+                    className="btn-3d-secondary px-3 py-2 rounded-lg text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <FileDown className="w-3.5 h-3.5" aria-hidden="true" />
+                    <span>Örnek Excel Şablonu (.xlsx)</span>
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t text-[11px]" style={{ borderColor: 'var(--border-subtle)' }}>
+                <label className="inline-flex items-center gap-2 font-semibold cursor-pointer">
+                  <input
+                    type="checkbox"
+                    data-testid="omr-auto-analyze-toggle"
+                    checked={autoAnalyzeOnPhoto}
+                    onChange={(e) => setAutoAnalyzeOnPhoto(e.target.checked)}
+                    className="rounded accent-blue-600"
+                  />
+                  <span>Fotoğraf veya Excel yüklendiğinde otomatik analiz et ve karneleri güncelle</span>
+                </label>
+                {lastExcelSummary && (
+                  <span className="font-semibold" style={{ color: '#059669' }} data-testid="omr-excel-summary">
+                    {lastExcelSummary}
+                  </span>
+                )}
+              </div>
+            </div>
 
             {/* Dual Upload & Input Area: Optical Form vs Answer Key */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -860,22 +1374,42 @@ export function OmrScannerView({
                     <Camera className="w-4 h-4" style={{ color: 'var(--accent-primary)' }} aria-hidden="true" />
                     <h3 className="text-sm font-bold">1. Öğrenci Optik Cevapları ({cover.bookletCode} Kitapçığı)</h3>
                   </div>
-                  <label className="btn-3d-secondary px-3 py-1.5 rounded-lg text-xs font-bold cursor-pointer inline-flex items-center gap-1.5">
-                    {loadingMode === 'student' ? (
-                      <>
-                        <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
-                        <span>Optik Taranıyor...</span>
-                      </>
-                    ) : (
-                      <span>Optik Dosya Yükle (Görsel/PDF/CSV)</span>
-                    )}
-                    <input
-                      type="file"
-                      accept="image/*,.pdf,.csv,.txt,.json"
-                      onChange={(e) => handleFileUpload(e, 'student')}
-                      className="sr-only"
-                    />
-                  </label>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <label
+                      data-testid="omr-student-camera-btn"
+                      className="btn-3d px-2.5 py-1.5 rounded-lg text-[11px] font-bold cursor-pointer inline-flex items-center gap-1"
+                    >
+                      <Camera className="w-3.5 h-3.5" aria-hidden="true" />
+                      <span>Fotoğraf Çek &amp; Analiz Et</span>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        capture="environment"
+                        onChange={(e) => handleFileUpload(e, 'student')}
+                        className="sr-only"
+                      />
+                    </label>
+                    <label
+                      data-testid="omr-student-upload-btn"
+                      className="btn-3d-secondary px-2.5 py-1.5 rounded-lg text-[11px] font-bold cursor-pointer inline-flex items-center gap-1.5"
+                    >
+                      {loadingMode === 'student' ? (
+                        <>
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
+                          <span>Optik Taranıyor...</span>
+                        </>
+                      ) : (
+                        <span>Dosya Seç (Görsel/PDF/Excel/CSV)</span>
+                      )}
+                      <input
+                        type="file"
+                        data-testid="omr-student-upload-input"
+                        accept="image/*,.pdf,.xlsx,.xls,.csv,.txt,.json"
+                        onChange={(e) => handleFileUpload(e, 'student')}
+                        className="sr-only"
+                      />
+                    </label>
+                  </div>
                 </div>
 
                 <label className="block text-xs" style={{ color: 'var(--text-secondary)' }}>
@@ -885,6 +1419,7 @@ export function OmrScannerView({
                   </span>
                   <textarea
                     rows={4}
+                    data-testid="omr-student-answers-textarea"
                     value={studentAnswersRaw}
                     onChange={(e) => onUpdateOmrState({ studentAnswersRaw: e.target.value })}
                     placeholder="ABCD-EABDC..."
@@ -907,22 +1442,42 @@ export function OmrScannerView({
                       2. Deneme Cevap Anahtarı ({cover.bookletCode} Kitapçığı)
                     </h3>
                   </div>
-                  <label className="btn-3d-secondary px-3 py-1.5 rounded-lg text-xs font-bold cursor-pointer inline-flex items-center gap-1.5">
-                    {loadingMode === 'key' ? (
-                      <>
-                        <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
-                        <span>Anahtar Okunuyor...</span>
-                      </>
-                    ) : (
-                      <span>Anahtar Yükle (Görsel/PDF/CSV)</span>
-                    )}
-                    <input
-                      type="file"
-                      accept="image/*,.pdf,.csv,.txt,.json"
-                      onChange={(e) => handleFileUpload(e, 'key')}
-                      className="sr-only"
-                    />
-                  </label>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <label
+                      data-testid="omr-key-camera-btn"
+                      className="btn-3d px-2.5 py-1.5 rounded-lg text-[11px] font-bold cursor-pointer inline-flex items-center gap-1"
+                    >
+                      <Camera className="w-3.5 h-3.5" aria-hidden="true" />
+                      <span>Anahtar Fotoğrafı Çek</span>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        capture="environment"
+                        onChange={(e) => handleFileUpload(e, 'key')}
+                        className="sr-only"
+                      />
+                    </label>
+                    <label
+                      data-testid="omr-key-upload-btn"
+                      className="btn-3d-secondary px-2.5 py-1.5 rounded-lg text-[11px] font-bold cursor-pointer inline-flex items-center gap-1.5"
+                    >
+                      {loadingMode === 'key' ? (
+                        <>
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
+                          <span>Anahtar Okunuyor...</span>
+                        </>
+                      ) : (
+                        <span>Dosya Seç (Görsel/PDF/Excel/CSV)</span>
+                      )}
+                      <input
+                        type="file"
+                        data-testid="omr-key-upload-input"
+                        accept="image/*,.pdf,.xlsx,.xls,.csv,.txt,.json"
+                        onChange={(e) => handleFileUpload(e, 'key')}
+                        className="sr-only"
+                      />
+                    </label>
+                  </div>
                 </div>
 
                 <label className="block text-xs" style={{ color: 'var(--text-secondary)' }}>
@@ -933,6 +1488,7 @@ export function OmrScannerView({
                   </span>
                   <textarea
                     rows={4}
+                    data-testid="omr-answer-key-textarea"
                     value={answerKeyRaw}
                     onChange={(e) => {
                       const val = e.target.value;
@@ -967,9 +1523,21 @@ export function OmrScannerView({
                 Analizi başlattığınızda seçili {cover.bookletCode} kitapçığı anahtarına göre tüm ders netleri, 5 çeşit karne ve 3 detaylı analiz güncellenir.
               </div>
               <div className="flex flex-wrap items-center gap-3">
+                {errorReport && errorReport.errors.length > 0 && !errorMsg && (
+                  <button
+                    type="button"
+                    data-testid="omr-open-error-report-btn"
+                    onClick={() => setErrorModalOpen(true)}
+                    className="px-4 py-2.5 rounded-xl text-sm font-bold bg-rose-600 hover:bg-rose-700 text-white inline-flex items-center gap-2 cursor-pointer"
+                  >
+                    <AlertTriangle className="w-4 h-4" aria-hidden="true" />
+                    <span>Hata Raporu ({errorReport.errors.length})</span>
+                  </button>
+                )}
                 <button
                   type="button"
-                  onClick={onEvaluateNow}
+                  data-testid="omr-evaluate-now-btn"
+                  onClick={handleEvaluateWithValidation}
                   className="btn-3d px-5 py-2.5 rounded-xl text-sm font-bold inline-flex items-center gap-2 cursor-pointer"
                 >
                   <Sparkles className="w-4 h-4" aria-hidden="true" />
@@ -1048,6 +1616,12 @@ export function OmrScannerView({
             onDownloadAllOpticalPdf={onDownloadAllOpticalPdf}
             onDownloadAllOpticalZip={onDownloadAllOpticalZip}
             onDownloadRegisteredOpticalPdf={onDownloadRegisteredOpticalPdf}
+          />
+
+          <OmrErrorReportModal
+            open={errorModalOpen}
+            report={errorReport}
+            onClose={() => setErrorModalOpen(false)}
           />
         </>
       )}

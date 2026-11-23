@@ -1,5 +1,6 @@
 import {
   BookletCode,
+  BookletDistributionPattern,
   CoverColorThemeId,
   CoverConfig,
   CoverLayoutStyleId,
@@ -13,6 +14,14 @@ import {
 } from '../types/academy';
 
 export const BOOKLET_CODES: BookletCode[] = ['A', 'B', 'C', 'D'];
+
+export function getBookletCycleCodes(
+  pattern: BookletDistributionPattern = 'ABCD'
+): BookletCode[] {
+  if (pattern === 'AB') return ['A', 'B'];
+  if (pattern === 'A') return ['A'];
+  return ['A', 'B', 'C', 'D'];
+}
 
 export interface CoverColorPalette {
   id: CoverColorThemeId;
@@ -731,6 +740,7 @@ export function assignBookletsToRegisteredStudents(params: {
   gradeProfile: GradeProfile;
   baseQuestions: ExamQuestion[];
   startingBookletCode?: BookletCode;
+  distributionPattern?: BookletDistributionPattern;
   startBookletNumber?: number;
   orderSeed?: number;
   examSourceMode?: ExamSourceMode;
@@ -743,9 +753,10 @@ export function assignBookletsToRegisteredStudents(params: {
     typeof params.startBookletNumber === 'number' && Number.isFinite(params.startBookletNumber)
       ? Math.max(1, Math.round(params.startBookletNumber))
       : defaultStartBookletNumberForGrade(params.gradeProfile.id);
+  const cycleCodes = getBookletCycleCodes(params.distributionPattern ?? 'ABCD');
   const startCodeIdx = Math.max(
     0,
-    BOOKLET_CODES.indexOf(params.startingBookletCode ?? 'A')
+    cycleCodes.indexOf(params.startingBookletCode ?? 'A')
   );
   const mode = params.examSourceMode ?? 'kurum';
 
@@ -799,9 +810,11 @@ export function assignBookletsToRegisteredStudents(params: {
 
     const i = matchIndex++;
     const bookletCode =
-      params.preserveExisting && stu.assignedBookletCode && BOOKLET_CODES.includes(stu.assignedBookletCode)
+      params.preserveExisting &&
+      stu.assignedBookletCode &&
+      cycleCodes.includes(stu.assignedBookletCode)
         ? stu.assignedBookletCode
-        : BOOKLET_CODES[(startCodeIdx + i) % BOOKLET_CODES.length];
+        : cycleCodes[(startCodeIdx + i) % cycleCodes.length];
     const bookletNumber =
       params.preserveExisting && stu.assignedBookletNumber
         ? normalizeBookletNumber(stu.assignedBookletNumber, i + 1)

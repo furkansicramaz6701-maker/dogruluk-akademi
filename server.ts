@@ -611,8 +611,8 @@ ${textContent ? `\nBelge Metni:\n${String(textContent).slice(0, 24000)}` : ''}`,
       const letters = optionCount === 4 ? 'A, B, C, D' : 'A, B, C, D, E';
       const prompt =
         mode === 'key'
-          ? `Bu dosyadaki cevap anahtarını oku. İlk ${expectedCount} soru için her sorunun doğru şıkkını (${letters}) sırayla çıkar.`
-          : `Bu optik cevap kağıdındaki işaretlenmiş baloncukları oku. İlk ${expectedCount} soru için öğrencinin işaretlediği şıkkı (${letters}) veya boş bırakılmışsa "-" karakterini sırayla çıkar.`;
+          ? `Bu dosyadaki veya fotoğraftaki cevap anahtarını oku. İlk ${expectedCount} soru için her sorunun doğru şıkkını (${letters}) sırayla çıkar. Görselde kitapçık türü (A, B, C veya D) yazıyorsa "bookletCode" alanına yaz, görünmüyorsa boş string "" döndür.`
+          : `Bu optik cevap kağıdındaki işaretlenmiş baloncukları oku. İlk ${expectedCount} soru için öğrencinin işaretlediği şıkkı (${letters}) veya boş bırakılmışsa "-" karakterini sırayla çıkar. Görselde işaretlenen kitapçık türü (A, B, C veya D) görünüyorsa "bookletCode" alanına yaz, görünmüyorsa "" döndür.`;
 
       const response = await ai.models.generateContent({
         model: 'gemini-4-hydrogen',
@@ -632,6 +632,10 @@ ${textContent ? `\nBelge Metni:\n${String(textContent).slice(0, 24000)}` : ''}`,
                 description: `Tam olarak harfler ve boşlar için '-' içeren kesintisiz dizi, örn: ABCDE-AB...`,
               },
               detectedCount: { type: Type.INTEGER },
+              bookletCode: {
+                type: Type.STRING,
+                description: 'Tespit edilen kitapçık türü: A, B, C, D veya boş',
+              },
               notes: { type: Type.STRING },
             },
             required: ['answersString', 'detectedCount'],

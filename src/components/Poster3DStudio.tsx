@@ -5,6 +5,7 @@ import {
   Clock,
   Download,
   Gift,
+  Link2,
   MapPin,
   Phone,
   QrCode,
@@ -15,6 +16,12 @@ import {
 } from 'lucide-react';
 import { CoverConfig, ExamAnalysisResult, GradeProfile } from '../types/academy';
 import { canvasToBlobSafe } from '../utils/downloadHelpers';
+import {
+  DEFAULT_POSTER_GOOGLE_FORM_URL,
+  normalizePosterGoogleFormUrl,
+  SATURDAY_DEC5_2026_DEADLINE,
+  SATURDAY_DEC5_2026_LABEL,
+} from '../utils/googleFormsIntegration';
 import { triggerDownload } from '../utils/pdfAndZip';
 import { buildGradeAppropriateSubtitle } from '../utils/weeklyAnalysis';
 import { Logo3D } from './Logo3D';
@@ -32,12 +39,18 @@ interface Poster3DStudioProps {
   gradeProfile: GradeProfile;
   analysis: ExamAnalysisResult;
   cover: CoverConfig;
+  googleFormUrl?: string;
+  onChangeGoogleFormUrl?: (url: string) => void;
+  onOpenGoogleFormsPanel?: () => void;
 }
 
 export function Poster3DStudio({
   gradeProfile,
   analysis,
   cover,
+  googleFormUrl,
+  onChangeGoogleFormUrl,
+  onOpenGoogleFormsPanel,
 }: Poster3DStudioProps) {
   const [template, setTemplate] = useState<PosterTemplateId>('esentepe-odullu');
   const [headline, setHeadline] = useState<string>(
@@ -50,11 +63,12 @@ export function Poster3DStudio({
     'Sınava Katılan Herkese Sürpriz Hediyeler & Ücretsiz Kurumsal Karne'
   );
   const [examDateTime, setExamDateTime] = useState<string>(
-    `${cover.examDate} Cumartesi · Saat: 10.00`
+    SATURDAY_DEC5_2026_LABEL
   );
-  const [locationAddress, setLocationAddress] = useState<string>(
-    `${cover.academyName} Merkez Kampüsü`
-  );
+  const [locationAddress, setLocationAddress] = useState<string>(() => {
+    const trimmed = cover.academyName.trim();
+    return /merkez$/i.test(trimmed) ? `${trimmed} Kampüsü` : `${trimmed} Merkez Kampüsü`;
+  });
   const [phonePrimary, setPhonePrimary] = useState<string>('0505 226 92 58');
   const [phoneSecondary, setPhoneSecondary] = useState<string>('0507 152 01 34');
   const [prize1, setPrize1] = useState<string>('1.ye BİSİKLET / AKILLI SAAT');
@@ -66,13 +80,22 @@ export function Poster3DStudio({
   const [targetGradesLabel, setTargetGradesLabel] = useState<string>(
     `${gradeProfile.shortLabel} Öğrencilerine Özel`
   );
-  const [deadlineBadge, setDeadlineBadge] = useState<string>('Son Kayıt: 25 Kasım');
+  const [deadlineBadge, setDeadlineBadge] = useState<string>(SATURDAY_DEC5_2026_DEADLINE);
   const [bonusThresholdText, setBonusThresholdText] = useState<string>(
     '350 Barajını Geçen Öğrencilerimize Ücretsiz Ek Destek Kursu'
   );
-  const [qrTargetUrl, setQrTargetUrl] = useState<string>(
-    'https://forms.gle/dogruluk-akademi-sinav-kayit'
+  const [localQrUrl, setLocalQrUrl] = useState<string>(
+    googleFormUrl || DEFAULT_POSTER_GOOGLE_FORM_URL
   );
+  const qrTargetUrl = googleFormUrl !== undefined ? googleFormUrl : localQrUrl;
+  const setQrTargetUrl = (nextUrl: string) => {
+    if (onChangeGoogleFormUrl) {
+      onChangeGoogleFormUrl(nextUrl);
+    } else {
+      setLocalQrUrl(nextUrl);
+    }
+  };
+  const normalizedFormLink = normalizePosterGoogleFormUrl(qrTargetUrl);
   const [qrDataUrl, setQrDataUrl] = useState<string>('');
   const [footerNote, setFooterNote] = useState<string>(
     `${cover.academyName} · ${cover.signatureName} İmzalı Resmi Yayın`
@@ -334,26 +357,26 @@ export function Poster3DStudio({
       // Info Card + QR Code Section
       const cardY = 988;
       ctx.fillStyle = 'rgba(15, 23, 42, 0.9)';
-      ctx.fillRect(88, cardY, W - 176, 420);
+      ctx.fillRect(88, cardY, W - 176, 440);
       ctx.strokeStyle = 'rgba(147, 197, 253, 0.5)';
       ctx.lineWidth = 2;
-      ctx.strokeRect(88, cardY, W - 176, 420);
+      ctx.strokeRect(88, cardY, W - 176, 440);
 
       ctx.textAlign = 'left';
       const infoRows = [
         { k: 'TARİH & SAAT', v: examDateTime },
         { k: 'ADRES / KONUM', v: locationAddress },
         { k: 'KAYIT & İRTİBAT', v: `${phonePrimary}  |  ${phoneSecondary}` },
-        { k: 'SINAV ÖZELLİKLERİ', v: `${cover.questionCount} Soru · ${cover.durationMinutes} Dk` },
+        { k: 'ONLİNE GOOGLE FORM LİNKİ', v: normalizedFormLink.displayText },
       ];
       infoRows.forEach((item, idx) => {
-        const ry = cardY + 58 + idx * 92;
-        ctx.fillStyle = '#93c5fd';
-        ctx.font = '700 18px "DM Sans", sans-serif';
+        const ry = cardY + 54 + idx * 94;
+        ctx.fillStyle = idx === 3 ? '#fde68a' : '#93c5fd';
+        ctx.font = '700 17px "DM Sans", sans-serif';
         ctx.fillText(item.k, 130, ry);
-        ctx.fillStyle = '#ffffff';
-        ctx.font = '800 27px "Plus Jakarta Sans", sans-serif';
-        ctx.fillText(item.v.slice(0, 44), 130, ry + 36);
+        ctx.fillStyle = idx === 3 ? '#fef08a' : '#ffffff';
+        ctx.font = idx === 3 ? '700 22px "DM Sans", sans-serif' : '800 26px "Plus Jakarta Sans", sans-serif';
+        ctx.fillText(item.v.slice(0, 48), 130, ry + 34);
       });
 
       // Scannable QR Code on Bottom-Right inside Info Card
@@ -362,12 +385,15 @@ export function Poster3DStudio({
           const qrImg = new Image();
           qrImg.onload = () => {
             ctx.fillStyle = '#ffffff';
-            ctx.fillRect(W - 355, cardY + 60, 220, 255);
+            ctx.fillRect(W - 355, cardY + 60, 220, 265);
             ctx.drawImage(qrImg, W - 340, cardY + 75, 190, 190);
             ctx.fillStyle = '#0f172a';
             ctx.textAlign = 'center';
-            ctx.font = '800 16px "DM Sans", sans-serif';
-            ctx.fillText('BAŞVURU QR KODU', W - 245, cardY + 292);
+            ctx.font = '800 15px "DM Sans", sans-serif';
+            ctx.fillText('GOOGLE FORM QR', W - 245, cardY + 292);
+            ctx.font = '700 12px "DM Sans", sans-serif';
+            ctx.fillStyle = '#1d4ed8';
+            ctx.fillText('OKUT & KAYIT OL', W - 245, cardY + 312);
             resolve();
           };
           qrImg.onerror = () => resolve();
@@ -562,31 +588,50 @@ export function Poster3DStudio({
             </label>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-            <label className="block text-xs font-semibold">
-              <span className="inline-flex items-center gap-1" style={{ color: 'var(--text-secondary)' }}>
-                <Calendar className="w-3.5 h-3.5" aria-hidden="true" />
-                <span>Tarih & Saat</span>
+          <div className="space-y-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="text-xs font-semibold" style={{ color: 'var(--text-secondary)' }}>
+                Sınav Tarihi &amp; Saat
               </span>
-              <input
-                type="text"
-                value={examDateTime}
-                onChange={(e) => setExamDateTime(e.target.value)}
-                className="mt-1 w-full rounded-lg px-3 py-2 text-xs surface-alt"
-              />
-            </label>
-            <label className="block text-xs font-semibold">
-              <span className="inline-flex items-center gap-1" style={{ color: 'var(--text-secondary)' }}>
-                <MapPin className="w-3.5 h-3.5" aria-hidden="true" />
-                <span>Adres / Konum</span>
-              </span>
-              <input
-                type="text"
-                value={locationAddress}
-                onChange={(e) => setLocationAddress(e.target.value)}
-                className="mt-1 w-full rounded-lg px-3 py-2 text-xs surface-alt"
-              />
-            </label>
+              <button
+                type="button"
+                data-testid="poster-preset-dec5-btn"
+                onClick={() => {
+                  setExamDateTime(SATURDAY_DEC5_2026_LABEL);
+                  setDeadlineBadge(SATURDAY_DEC5_2026_DEADLINE);
+                }}
+                className="btn-3d-secondary px-2.5 py-1 rounded-lg text-[11px] font-bold cursor-pointer"
+              >
+                5 Aralık 2026 Cumartesi Uygula
+              </button>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+              <label className="block text-xs font-semibold">
+                <span className="inline-flex items-center gap-1" style={{ color: 'var(--text-secondary)' }}>
+                  <Calendar className="w-3.5 h-3.5" aria-hidden="true" />
+                  <span>Tarih &amp; Saat</span>
+                </span>
+                <input
+                  type="text"
+                  data-testid="poster-exam-datetime-input"
+                  value={examDateTime}
+                  onChange={(e) => setExamDateTime(e.target.value)}
+                  className="mt-1 w-full rounded-lg px-3 py-2 text-xs surface-alt"
+                />
+              </label>
+              <label className="block text-xs font-semibold">
+                <span className="inline-flex items-center gap-1" style={{ color: 'var(--text-secondary)' }}>
+                  <MapPin className="w-3.5 h-3.5" aria-hidden="true" />
+                  <span>Adres / Konum</span>
+                </span>
+                <input
+                  type="text"
+                  value={locationAddress}
+                  onChange={(e) => setLocationAddress(e.target.value)}
+                  className="mt-1 w-full rounded-lg px-3 py-2 text-xs surface-alt"
+                />
+              </label>
+            </div>
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
@@ -616,19 +661,34 @@ export function Poster3DStudio({
             </label>
           </div>
 
-          <label className="block text-xs font-semibold">
-            <span className="inline-flex items-center gap-1" style={{ color: 'var(--text-secondary)' }}>
-              <QrCode className="w-3.5 h-3.5" aria-hidden="true" />
-              <span>Google Form / Online Başvuru QR Linki</span>
-            </span>
+          <div className="space-y-1.5">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <label htmlFor="poster-google-form-url-input" className="inline-flex items-center gap-1 text-xs font-semibold" style={{ color: 'var(--text-secondary)' }}>
+                <QrCode className="w-3.5 h-3.5" aria-hidden="true" />
+                <span>Google Form Katılım Linki (Afiş + QR)</span>
+              </label>
+              {onOpenGoogleFormsPanel && (
+                <button
+                  type="button"
+                  data-testid="poster-open-gforms-panel-btn"
+                  onClick={onOpenGoogleFormsPanel}
+                  className="text-[11px] font-bold underline cursor-pointer"
+                  style={{ color: 'var(--accent-primary)' }}
+                >
+                  Google Formlar Paneline Git
+                </button>
+              )}
+            </div>
             <input
+              id="poster-google-form-url-input"
+              data-testid="poster-google-form-url-input"
               type="url"
               value={qrTargetUrl}
               onChange={(e) => setQrTargetUrl(e.target.value)}
               placeholder="https://forms.gle/..."
-              className="mt-1 w-full rounded-lg px-3 py-2 text-xs surface-alt font-mono-num"
+              className="w-full rounded-lg px-3 py-2 text-xs surface-alt font-mono-num"
             />
-          </label>
+          </div>
 
           <label className="block text-xs font-semibold">
             <span style={{ color: 'var(--text-secondary)' }}>Alt İmza & Kurum Notu</span>
@@ -817,6 +877,13 @@ export function Poster3DStudio({
                     <div className="flex items-center gap-1.5 text-slate-100 font-mono-num">
                       <Phone className="w-3.5 h-3.5 shrink-0 text-sky-300" aria-hidden="true" />
                       <span className="truncate">{phonePrimary} · {phoneSecondary}</span>
+                    </div>
+                    <div
+                      data-testid="poster-visible-google-form-link"
+                      className="flex items-center gap-1.5 text-amber-200 font-mono-num text-[10px]"
+                    >
+                      <Link2 className="w-3.5 h-3.5 shrink-0 text-amber-300" aria-hidden="true" />
+                      <span className="truncate">{normalizedFormLink.displayText}</span>
                     </div>
                   </div>
 

@@ -206,12 +206,33 @@ export interface StudentRecord {
 
 export type BookletCode = 'A' | 'B' | 'C' | 'D';
 
+export type BookletDistributionPattern = 'AB' | 'ABCD' | 'A';
+
 export type ExamSourceMode = 'kurum' | 'farkli-yayin';
 
 export interface ExternalPublisherExamConfig {
   publisherName: string;
   examTitle: string;
+  examDate?: string;
+  gradeId?: GradeLevelId;
+  optionCount?: 4 | 5;
+  questionCount?: number;
+  bookletMode?: 'AB' | 'ABCD';
   answerKeys: Record<BookletCode, string>;
+}
+
+export interface ExternalPublisherExamPreset {
+  id: string;
+  publisherName: string;
+  examTitle: string;
+  examDate: string;
+  gradeId: GradeLevelId;
+  optionCount: 4 | 5;
+  questionCount: number;
+  bookletMode: 'AB' | 'ABCD';
+  answerKeys: Record<BookletCode, string>;
+  updatedAt: string;
+  isBuiltIn?: boolean;
 }
 
 export type CoverColorThemeId =
@@ -584,6 +605,7 @@ export type ActiveTab =
   | 'calendar'
   | 'reports'
   | 'poster'
+  | 'forms'
   | 'drive'
   | 'sample';
 

@@ -84,6 +84,13 @@ export const WORKSPACE_MODULE_ITEMS: SearchModuleItem[] = [
     keywords: ['afis', 'poster', '3d', 'qr', 'duyuru'],
   },
   {
+    id: 'mod-forms',
+    label: 'Google Formlar & Otomatik Optik',
+    description: 'Afiş Google Form katılım linki, Excel yanıt yükleme ve A-B otomatik optik oluşturma',
+    tab: 'forms',
+    keywords: ['google form', 'formlar', 'anket', 'katilim', 'excel', 'a-b', 'otomatik optik', '5 aralik'],
+  },
+  {
     id: 'mod-drive',
     label: 'Yedek, Telefon & PC (PWA Kur)',
     description: 'Telefon ve bilgisayara uygulama olarak kurma, WhatsApp linki ve Google Drive yedekleme',
