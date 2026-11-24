@@ -380,7 +380,7 @@ export function WeeklyPerformanceComparison({
             En Yüksek Haftalık Sıçrama
           </div>
           <div className="mt-1 flex items-baseline gap-2 flex-wrap">
-            <span className="text-base font-display font-extrabold truncate max-w-[165px]">
+            <span className="text-base font-display font-extrabold leading-snug break-words">
               {dataset.summary.biggestGainer?.studentName ?? '—'}
             </span>
             {dataset.summary.biggestGainer && (

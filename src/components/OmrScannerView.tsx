@@ -15,6 +15,8 @@ import {
   FileSpreadsheet,
   Upload,
   AlertTriangle,
+  UserPlus,
+  Search,
 } from 'lucide-react';
 import {
   BookletCode,
@@ -25,20 +27,26 @@ import {
   ExamSourceMode,
   ExternalPublisherExamConfig,
   ExternalPublisherExamPreset,
+  GradeLevelId,
   GradeProfile,
+  Institution,
   OpenEndedPaperAnalysis,
   OpenEndedQuestion,
   PenaltyDivisor,
   StudentBookletAssignment,
   StudentRecord,
 } from '../types/academy';
+import { getGradeProfile, GRADE_PROFILES } from '../data/curriculum';
 import { getLogoPreset } from '../data/logos';
 import {
   BOOKLET_CODES,
+  getBookletCycleCodes,
   normalizeBookletNumber,
   normalizeExternalAnswerKeyString,
   resolveCoverColorPalette,
 } from '../utils/bookletDistribution';
+import { defaultClassroomForGrade } from '../utils/excelExport';
+import { parseCombinedExternalAnswerKeysText } from '../utils/externalPublisherLibrary';
 import { generateSampleOmrPair, parseAnswerString } from '../utils/examAnalysis';
 import {
   deriveBookletAnswerKeysFromBase,
@@ -46,6 +54,7 @@ import {
   ImportedOmrStudentRow,
   parseOmrExcelOrCsvBuffer,
 } from '../utils/omrSpreadsheet';
+import { buildStudentRecordForInstitution } from '../utils/studentPanel';
 import {
   countDistinctErrorRows,
   inspectAnswerStringReadability,
@@ -62,6 +71,7 @@ import { OpticalFormPreview } from './OpticalFormPreview';
 interface OmrScannerViewProps {
   institutionId: string;
   institutionName: string;
+  activeInstitution?: Institution;
   gradeProfile: GradeProfile;
   questions: ExamQuestion[];
   studentAnswersRaw: string;
@@ -81,6 +91,9 @@ interface OmrScannerViewProps {
   publisherPresets?: ExternalPublisherExamPreset[];
   activePublisherPresetId?: string | null;
   exportBusy?: boolean;
+  onChangeGradeProfile?: (gradeId: GradeLevelId) => void;
+  onAddStudent?: (student: StudentRecord) => void;
+  onChangeStudentBooklet?: (studentId: string, bookletCode: BookletCode) => void;
   onChangeExamSourceMode?: (mode: ExamSourceMode) => void;
   onUpdateExternalPublisher?: (patch: Partial<ExternalPublisherExamConfig>) => void;
   onSelectPublisherPreset?: (preset: ExternalPublisherExamPreset) => void;
@@ -148,6 +161,7 @@ async function fileToBase64(file: File): Promise<string> {
 export function OmrScannerView({
   institutionId,
   institutionName,
+  activeInstitution,
   gradeProfile,
   questions,
   studentAnswersRaw,
@@ -171,6 +185,9 @@ export function OmrScannerView({
   publisherPresets = [],
   activePublisherPresetId = null,
   exportBusy = false,
+  onChangeGradeProfile,
+  onAddStudent,
+  onChangeStudentBooklet,
   onChangeExamSourceMode,
   onUpdateExternalPublisher,
   onSelectPublisherPreset,
@@ -200,7 +217,13 @@ export function OmrScannerView({
   const [loadingMode, setLoadingMode] = useState<'student' | 'key' | 'excel' | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [includeAllGrades, setIncludeAllGrades] = useState<boolean>(false);
+  const [includeAllGrades, setIncludeAllGrades] = useState<boolean>(true);
+  const [studentFilterQuery, setStudentFilterQuery] = useState<string>('');
+  const [showQuickAddStudent, setShowQuickAddStudent] = useState<boolean>(false);
+  const [quickStuName, setQuickStuName] = useState<string>('');
+  const [quickStuGradeId, setQuickStuGradeId] = useState<GradeLevelId>(gradeProfile.id);
+  const [quickStuClass, setQuickStuClass] = useState<string>(defaultClassroomForGrade(gradeProfile.id));
+  const [quickStuBooklet, setQuickStuBooklet] = useState<BookletCode>('A');
   const [registeredPattern, setRegisteredPattern] = useState<BookletDistributionPattern>('AB');
   const [autoAnalyzeOnPhoto, setAutoAnalyzeOnPhoto] = useState<boolean>(true);
   const [lastExcelSummary, setLastExcelSummary] = useState<string | null>(null);
@@ -211,7 +234,23 @@ export function OmrScannerView({
     setScannerMode(initialMode);
   }, [initialMode]);
 
-  const expectedCount = questions.length;
+  useEffect(() => {
+    setQuickStuGradeId(gradeProfile.id);
+    setQuickStuClass(defaultClassroomForGrade(gradeProfile.id));
+  }, [gradeProfile.id]);
+
+  const activePattern: BookletDistributionPattern =
+    examSourceMode === 'farkli-yayin'
+      ? externalPublisherConfig.bookletMode ?? 'AB'
+      : registeredPattern;
+  const visibleBooklets = getBookletCycleCodes(activePattern);
+
+  const expectedCount =
+    examSourceMode === 'farkli-yayin' &&
+    externalPublisherConfig.questionCount &&
+    externalPublisherConfig.questionCount > 0
+      ? externalPublisherConfig.questionCount
+      : questions.length;
   const parsedStudent = parseAnswerString(
     studentAnswersRaw,
     expectedCount,
@@ -223,10 +262,21 @@ export function OmrScannerView({
     gradeProfile.optionCount
   );
 
-  const institutionStudents = students.filter(
-    (s) => s.institutionId === institutionId && (includeAllGrades || s.gradeId === gradeProfile.id)
-  );
-  const allInstStudentsCount = students.filter((s) => s.institutionId === institutionId).length;
+  const allInstStudents = students.filter((s) => s.institutionId === institutionId);
+  const sameGradeStudentsCount = allInstStudents.filter(
+    (s) => s.gradeId === gradeProfile.id
+  ).length;
+  const normalizedSearch = studentFilterQuery.trim().toLocaleLowerCase('tr-TR');
+  const institutionStudents = allInstStudents.filter((s) => {
+    if (!includeAllGrades && s.gradeId !== gradeProfile.id) return false;
+    if (!normalizedSearch) return true;
+    return (
+      s.fullName.toLocaleLowerCase('tr-TR').includes(normalizedSearch) ||
+      s.studentNumber8.includes(normalizedSearch) ||
+      s.classroom.toLocaleLowerCase('tr-TR').includes(normalizedSearch)
+    );
+  });
+  const allInstStudentsCount = allInstStudents.length;
 
   const applyParsedSpreadsheet = (buf: ArrayBuffer, fileName: string, targetFocus?: 'student' | 'key') => {
     const parsed = parseOmrExcelOrCsvBuffer(buf, {
@@ -363,7 +413,8 @@ export function OmrScannerView({
 
   const processSingleUploadedFile = async (
     file: File,
-    mode: 'student' | 'key'
+    mode: 'student' | 'key',
+    explicitBookletCode?: BookletCode
   ) => {
     setErrorMsg(null);
     setStatusMessage(null);
@@ -431,6 +482,7 @@ export function OmrScannerView({
             requireStudentAnswers: false,
             validateAnswerKey: true,
           });
+          const targetTxtBooklet = explicitBookletCode ?? cover.bookletCode;
           const derived = deriveBookletAnswerKeysFromBase(
             extracted,
             gradeProfile.optionCount,
@@ -442,10 +494,10 @@ export function OmrScannerView({
             onUpdateExternalPublisher({
               answerKeys: {
                 ...externalPublisherConfig.answerKeys,
-                ...(cover.bookletCode === 'A'
+                ...(targetTxtBooklet === 'A'
                   ? derived
                   : {
-                      [cover.bookletCode]: normalizeExternalAnswerKeyString(
+                      [targetTxtBooklet]: normalizeExternalAnswerKeyString(
                         extracted,
                         gradeProfile.optionCount
                       ),
@@ -463,7 +515,7 @@ export function OmrScannerView({
             setErrorReport(null);
             setErrorModalOpen(false);
             setStatusMessage(
-              `${file.name} dosyasından ${cover.bookletCode} kitapçığı cevap anahtarı okundu.`
+              `${file.name} dosyasından ${targetTxtBooklet} kitapçığı cevap anahtarı okundu.`
             );
             if (autoAnalyzeOnPhoto && studentAnswersRaw.trim() && extracted.trim()) {
               onEvaluateNow({ studentAnswersRaw, answerKeyRaw: extracted });
@@ -495,9 +547,9 @@ export function OmrScannerView({
       const detectedCode: BookletCode | null = (BOOKLET_CODES as string[]).includes(rawCode)
         ? (rawCode as BookletCode)
         : null;
-      const targetBooklet = detectedCode ?? cover.bookletCode;
-      if (detectedCode && detectedCode !== cover.bookletCode) {
-        onUpdateCover?.({ bookletCode: detectedCode });
+      const targetBooklet = explicitBookletCode ?? detectedCode ?? cover.bookletCode;
+      if (targetBooklet !== cover.bookletCode) {
+        onUpdateCover?.({ bookletCode: targetBooklet });
       }
 
       if (mode === 'student') {
@@ -785,6 +837,23 @@ export function OmrScannerView({
           </button>
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          {onChangeGradeProfile && (
+            <label className="inline-flex items-center gap-1.5 text-xs font-semibold">
+              <span style={{ color: 'var(--text-secondary)' }}>Düzey:</span>
+              <select
+                data-testid="omr-grade-level-select"
+                value={gradeProfile.id}
+                onChange={(e) => onChangeGradeProfile(e.target.value as GradeLevelId)}
+                className="rounded-lg px-2.5 py-1.5 text-xs font-bold surface-alt"
+              >
+                {GRADE_PROFILES.map((gp) => (
+                  <option key={gp.id} value={gp.id}>
+                    {gp.shortLabel} ({gp.optionCount} şık)
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
           {onOpenGoogleFormsPanel && (
             <button
               type="button"
@@ -797,7 +866,7 @@ export function OmrScannerView({
             </button>
           )}
           <div className="text-[11px] font-mono-num" style={{ color: 'var(--text-secondary)' }}>
-            {gradeProfile.shortLabel} · {studentName || 'Öğrenci Seçilmedi'}
+            {studentName || 'Öğrenci Seçilmedi'}
           </div>
         </div>
       </div>
@@ -861,7 +930,7 @@ export function OmrScannerView({
                       Deneme Kaynağı &amp; Kitapçık Cevap Anahtarı Modu
                     </div>
                     <p className="text-[11px]" style={{ color: 'var(--text-secondary)' }}>
-                      Farklı yayına ait deneme seçtiğinizde A, B, C ve D kitapçıklarının yayın cevap anahtarlarını ayrı ayrı girip kayıtlı öğrencilere otomatik A-B-C-D kitapçık yerleştirebilirsiniz.
+                      Farklı yayına ait deneme seçtiğinizde A, B, C ve D kitapçık cevap anahtarlarını resim çekerek (kamera) veya Excel/CSV yükleyerek girip kayıtlı öğrencilere otomatik A-B-C-D kitapçık yerleştirebilirsiniz.
                     </p>
                   </div>
                 </div>
@@ -893,12 +962,13 @@ export function OmrScannerView({
               {examSourceMode === 'farkli-yayin' && (
                 <ExternalPublisherHub
                   gradeProfile={gradeProfile}
-                  questionsCount={expectedCount}
+                  questionsCount={questions.length}
                   activeBookletCode={cover.bookletCode}
                   logoStyleId={cover.logoStyleId}
                   externalPublisherConfig={externalPublisherConfig}
                   presets={publisherPresets}
                   activePresetId={activePublisherPresetId}
+                  onChangeGradeProfile={onChangeGradeProfile}
                   onUpdateConfig={(patch) => {
                     onUpdateExternalPublisher?.(patch);
                     if (patch.publisherName?.trim() || patch.examTitle?.trim()) {
@@ -909,17 +979,21 @@ export function OmrScannerView({
                           cover.examTitle,
                       });
                     }
-                    if (patch.bookletMode === 'AB') {
-                      setRegisteredPattern('AB');
-                    } else if (patch.bookletMode === 'ABCD') {
-                      setRegisteredPattern('ABCD');
+                    if (patch.bookletMode) {
+                      setRegisteredPattern(patch.bookletMode);
+                      const allowed = getBookletCycleCodes(patch.bookletMode);
+                      if (!allowed.includes(cover.bookletCode)) {
+                        handleSelectBookletCode('A');
+                      }
                     }
                   }}
                   onSelectPreset={(preset) => onSelectPublisherPreset?.(preset)}
                   onSavePreset={(asNew) => onSavePublisherPreset?.(asNew)}
                   onDeletePreset={(id) => onDeletePublisherPreset?.(id)}
                   onSyncActiveAnswerKey={(key) => onUpdateOmrState({ answerKeyRaw: key })}
-                  onTriggerPhotoKeyFile={(file) => void processSingleUploadedFile(file, 'key')}
+                  onTriggerPhotoKeyFile={(file, targetBooklet) =>
+                    void processSingleUploadedFile(file, 'key', targetBooklet)
+                  }
                   photoLoading={loadingMode === 'key'}
                   onToast={(msg) => setStatusMessage(msg)}
                 />
@@ -933,16 +1007,16 @@ export function OmrScannerView({
             >
               <div className="space-y-1">
                 <div className="text-xs font-extrabold">
-                  Kitapçık Türü (A · B · C · D) &amp; Kitapçık No Otomatik Optik Kodlama
+                  Kitapçık Türü ({visibleBooklets.join(' · ')}) &amp; Kitapçık No Otomatik Optik Kodlama
                 </div>
                 <p className="text-[11px]" style={{ color: 'var(--text-secondary)' }}>
-                  A, B, C veya D seçtiğinizde optik formdaki kitapçık kutucuğu, 6 haneli Kitapçık No, indirme bağlantısı ve cevap anahtarı otomatik kodlanır.
+                  Seçili mod ({activePattern === 'A' ? 'Tek A' : activePattern === 'AB' ? 'A - B' : 'A - B - C - D'}) için aktif kitapçık kutucuğu, 6 haneli Kitapçık No ve cevap anahtarı otomatik kodlanır.
                 </p>
               </div>
 
               <div className="flex flex-wrap items-center gap-2">
                 <div className="flex items-center gap-1.5" role="group" aria-label="Optik kitapçık türü seçimi">
-                  {BOOKLET_CODES.map((code) => {
+                  {visibleBooklets.map((code) => {
                     const pal = resolveCoverColorPalette(
                       { bookletCode: code, coverColorThemeId: 'otomatik-abcd' },
                       getLogoPreset(cover.logoStyleId)
@@ -1007,7 +1081,7 @@ export function OmrScannerView({
                       );
                     }}
                     aria-label="Dağıtım listesinden öğrenci kitapçığı yükle"
-                    className="rounded-lg px-2.5 py-1.5 text-xs font-semibold surface-card max-w-[220px]"
+                    className="rounded-lg px-2.5 py-1.5 text-xs font-semibold surface-card max-w-[260px]"
                   >
                     <option value="">Listeden Öğrenci Seç ({batchAssignments.length})</option>
                     {batchAssignments.map((a) => (
@@ -1020,7 +1094,7 @@ export function OmrScannerView({
               </div>
             </div>
 
-            {/* Kayıtlı Öğrencilere Otomatik A-B-C-D Kitapçık Yerleştirme Paneli */}
+            {/* Kayıtlı Öğrencilere Otomatik & Manuel Kitapçık Yerleştirme Paneli */}
             <div
               data-testid="omr-registered-students-booklet-panel"
               className="surface-alt rounded-xl p-3.5 mb-5 space-y-3 border"
@@ -1031,51 +1105,51 @@ export function OmrScannerView({
                   <Users className="w-4 h-4" style={{ color: 'var(--accent-primary)' }} aria-hidden="true" />
                   <div>
                     <div className="text-xs font-extrabold">
-                      Kayıtlı Öğrenciler Otomatik A-B-C-D Kitapçık Yerleşimi ({institutionName})
+                      Kayıtlı Öğrenciler &amp; Kitapçık Atama Paneli ({institutionName})
                     </div>
                     <p className="text-[11px]" style={{ color: 'var(--text-secondary)' }}>
-                      {institutionStudents.length > 0
-                        ? `${institutionStudents.length} kayıtlı öğrenciye ${
-                            examSourceMode === 'farkli-yayin'
-                              ? 'farklı yayın denemesi'
-                              : `${gradeProfile.shortLabel} denemesi`
-                          } için otomatik A-B-C-D kitapçık ve 6 haneli Kitapçık No yerleştirilir.`
-                        : `Aktif kurumda (${institutionName}) bu düzeyde kayıtlı öğrenci henüz yok; sağ üstteki Öğrenci Paneli’nden eklediğinizde otomatik A-B-C-D atanır.`}
+                      {allInstStudentsCount > 0
+                        ? `Tüm kayıtlı öğrenciler listeleniyor (${institutionStudents.length}/${allInstStudentsCount}). İstediğiniz öğrenciye manuel kitapçık (A/B/C/D) seçebilir veya toplu dağıtım yapabilirsiniz.`
+                        : `Aktif kurumda (${institutionName}) henüz kayıtlı öğrenci yok; hemen buradan "+ Hızlı Öğrenci Ekle" ile ekleyebilirsiniz.`}
                     </p>
                   </div>
                 </div>
 
                 <div className="flex flex-wrap items-center gap-2">
-                  {allInstStudentsCount > institutionStudents.length && (
-                    <label className="text-[11px] font-semibold inline-flex items-center gap-1.5 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={includeAllGrades}
-                        onChange={(e) => setIncludeAllGrades(e.target.checked)}
-                        className="rounded accent-blue-600"
-                      />
-                      <span>Tüm Sınıflar ({allInstStudentsCount})</span>
-                    </label>
+                  {onAddStudent && (
+                    <button
+                      type="button"
+                      data-testid="omr-toggle-quick-add-student-btn"
+                      onClick={() => setShowQuickAddStudent((v) => !v)}
+                      className="btn-3d-secondary px-2.5 py-1.5 rounded-lg text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
+                    >
+                      <UserPlus className="w-3.5 h-3.5" aria-hidden="true" />
+                      <span>{showQuickAddStudent ? 'Formu Gizle' : '+ Hızlı Öğrenci Ekle'}</span>
+                    </button>
                   )}
 
                   <select
                     data-testid="omr-registered-pattern-select"
                     value={registeredPattern}
-                    onChange={(e) =>
-                      setRegisteredPattern(e.target.value as BookletDistributionPattern)
-                    }
+                    onChange={(e) => {
+                      const nextPat = e.target.value as BookletDistributionPattern;
+                      setRegisteredPattern(nextPat);
+                      if (examSourceMode === 'farkli-yayin') {
+                        onUpdateExternalPublisher?.({ bookletMode: nextPat });
+                      }
+                    }}
                     aria-label="Kayıtlı öğrenciler kitapçık dağıtım düzeni"
                     className="rounded-lg px-2.5 py-1.5 text-xs font-bold surface-card"
                   >
+                    <option value="A">Tek Kitapçık (A)</option>
                     <option value="AB">A - B (2 Kitapçık)</option>
                     <option value="ABCD">A - B - C - D (4 Kitapçık)</option>
-                    <option value="A">Tek Kitapçık (A)</option>
                   </select>
 
                   {onAutoAssignRegisteredStudents && (
                     <button
                       type="button"
-                      disabled={institutionStudents.length === 0 && allInstStudentsCount === 0}
+                      disabled={allInstStudentsCount === 0}
                       onClick={() => {
                         onAutoAssignRegisteredStudents({
                           includeAllGrades,
@@ -1092,17 +1166,17 @@ export function OmrScannerView({
                         );
                       }}
                       data-testid="omr-auto-assign-registered-btn"
-                      className="btn-3d px-3 py-1.5 rounded-lg text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                      className="btn-3d px-3 py-1.5 rounded-lg text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
                     >
                       <Shuffle className="w-3.5 h-3.5" aria-hidden="true" />
                       <span>
-                        Kayıtlı Öğrencilere Otomatik{' '}
+                        Öğrencilere Otomatik{' '}
                         {registeredPattern === 'AB'
                           ? 'A-B'
                           : registeredPattern === 'ABCD'
                             ? 'A-B-C-D'
                             : 'A'}{' '}
-                        Yerleştir
+                        Dağıt
                       </span>
                     </button>
                   )}
@@ -1113,7 +1187,7 @@ export function OmrScannerView({
                       disabled={exportBusy}
                       onClick={onDownloadRegisteredOpticalPdf}
                       data-testid="omr-download-registered-batch-pdf-btn"
-                      className="btn-3d-secondary px-3 py-1.5 rounded-lg text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-60"
+                      className="btn-3d-secondary px-3 py-1.5 rounded-lg text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-60"
                     >
                       <FileDown className="w-3.5 h-3.5" aria-hidden="true" />
                       <span>Kayıtlı Öğrenci Optikleri (.PDF)</span>
@@ -1122,51 +1196,232 @@ export function OmrScannerView({
                 </div>
               </div>
 
+              {/* Filter & Scope Bar for All Institution Students */}
+              {allInstStudentsCount > 0 && (
+                <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+                  <div className="relative flex-1 min-w-[200px] max-w-sm">
+                    <Search
+                      className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none"
+                      style={{ color: 'var(--text-secondary)' }}
+                      aria-hidden="true"
+                    />
+                    <input
+                      type="text"
+                      data-testid="omr-registered-search-input"
+                      value={studentFilterQuery}
+                      onChange={(e) => setStudentFilterQuery(e.target.value)}
+                      placeholder="Öğrenci adı, soyadı, 8 haneli no veya şube ara..."
+                      className="w-full rounded-lg pl-8 pr-3 py-1.5 text-xs surface-card border"
+                      style={{ borderColor: 'var(--border-subtle)' }}
+                    />
+                  </div>
+
+                  <div className="flex items-center gap-1.5" role="group" aria-label="Öğrenci sınıf kapsamı">
+                    <button
+                      type="button"
+                      data-testid="omr-students-scope-all-btn"
+                      onClick={() => setIncludeAllGrades(true)}
+                      className={`px-2.5 py-1 rounded-lg text-[11px] font-bold cursor-pointer ${
+                        includeAllGrades ? 'btn-3d' : 'btn-3d-secondary'
+                      }`}
+                    >
+                      Tüm Öğrenciler ({allInstStudentsCount})
+                    </button>
+                    <button
+                      type="button"
+                      data-testid="omr-students-scope-grade-btn"
+                      onClick={() => setIncludeAllGrades(false)}
+                      className={`px-2.5 py-1 rounded-lg text-[11px] font-bold cursor-pointer ${
+                        !includeAllGrades ? 'btn-3d' : 'btn-3d-secondary'
+                      }`}
+                    >
+                      Sadece {gradeProfile.shortLabel} ({sameGradeStudentsCount})
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Inline Quick Add Student Right Inside OMR / Farklı Yayın */}
+              {showQuickAddStudent && onAddStudent && (
+                <div
+                  data-testid="omr-quick-add-student-form"
+                  className="surface-card rounded-lg p-3 border grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-12 gap-2.5 items-end"
+                  style={{ borderColor: 'var(--accent-primary)' }}
+                >
+                  <label className="lg:col-span-4 block text-xs font-semibold">
+                    <span style={{ color: 'var(--text-secondary)' }}>Öğrenci Adı Soyadı</span>
+                    <input
+                      type="text"
+                      data-testid="omr-quick-student-name-input"
+                      value={quickStuName}
+                      onChange={(e) => setQuickStuName(e.target.value)}
+                      placeholder="Örn: Zeynep Sude Karacaoğlu"
+                      className="mt-1 w-full rounded-lg px-2.5 py-1.5 text-xs surface-alt font-semibold"
+                    />
+                  </label>
+
+                  <label className="lg:col-span-3 block text-xs font-semibold">
+                    <span style={{ color: 'var(--text-secondary)' }}>Sınıf Düzeyi</span>
+                    <select
+                      data-testid="omr-quick-student-grade-select"
+                      value={quickStuGradeId}
+                      onChange={(e) => {
+                        const ng = e.target.value as GradeLevelId;
+                        setQuickStuGradeId(ng);
+                        setQuickStuClass(defaultClassroomForGrade(ng));
+                      }}
+                      className="mt-1 w-full rounded-lg px-2 py-1.5 text-xs surface-alt font-bold"
+                    >
+                      {GRADE_PROFILES.map((gp) => (
+                        <option key={gp.id} value={gp.id}>
+                          {gp.shortLabel}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <label className="lg:col-span-2 block text-xs font-semibold">
+                    <span style={{ color: 'var(--text-secondary)' }}>Şube</span>
+                    <input
+                      type="text"
+                      data-testid="omr-quick-student-class-input"
+                      value={quickStuClass}
+                      onChange={(e) => setQuickStuClass(e.target.value)}
+                      className="mt-1 w-full rounded-lg px-2.5 py-1.5 text-xs surface-alt font-semibold"
+                    />
+                  </label>
+
+                  <label className="lg:col-span-1 block text-xs font-semibold">
+                    <span style={{ color: 'var(--text-secondary)' }}>Kitapçık</span>
+                    <select
+                      data-testid="omr-quick-student-booklet-select"
+                      value={quickStuBooklet}
+                      onChange={(e) => setQuickStuBooklet(e.target.value as BookletCode)}
+                      className="mt-1 w-full rounded-lg px-2 py-1.5 text-xs surface-alt font-bold"
+                    >
+                      {BOOKLET_CODES.map((c) => (
+                        <option key={c} value={c}>
+                          {c}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <button
+                    type="button"
+                    data-testid="omr-quick-student-submit-btn"
+                    onClick={() => {
+                      const instObj: Institution = activeInstitution ?? {
+                        id: institutionId,
+                        name: institutionName,
+                        code8: institutionCode8,
+                        city: '',
+                        createdAt: '',
+                      };
+                      const res = buildStudentRecordForInstitution({
+                        fullName: quickStuName,
+                        institution: instObj,
+                        gradeId: quickStuGradeId,
+                        classroom: quickStuClass,
+                        existingStudents: students,
+                      });
+                      if (!res.ok || !res.student) {
+                        setErrorMsg(res.reason || 'Öğrenci eklenemedi.');
+                        return;
+                      }
+                      const createdStudent: StudentRecord = {
+                        ...res.student,
+                        assignedBookletCode: quickStuBooklet,
+                        assignedBookletNumber: normalizeBookletNumber(
+                          undefined,
+                          allInstStudentsCount + 1
+                        ),
+                      };
+                      onAddStudent(createdStudent);
+                      setErrorMsg(null);
+                      setStatusMessage(
+                        `${createdStudent.fullName} (${createdStudent.studentNumber8}) eklendi → ${quickStuBooklet} kitapçığı atandı.`
+                      );
+                      setQuickStuName('');
+                    }}
+                    className="lg:col-span-2 btn-3d px-3 py-1.5 rounded-lg text-xs font-bold inline-flex items-center justify-center gap-1 whitespace-nowrap cursor-pointer"
+                  >
+                    <UserPlus className="w-3.5 h-3.5" aria-hidden="true" />
+                    <span>Ekle</span>
+                  </button>
+                </div>
+              )}
+
               {institutionStudents.length > 0 && (
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 max-h-56 overflow-y-auto pr-1">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5 max-h-72 overflow-y-auto pr-1">
                   {institutionStudents.map((stu, idx) => {
                     const code: BookletCode =
                       stu.assignedBookletCode && BOOKLET_CODES.includes(stu.assignedBookletCode)
                         ? stu.assignedBookletCode
-                        : BOOKLET_CODES[idx % BOOKLET_CODES.length];
+                        : visibleBooklets[idx % visibleBooklets.length] ?? 'A';
                     const bNo = normalizeBookletNumber(stu.assignedBookletNumber, idx + 1);
                     const pal = resolveCoverColorPalette(
                       { bookletCode: code, coverColorThemeId: 'otomatik-abcd' },
                       getLogoPreset(cover.logoStyleId)
                     );
+                    const stuGradeLabel = getGradeProfile(stu.gradeId).shortLabel;
                     const isSelected = studentNumber === stu.studentNumber8;
                     return (
                       <div
                         key={stu.id}
                         data-testid={`omr-registered-student-card-${idx}`}
-                        className={`surface-card rounded-lg p-2.5 flex items-center justify-between gap-2 border ${
+                        className={`surface-card rounded-lg p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 border ${
                           isSelected ? 'ring-2' : ''
                         }`}
                         style={{
                           borderColor: isSelected ? pal.primaryColor : 'var(--border-subtle)',
                         }}
                       >
-                        <div className="min-w-0">
-                          <div className="flex items-center gap-1.5">
+                        <div className="min-w-0 space-y-1">
+                          <div className="flex items-start gap-2">
                             <span
-                              className="px-1.5 py-0.5 rounded text-[10px] font-display font-extrabold text-white shrink-0"
+                              className="px-1.5 py-0.5 rounded text-[10px] font-display font-extrabold text-white shrink-0 mt-0.5"
                               style={{ backgroundColor: pal.primaryColor }}
                             >
                               {code}
                             </span>
-                            <span className="text-xs font-bold truncate">{stu.fullName}</span>
+                            <span className="text-xs font-extrabold leading-snug break-words">
+                              {stu.fullName}
+                            </span>
                           </div>
-                          <div className="text-[10px] font-mono-num mt-0.5" style={{ color: 'var(--text-secondary)' }}>
-                            {stu.classroom} · Öğr:{stu.studentNumber8} · Kit:{bNo}
+                          <div className="text-[11px] font-mono-num" style={{ color: 'var(--text-secondary)' }}>
+                            {stuGradeLabel} · {stu.classroom} · No:{stu.studentNumber8} · Kit:{bNo}
                           </div>
                         </div>
 
-                        <div className="flex items-center gap-1 shrink-0">
+                        <div className="flex flex-wrap items-center gap-1.5 shrink-0">
+                          {onChangeStudentBooklet && (
+                            <select
+                              data-testid={`omr-manual-booklet-select-${idx}`}
+                              aria-label={`${stu.fullName} için manuel kitapçık seç`}
+                              value={code}
+                              onChange={(e) => {
+                                const nextB = e.target.value as BookletCode;
+                                onChangeStudentBooklet(stu.id, nextB);
+                                setStatusMessage(
+                                  `${stu.fullName} için kitapçık manuel olarak ${nextB} yapıldı.`
+                                );
+                              }}
+                              className="rounded px-1.5 py-1 text-[11px] font-extrabold surface-alt border cursor-pointer"
+                              style={{ borderColor: pal.primaryColor, color: pal.primaryColor }}
+                            >
+                              {BOOKLET_CODES.map((optCode) => (
+                                <option key={optCode} value={optCode}>
+                                  {optCode} Kitapçığı
+                                </option>
+                              ))}
+                            </select>
+                          )}
                           <button
                             type="button"
                             data-testid={`omr-select-registered-row-${idx}`}
                             onClick={() => handleSelectRegisteredStudent(stu, idx)}
-                            className={`px-2 py-1 rounded text-[10px] font-bold cursor-pointer ${
+                            className={`px-2.5 py-1 rounded text-[11px] font-bold whitespace-nowrap cursor-pointer ${
                               isSelected ? 'btn-3d' : 'btn-3d-secondary'
                             }`}
                           >
@@ -1184,7 +1439,7 @@ export function OmrScannerView({
                               })
                             }
                             aria-label={`${stu.fullName} ${code} kitapçığı optik PDF indir`}
-                            className="btn-3d-secondary px-2 py-1 rounded text-[10px] font-bold inline-flex items-center gap-1 cursor-pointer disabled:opacity-60"
+                            className="btn-3d-secondary px-2 py-1 rounded text-[11px] font-bold inline-flex items-center gap-1 whitespace-nowrap cursor-pointer disabled:opacity-60"
                           >
                             <FileDown className="w-3 h-3" aria-hidden="true" />
                             <span>{code}</span>
@@ -1510,9 +1765,44 @@ export function OmrScannerView({
                   />
                 </label>
 
-                <div className="flex justify-between text-xs font-mono-num" style={{ color: 'var(--text-secondary)' }}>
-                  <span>Anahtar Uzunluğu: {parsedKey.filter(Boolean).length} / {expectedCount}</span>
-                  <span>Seçenek: {gradeProfile.optionCount} Şık</span>
+                <div className="flex flex-wrap items-center justify-between gap-2 text-xs font-mono-num" style={{ color: 'var(--text-secondary)' }}>
+                  <span>Anahtar Uzunluğu: {parsedKey.filter(Boolean).length} / {expectedCount} · {gradeProfile.optionCount} Şık</span>
+                  {answerKeyRaw.trim().length > 0 && (
+                    <button
+                      type="button"
+                      data-testid="omr-section2-split-key-btn"
+                      onClick={() => {
+                        const split = parseCombinedExternalAnswerKeysText(answerKeyRaw, {
+                          optionCount: gradeProfile.optionCount,
+                          bookletMode: activePattern,
+                          autoDeriveMissing: activePattern !== 'A',
+                        });
+                        if (split.detectedBooklets.length === 0) {
+                          setErrorMsg(split.summaryMessage);
+                          return;
+                        }
+                        if (onUpdateExternalPublisher) {
+                          onUpdateExternalPublisher({
+                            bookletMode: split.recommendedMode,
+                            answerKeys: {
+                              ...externalPublisherConfig.answerKeys,
+                              ...split.answerKeys,
+                            },
+                          });
+                        }
+                        const loaded =
+                          split.answerKeys[cover.bookletCode] ||
+                          split.answerKeys.A ||
+                          normalizeExternalAnswerKeyString(answerKeyRaw, gradeProfile.optionCount);
+                        onUpdateOmrState({ answerKeyRaw: loaded });
+                        setErrorMsg(null);
+                        setStatusMessage(split.summaryMessage);
+                      }}
+                      className="btn-3d-secondary px-2.5 py-1 rounded-md text-[11px] font-sans font-bold whitespace-nowrap cursor-pointer"
+                    >
+                      A / A-B Metnini Ayrıştır
+                    </button>
+                  )}
                 </div>
               </div>
             </div>
@@ -1608,9 +1898,10 @@ export function OmrScannerView({
             studentNumber8={studentNumber}
             institutionCode8={institutionCode8}
             classroom={classroom}
-            totalQuestions={questions.length}
+            totalQuestions={expectedCount}
             exportBusy={exportBusy}
             registeredCount={institutionStudents.length}
+            visibleBooklets={visibleBooklets}
             onSelectBookletCode={handleSelectBookletCode}
             onDownloadOpticalPdf={(code) => onDownloadOpticalPdf(code)}
             onDownloadAllOpticalPdf={onDownloadAllOpticalPdf}

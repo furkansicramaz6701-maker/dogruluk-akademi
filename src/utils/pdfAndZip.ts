@@ -106,6 +106,26 @@ function wrapTextLines(
   return lines;
 }
 
+function drawFittedSingleLineText(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  x: number,
+  y: number,
+  maxWidth: number,
+  weight: string,
+  family: string,
+  startSizePx: number,
+  minSizePx = 10
+): void {
+  let size = startSizePx;
+  ctx.font = `${weight} ${size}px ${family}`;
+  while (size > minSizePx && ctx.measureText(text).width > maxWidth) {
+    size -= 0.5;
+    ctx.font = `${weight} ${size}px ${family}`;
+  }
+  ctx.fillText(text, x, y, maxWidth);
+}
+
 function drawAcademyCrestCanvas(
   ctx: CanvasRenderingContext2D,
   cx: number,
@@ -1629,17 +1649,43 @@ export function drawOpticalFormCanvas(
   ctx.lineWidth = 2;
   ctx.strokeRect(infoX, infoY, infoW, 134);
   ctx.fillStyle = '#831843';
-  ctx.font = '700 14.5px "DM Sans", sans-serif';
   ctx.textAlign = 'left';
-  ctx.fillText(`Adı Soyadı : ${stuName.slice(0, 24)}`, infoX + 12, infoY + 24);
+  drawFittedSingleLineText(
+    ctx,
+    `Adı Soyadı : ${stuName}`,
+    infoX + 12,
+    infoY + 24,
+    infoW - 24,
+    '700',
+    '"DM Sans", sans-serif',
+    14.5,
+    10
+  );
+  ctx.font = '700 14.5px "DM Sans", sans-serif';
   ctx.fillText(`Öğrenci No : ${stuNum}`, infoX + 12, infoY + 51);
   const fallbackClass = opts.gradeProfile ? defaultClassroomForGrade(opts.gradeProfile.id) : '5-A';
-  ctx.fillText(
+  drawFittedSingleLineText(
+    ctx,
     `Sınıf/Şube : ${opts.classroom || fallbackClass} · Kitapçık: ${opts.cover.bookletCode} (${bookletNoDigits})`,
     infoX + 12,
-    infoY + 78
+    infoY + 78,
+    infoW - 24,
+    '700',
+    '"DM Sans", sans-serif',
+    14.5,
+    10.5
   );
-  ctx.fillText(`Deneme     : ${(opts.cover.examTitle || instName).slice(0, 26)}`, infoX + 12, infoY + 106);
+  drawFittedSingleLineText(
+    ctx,
+    `Deneme     : ${opts.cover.examTitle || instName}`,
+    infoX + 12,
+    infoY + 106,
+    infoW - 24,
+    '700',
+    '"DM Sans", sans-serif',
+    14.5,
+    10.5
+  );
 
   // Correct Coding Example + Kitapçık Türü Box
   ctx.strokeRect(infoX, 250, 174, 84);
@@ -1743,7 +1789,7 @@ export function drawOpticalFormCanvas(
   drawNumericGrid(252, 348, 'KURUM KODU (8)', instCode, 8);
   drawNumericGrid(432, 348, 'KİTAPÇIK NO (6)', bookletNoDigits, 6);
 
-  // 4. Right Top: ADI SOYADI Alphabet Bubble Grid (20 columns)
+  // 4. Right Top: ADI SOYADI Alphabet Bubble Grid (24 columns so long names + surnames fit)
   const nameX = 574;
   const nameY = 104;
   const nameW = A4_W - 48 - nameX;
@@ -1759,7 +1805,7 @@ export function drawOpticalFormCanvas(
   ctx.fillText('ADI SOYADI (Ad ve soyad arasında bir boşluk bırakınız)', nameX + nameW / 2, nameY + 14);
 
   const alpha = 'ABCÇDEFGĞHIİJKLMNOÖPRSŞTUÜVYZ'.split('');
-  const colsCount = 20;
+  const colsCount = 24;
   const cellW = (nameW - 16) / colsCount;
   const cleanName = stuName.slice(0, colsCount);
 
@@ -1769,14 +1815,14 @@ export function drawOpticalFormCanvas(
     ctx.strokeStyle = PINK_LIGHT;
     ctx.strokeRect(nameX + 8 + c * cellW, nameY + 32, cellW - 2, 22);
     ctx.fillStyle = '#111827';
-    ctx.font = '700 12px "DM Sans", sans-serif';
+    ctx.font = '700 11.5px "DM Sans", sans-serif';
     ctx.fillText(ch, cx, nameY + 43);
 
     alpha.forEach((letter, li) => {
       const ly = nameY + 67 + li * 17;
       const isMatch = ch === letter;
       ctx.beginPath();
-      ctx.arc(cx, ly, 6.8, 0, Math.PI * 2);
+      ctx.arc(cx, ly, 6.2, 0, Math.PI * 2);
       if (isMatch) {
         ctx.fillStyle = '#111827';
         ctx.fill();
@@ -1787,7 +1833,7 @@ export function drawOpticalFormCanvas(
         ctx.stroke();
         ctx.fillStyle = PINK;
       }
-      ctx.font = '700 8.2px "DM Sans", sans-serif';
+      ctx.font = '700 7.8px "DM Sans", sans-serif';
       ctx.fillText(letter, cx, ly + 0.5);
     });
   }
@@ -3170,8 +3216,17 @@ export async function generateStudentsListPdf(
       ctx.fillText(stu.studentNumber8, cols[1] + 10, y + 32);
 
       ctx.fillStyle = '#0f172a';
-      ctx.font = '700 16px "DM Sans", sans-serif';
-      ctx.fillText(stu.fullName.slice(0, 26), cols[2] + 10, y + 32);
+      drawFittedSingleLineText(
+        ctx,
+        stu.fullName,
+        cols[2] + 10,
+        y + 32,
+        cols[3] - cols[2] - 18,
+        '700',
+        '"DM Sans", sans-serif',
+        16,
+        11
+      );
 
       ctx.fillStyle = '#047857';
       ctx.font = '700 15px "DM Sans", sans-serif';
@@ -3431,8 +3486,17 @@ export async function generateWeeklyRankingPdf(params: {
 
         ctx.textAlign = 'left';
         ctx.fillStyle = '#0f172a';
-        ctx.font = '800 19px "Plus Jakarta Sans", sans-serif';
-        ctx.fillText(row.studentName.slice(0, 20), cx + 84, y + 42);
+        drawFittedSingleLineText(
+          ctx,
+          row.studentName,
+          cx + 84,
+          y + 42,
+          cardW - 96,
+          '800',
+          '"Plus Jakarta Sans", sans-serif',
+          19,
+          12
+        );
         ctx.fillStyle = '#475569';
         ctx.font = '600 14px "DM Sans", sans-serif';
         ctx.fillText(`${row.classroom} · No: ${row.studentNumber8}`, cx + 84, y + 66);
@@ -3484,8 +3548,17 @@ export async function generateWeeklyRankingPdf(params: {
 
       ctx.textAlign = 'left';
       ctx.fillStyle = '#0f172a';
-      ctx.font = '800 16px "Plus Jakarta Sans", sans-serif';
-      ctx.fillText(row.studentName.slice(0, 24), cols[1] + 10, y + 26);
+      drawFittedSingleLineText(
+        ctx,
+        row.studentName,
+        cols[1] + 10,
+        y + 26,
+        cols[2] - cols[1] - 18,
+        '800',
+        '"Plus Jakarta Sans", sans-serif',
+        16,
+        11
+      );
       ctx.fillStyle = '#64748b';
       ctx.font = '600 13px "JetBrains Mono", monospace';
       ctx.fillText(`${row.studentNumber8} · ${row.classroom}`, cols[1] + 10, y + 48);
@@ -3778,8 +3851,17 @@ export async function generateAchievementBadgePng(params: {
   ctx.fillText('BAŞARI VE ONUR BELGESİ SAHİBİ', 310, 275);
 
   ctx.fillStyle = '#ffffff';
-  ctx.font = '800 50px "Plus Jakarta Sans", sans-serif';
-  ctx.fillText(row.studentName.toUpperCase().slice(0, 24), 310, 336);
+  drawFittedSingleLineText(
+    ctx,
+    row.studentName.toLocaleUpperCase('tr-TR'),
+    310,
+    336,
+    820,
+    '800',
+    '"Plus Jakarta Sans", sans-serif',
+    50,
+    24
+  );
 
   ctx.fillStyle = '#cbd5e1';
   ctx.font = '700 22px "JetBrains Mono", monospace';

@@ -6,6 +6,7 @@ import {
   computeExternalPublisherKeyHealth,
   DEFAULT_EXTERNAL_PUBLISHER_PRESETS,
   deletePublisherPreset,
+  parseCombinedExternalAnswerKeysText,
   parsePublisherAnswerKeysSpreadsheet,
   upsertPublisherPreset,
 } from './externalPublisherLibrary';
@@ -89,4 +90,45 @@ test('computeExternalPublisherKeyHealth breaks down subjects and flags invalid o
   });
   assert.equal(withInvalid.isComplete, false);
   assert.equal(withInvalid.invalidCount, 2); // Two 'E' options on a 4-option exam
+
+  const singleSubject = computeExternalPublisherKeyHealth({
+    bookletCode: 'A',
+    rawKey: 'ABCDABCDABCDABC',
+    gradeProfile: grade5,
+    expectedQuestionCount: 15,
+    selectedSubjectId: 'matematik',
+  });
+  assert.equal(singleSubject.subjectBreakdown.length, 1);
+  assert.equal(singleSubject.subjectBreakdown[0].subject, 'Matematik');
+  assert.equal(singleSubject.subjectBreakdown[0].status, 'tam');
 });
+
+test('parseCombinedExternalAnswerKeysText splits A/AB/ABCD labeled, numbered, and tabular keys', () => {
+  const labeledAb = parseCombinedExternalAnswerKeysText(
+    'A Kitapçığı: 1-A 2-B 3-C 4-D\nB Kitapçığı: 1-D 2-C 3-B 4-A',
+    { optionCount: 4, bookletMode: 'AB' }
+  );
+  assert.equal(labeledAb.answerKeys.A, 'ABCD');
+  assert.equal(labeledAb.answerKeys.B, 'DCBA');
+  assert.equal(labeledAb.recommendedMode, 'AB');
+
+  const tabularAbcd = parseCombinedExternalAnswerKeysText(
+    '1 A B C D\n2 B C D A\n3 C D A B\n4 D A B C',
+    { optionCount: 4 }
+  );
+  assert.equal(tabularAbcd.answerKeys.A, 'ABCD');
+  assert.equal(tabularAbcd.answerKeys.B, 'BCDA');
+  assert.equal(tabularAbcd.answerKeys.C, 'CDAB');
+  assert.equal(tabularAbcd.answerKeys.D, 'DABC');
+  assert.equal(tabularAbcd.recommendedMode, 'ABCD');
+
+  const singleOnly = parseCombinedExternalAnswerKeysText(
+    '1-A 2-D 3-C 4-B 5-A',
+    { optionCount: 4, bookletMode: 'A', autoDeriveMissing: true }
+  );
+  assert.equal(singleOnly.answerKeys.A, 'ADCBA');
+  assert.equal(singleOnly.answerKeys.B, undefined);
+  assert.equal(singleOnly.recommendedMode, 'A');
+});
+
+

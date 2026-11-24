@@ -1,6 +1,7 @@
 import * as XLSX from 'xlsx';
 import {
   BookletCode,
+  BookletDistributionPattern,
   ExternalPublisherExamConfig,
   ExternalPublisherExamPreset,
   GradeLevelId,
@@ -169,11 +170,19 @@ export function computeExternalPublisherKeyHealth(params: {
   rawKey: string;
   gradeProfile: GradeProfile;
   expectedQuestionCount?: number;
+  selectedSubjectId?: string;
 }): ExternalPublisherKeyHealth {
+  const activeSubjects =
+    params.selectedSubjectId && params.selectedSubjectId !== 'all'
+      ? params.gradeProfile.subjects.filter((s) => s.id === params.selectedSubjectId)
+      : params.gradeProfile.subjects;
+  const effectiveSubjects =
+    activeSubjects.length > 0 ? activeSubjects : params.gradeProfile.subjects;
+
   const expectedCount =
     params.expectedQuestionCount && params.expectedQuestionCount > 0
       ? params.expectedQuestionCount
-      : params.gradeProfile.subjects.reduce((sum, s) => sum + s.questionCount, 0);
+      : effectiveSubjects.reduce((sum, s) => sum + s.questionCount, 0);
 
   const allowedRegex = params.gradeProfile.optionCount === 4 ? /[A-D]/ : /[A-E]/;
   const compact = String(params.rawKey ?? '')
@@ -192,16 +201,16 @@ export function computeExternalPublisherKeyHealth(params: {
     params.gradeProfile.optionCount
   );
 
-  const totalProfileQ = params.gradeProfile.subjects.reduce(
+  const totalProfileQ = effectiveSubjects.reduce(
     (sum, s) => sum + s.questionCount,
     0
   );
   const scale = totalProfileQ > 0 ? expectedCount / totalProfileQ : 1;
 
   let cursor = 0;
-  const subjectBreakdown: SubjectKeyBreakdownItem[] = params.gradeProfile.subjects.map(
+  const subjectBreakdown: SubjectKeyBreakdownItem[] = effectiveSubjects.map(
     (subj, idx) => {
-      const isLast = idx === params.gradeProfile.subjects.length - 1;
+      const isLast = idx === effectiveSubjects.length - 1;
       const targetCount = isLast
         ? Math.max(1, expectedCount - cursor)
         : Math.max(1, Math.round(subj.questionCount * scale));
@@ -458,3 +467,147 @@ export function downloadExternalPublisherKeyTemplate(params: {
     `Farkli-Yayin-Cevap-Anahtari-Sablon-${params.gradeProfile.id}.xlsx`
   );
 }
+
+function extractAnswerLettersFromSegment(
+  segment: string,
+  optionCount: 4 | 5
+): string {
+  // Remove question numbers like "1-", "12.", "15)"
+  const withoutQuestionNums = segment.replace(/\b\d{1,3}\s*[-.):]\s*/g, ' ');
+  // Keep only pure answer blocks (tokens made exclusively of A-E and optional dash '-') so prose like "Kitapçığı" or "Matematik" never leaks letters
+  const tokens = withoutQuestionNums.split(/[\s,;:|/\\]+/).filter(Boolean);
+  const pureAnswerChunks = tokens
+    .filter((tok) => /^[A-Ea-e-]+$/.test(tok))
+    .join('');
+  return normalizeExternalAnswerKeyString(pureAnswerChunks, optionCount);
+}
+
+export function parseCombinedExternalAnswerKeysText(
+  rawText: string,
+  options: {
+    optionCount: 4 | 5;
+    bookletMode?: BookletDistributionPattern;
+    autoDeriveMissing?: boolean;
+  }
+): {
+  answerKeys: Partial<Record<BookletCode, string>>;
+  detectedBooklets: BookletCode[];
+  recommendedMode: BookletDistributionPattern;
+  summaryMessage: string;
+} {
+  const text = String(rawText ?? '').trim();
+  if (!text) {
+    return {
+      answerKeys: {},
+      detectedBooklets: [],
+      recommendedMode: options.bookletMode ?? 'A',
+      summaryMessage: 'Ayrıştırılacak cevap anahtarı metni bulunamadı.',
+    };
+  }
+
+  const answerKeys: Partial<Record<BookletCode, string>> = {};
+  const lines = text
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+
+  // Strategy 1: Tabular rows copied from PDF/Excel: "1 A B" or "1. A B C D"
+  const tabularRows: string[][] = [];
+  for (const line of lines) {
+    const m = line.match(
+      /^\d{1,3}\s*[-.):]?\s+([A-E])(?:\s+([A-E]))?(?:\s+([A-E]))?(?:\s+([A-E]))?\s*$/i
+    );
+    if (m) {
+      tabularRows.push(
+        [m[1], m[2], m[3], m[4]].filter((x): x is string => Boolean(x))
+      );
+    }
+  }
+  if (tabularRows.length >= 3 && tabularRows.length >= Math.floor(lines.length * 0.6)) {
+    const maxCols = Math.min(
+      4,
+      Math.max(...tabularRows.map((r) => r.length))
+    );
+    for (let ci = 0; ci < maxCols; ci += 1) {
+      const code = BOOKLET_CODES[ci];
+      const combined = tabularRows.map((r) => r[ci] ?? '').join('');
+      const cleaned = normalizeExternalAnswerKeyString(combined, options.optionCount);
+      if (cleaned.length > 0) {
+        answerKeys[code] = cleaned;
+      }
+    }
+  } else {
+    // Strategy 2: Labeled sections like "A: ABCD...", "A Kitapçığı: ...", "B) ..."
+    const headerRegex =
+      /(?:^|[\n\r]|(?<=\s))([A-D])(?:\s+(?:kitap[çcÇC][iİIı][gğGĞ][iİIı]|kitap[çcÇC][iİIı]k|grubu?)\s*[:\)\-]?|\s*[:\)])/gi;
+    const matches: Array<{ code: BookletCode; index: number; endIndex: number }> = [];
+    let match: RegExpExecArray | null;
+    while ((match = headerRegex.exec(text)) !== null) {
+      const code = match[1].toUpperCase() as BookletCode;
+      if ((BOOKLET_CODES as string[]).includes(code)) {
+        matches.push({
+          code,
+          index: match.index,
+          endIndex: match.index + match[0].length,
+        });
+      }
+    }
+
+    if (matches.length >= 1) {
+      for (let i = 0; i < matches.length; i += 1) {
+        const cur = matches[i];
+        const nextIdx = i + 1 < matches.length ? matches[i + 1].index : text.length;
+        const segment = text.slice(cur.endIndex, nextIdx);
+        const extracted = extractAnswerLettersFromSegment(segment, options.optionCount);
+        if (extracted.length > 0) {
+          answerKeys[cur.code] = (answerKeys[cur.code] ?? '') + extracted;
+        }
+      }
+    } else {
+      // Strategy 3: Plain single answer key string ("ABCD..." or "1-A 2-B 3-C...")
+      const single = extractAnswerLettersFromSegment(text, options.optionCount);
+      if (single.length > 0) {
+        answerKeys.A = single;
+      }
+    }
+  }
+
+  const explicitlyDetected = BOOKLET_CODES.filter(
+    (code) => Boolean(answerKeys[code] && answerKeys[code]!.length > 0)
+  );
+
+  let recommendedMode: BookletDistributionPattern = options.bookletMode ?? 'A';
+  if (explicitlyDetected.includes('C') || explicitlyDetected.includes('D')) {
+    recommendedMode = 'ABCD';
+  } else if (explicitlyDetected.includes('B')) {
+    recommendedMode = 'AB';
+  } else if (explicitlyDetected.length === 1 && !options.bookletMode) {
+    recommendedMode = 'A';
+  }
+
+  if (options.autoDeriveMissing && answerKeys.A && recommendedMode !== 'A') {
+    const derived = deriveBookletAnswerKeysFromBase(answerKeys.A, options.optionCount);
+    if (!answerKeys.B) answerKeys.B = derived.B;
+    if (recommendedMode === 'ABCD') {
+      if (!answerKeys.C) answerKeys.C = derived.C;
+      if (!answerKeys.D) answerKeys.D = derived.D;
+    }
+  }
+
+  const detectedBooklets = BOOKLET_CODES.filter(
+    (code) => Boolean(answerKeys[code] && answerKeys[code]!.length > 0)
+  );
+
+  return {
+    answerKeys,
+    detectedBooklets,
+    recommendedMode,
+    summaryMessage:
+      detectedBooklets.length > 0
+        ? `${detectedBooklets.join(' · ')} kitapçık anahtarları ayrıştırıldı (${
+            answerKeys[detectedBooklets[0]]?.length ?? 0
+          } soru).`
+        : 'Metinden geçerli A/B/C/D şık harfi ayrıştırılamadı.',
+  };
+}
+

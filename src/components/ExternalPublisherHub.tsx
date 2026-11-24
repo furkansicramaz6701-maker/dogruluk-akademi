@@ -6,10 +6,12 @@ import {
   FileDown,
   FileSpreadsheet,
   Library,
+  Loader2,
   Plus,
   Save,
   Sparkles,
   Trash2,
+  Upload,
   AlertTriangle,
 } from 'lucide-react';
 import {
@@ -18,15 +20,18 @@ import {
   ExternalPublisherExamPreset,
   GradeProfile,
 } from '../types/academy';
+import { getGradeProfile, GRADE_PROFILES } from '../data/curriculum';
 import { getLogoPreset } from '../data/logos';
 import {
   BOOKLET_CODES,
+  getBookletCycleCodes,
   normalizeExternalAnswerKeyString,
   resolveCoverColorPalette,
 } from '../utils/bookletDistribution';
 import {
   computeExternalPublisherKeyHealth,
   downloadExternalPublisherKeyTemplate,
+  parseCombinedExternalAnswerKeysText,
   parsePublisherAnswerKeysSpreadsheet,
 } from '../utils/externalPublisherLibrary';
 import { deriveBookletAnswerKeysFromBase } from '../utils/omrSpreadsheet';
@@ -40,11 +45,12 @@ interface ExternalPublisherHubProps {
   presets: ExternalPublisherExamPreset[];
   activePresetId: string | null;
   onUpdateConfig: (patch: Partial<ExternalPublisherExamConfig>) => void;
+  onChangeGradeProfile?: (gradeId: GradeProfile['id']) => void;
   onSelectPreset: (preset: ExternalPublisherExamPreset) => void;
   onSavePreset: (asNew?: boolean) => void;
   onDeletePreset: (presetId: string) => void;
   onSyncActiveAnswerKey: (key: string) => void;
-  onTriggerPhotoKeyFile?: (file: File) => void;
+  onTriggerPhotoKeyFile?: (file: File, targetBooklet?: BookletCode) => void;
   photoLoading?: boolean;
   onToast?: (msg: string) => void;
 }
@@ -58,6 +64,7 @@ export function ExternalPublisherHub({
   presets,
   activePresetId,
   onUpdateConfig,
+  onChangeGradeProfile,
   onSelectPreset,
   onSavePreset,
   onDeletePreset,
@@ -67,11 +74,13 @@ export function ExternalPublisherHub({
   onToast,
 }: ExternalPublisherHubProps) {
   const [showBreakdown, setShowBreakdown] = useState(true);
+  const [showPasteSplit, setShowPasteSplit] = useState(false);
+  const [pasteRawText, setPasteRawText] = useState('');
   const [statusNote, setStatusNote] = useState<string | null>(null);
 
   const bookletMode = externalPublisherConfig.bookletMode ?? 'AB';
-  const visibleBooklets: BookletCode[] =
-    bookletMode === 'AB' ? ['A', 'B'] : BOOKLET_CODES;
+  const visibleBooklets: BookletCode[] = getBookletCycleCodes(bookletMode);
+  const selectedSubjectId = externalPublisherConfig.selectedSubjectId ?? 'all';
   const effectiveOptionCount =
     externalPublisherConfig.optionCount ?? gradeProfile.optionCount;
   const effectiveQuestionCount =
@@ -86,6 +95,7 @@ export function ExternalPublisherHub({
         rawKey: externalPublisherConfig.answerKeys[activeBookletCode] ?? '',
         gradeProfile: { ...gradeProfile, optionCount: effectiveOptionCount },
         expectedQuestionCount: effectiveQuestionCount,
+        selectedSubjectId,
       }),
     [
       activeBookletCode,
@@ -93,8 +103,75 @@ export function ExternalPublisherHub({
       gradeProfile,
       effectiveOptionCount,
       effectiveQuestionCount,
+      selectedSubjectId,
     ]
   );
+
+  const handleGradeSwitch = (nextGradeId: GradeProfile['id']) => {
+    const nextProf = getGradeProfile(nextGradeId);
+    const totalQ = nextProf.subjects.reduce((s, x) => s + x.questionCount, 0);
+    onUpdateConfig({
+      gradeId: nextGradeId,
+      optionCount: nextProf.optionCount,
+      questionCount: totalQ,
+      selectedSubjectId: 'all',
+    });
+    onChangeGradeProfile?.(nextGradeId);
+    const msg = `Sınıf düzeyi ${nextProf.shortLabel} (${nextProf.optionCount} şık · ${totalQ} soru) olarak güncellendi.`;
+    setStatusNote(msg);
+    onToast?.(msg);
+  };
+
+  const handleSubjectScopeChange = (nextSubjId: string) => {
+    if (nextSubjId === 'all') {
+      const totalQ = gradeProfile.subjects.reduce((s, x) => s + x.questionCount, 0);
+      onUpdateConfig({
+        selectedSubjectId: 'all',
+        questionCount: totalQ,
+      });
+      setStatusNote(`Tam deneme kapsamı seçildi (${totalQ} soru).`);
+      return;
+    }
+    const found = gradeProfile.subjects.find((s) => s.id === nextSubjId);
+    if (!found) return;
+    onUpdateConfig({
+      selectedSubjectId: found.id,
+      questionCount: found.questionCount,
+      examTitle: externalPublisherConfig.examTitle?.trim()
+        ? externalPublisherConfig.examTitle
+        : `${gradeProfile.shortLabel} ${found.name} Konu Testi`,
+    });
+    setStatusNote(`${found.name} ders testi seçildi (${found.questionCount} soru).`);
+  };
+
+  const handleParseCombinedText = () => {
+    const res = parseCombinedExternalAnswerKeysText(pasteRawText, {
+      optionCount: effectiveOptionCount,
+      bookletMode,
+      autoDeriveMissing: bookletMode !== 'A',
+    });
+    if (res.detectedBooklets.length === 0) {
+      setStatusNote(res.summaryMessage);
+      onToast?.(res.summaryMessage);
+      return;
+    }
+    const nextKeys = {
+      ...externalPublisherConfig.answerKeys,
+      ...res.answerKeys,
+    };
+    const nextMode = res.recommendedMode;
+    onUpdateConfig({
+      bookletMode: nextMode,
+      answerKeys: nextKeys,
+    });
+    const activeLoaded = nextKeys[activeBookletCode] || nextKeys.A || '';
+    if (activeLoaded) {
+      onSyncActiveAnswerKey(activeLoaded);
+    }
+    setStatusNote(res.summaryMessage);
+    onToast?.(res.summaryMessage);
+    setShowPasteSplit(false);
+  };
 
   const handleExcelKeysUpload = async (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -203,7 +280,7 @@ export function ExternalPublisherHub({
             <option value="">Kayıtlı Yayın Seç ({presets.length})</option>
             {presets.map((p) => (
               <option key={p.id} value={p.id}>
-                {p.publisherName} · {p.gradeId}. Sınıf ({p.bookletMode === 'AB' ? 'A-B' : 'A-B-C-D'})
+                {p.publisherName} · {p.gradeId}. Sınıf ({p.bookletMode === 'A' ? 'Tek A' : p.bookletMode === 'AB' ? 'A-B' : 'A-B-C-D'})
               </option>
             ))}
           </select>
@@ -242,91 +319,212 @@ export function ExternalPublisherHub({
         </div>
       </div>
 
-      {/* Publisher Metadata + Booklet Mode Switcher */}
+      {/* Publisher Metadata + Grade Level + Subject Test + Booklet Mode Switcher */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-12 gap-3 items-end">
-        <label className="lg:col-span-3 block text-xs font-semibold">
+        <label className="lg:col-span-2 block text-xs font-semibold">
+          <span style={{ color: 'var(--text-secondary)' }}>Sınıf Düzeyi</span>
+          <select
+            data-testid="external-grade-select"
+            value={externalPublisherConfig.gradeId ?? gradeProfile.id}
+            onChange={(e) => handleGradeSwitch(e.target.value as GradeProfile['id'])}
+            className="mt-1 w-full rounded-lg px-2.5 py-1.5 text-xs surface-alt font-bold"
+          >
+            {GRADE_PROFILES.map((gp) => (
+              <option key={gp.id} value={gp.id}>
+                {gp.shortLabel} ({gp.optionCount} şık)
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label className="lg:col-span-2 block text-xs font-semibold">
+          <span style={{ color: 'var(--text-secondary)' }}>Ders / Kapsam</span>
+          <select
+            data-testid="external-subject-scope-select"
+            value={selectedSubjectId}
+            onChange={(e) => handleSubjectScopeChange(e.target.value)}
+            className="mt-1 w-full rounded-lg px-2.5 py-1.5 text-xs surface-alt font-bold"
+          >
+            <option value="all">Tam Deneme (Tüm Dersler)</option>
+            {gradeProfile.subjects.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.name} ({s.questionCount} soru)
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label className="lg:col-span-2 block text-xs font-semibold">
           <span style={{ color: 'var(--text-secondary)' }}>Yayın Adı</span>
           <input
             type="text"
             data-testid="external-publisher-name-input"
             value={externalPublisherConfig.publisherName}
             onChange={(e) => onUpdateConfig({ publisherName: e.target.value })}
-            placeholder="Örn: Özdebir / Hız / Palme"
-            className="mt-1 w-full rounded-lg px-3 py-1.5 text-xs surface-alt font-semibold"
+            placeholder="Özdebir / Ders Testi"
+            className="mt-1 w-full rounded-lg px-2.5 py-1.5 text-xs surface-alt font-semibold"
           />
         </label>
 
-        <label className="lg:col-span-3 block text-xs font-semibold">
+        <label className="lg:col-span-2 block text-xs font-semibold">
           <span style={{ color: 'var(--text-secondary)' }}>Deneme Adı</span>
           <input
             type="text"
             data-testid="external-publisher-title-input"
             value={externalPublisherConfig.examTitle}
             onChange={(e) => onUpdateConfig({ examTitle: e.target.value })}
-            placeholder="Örn: 5 Aralık Cumartesi TG Denemesi"
-            className="mt-1 w-full rounded-lg px-3 py-1.5 text-xs surface-alt font-semibold"
+            placeholder="Örn: Hafta Sonu Testi"
+            className="mt-1 w-full rounded-lg px-2.5 py-1.5 text-xs surface-alt font-semibold"
           />
         </label>
 
-        <label className="lg:col-span-2 block text-xs font-semibold">
-          <span style={{ color: 'var(--text-secondary)' }}>Soru Sayısı</span>
+        <label className="lg:col-span-1 block text-xs font-semibold">
+          <span style={{ color: 'var(--text-secondary)' }}>Soru</span>
           <input
             type="number"
-            min={10}
+            min={5}
             max={200}
             data-testid="external-publisher-qcount-input"
             value={effectiveQuestionCount}
             onChange={(e) =>
               onUpdateConfig({
-                questionCount: Math.max(10, Math.min(200, Number(e.target.value) || questionsCount)),
+                questionCount: Math.max(5, Math.min(200, Number(e.target.value) || questionsCount)),
               })
             }
-            className="mt-1 w-full rounded-lg px-2.5 py-1.5 text-xs surface-alt font-mono-num font-bold"
+            className="mt-1 w-full rounded-lg px-2 py-1.5 text-xs surface-alt font-mono-num font-bold"
           />
         </label>
 
-        <div className="lg:col-span-4">
+        <div className="lg:col-span-3">
           <div className="text-xs font-semibold mb-1" style={{ color: 'var(--text-secondary)' }}>
-            Kitapçık Modu
+            Kitapçık Düzeni
           </div>
           <div
-            className="grid grid-cols-2 gap-1 p-1 rounded-lg surface-alt"
+            className="grid grid-cols-3 gap-1 p-1 rounded-lg surface-alt"
             role="group"
             aria-label="Farklı yayın kitapçık modu"
           >
             <button
               type="button"
+              data-testid="external-mode-a-btn"
+              onClick={() => onUpdateConfig({ bookletMode: 'A' })}
+              className={`px-1.5 py-1 rounded-md text-[11px] font-bold whitespace-nowrap cursor-pointer ${
+                bookletMode === 'A' ? 'btn-3d' : 'text-[var(--text-secondary)]'
+              }`}
+            >
+              Tek (A)
+            </button>
+            <button
+              type="button"
               data-testid="external-mode-ab-btn"
               onClick={() => onUpdateConfig({ bookletMode: 'AB' })}
-              className={`px-2.5 py-1 rounded-md text-xs font-bold whitespace-nowrap cursor-pointer ${
+              className={`px-1.5 py-1 rounded-md text-[11px] font-bold whitespace-nowrap cursor-pointer ${
                 bookletMode === 'AB' ? 'btn-3d' : 'text-[var(--text-secondary)]'
               }`}
             >
-              A - B (2&apos;li)
+              A - B
             </button>
             <button
               type="button"
               data-testid="external-mode-abcd-btn"
               onClick={() => onUpdateConfig({ bookletMode: 'ABCD' })}
-              className={`px-2.5 py-1 rounded-md text-xs font-bold whitespace-nowrap cursor-pointer ${
+              className={`px-1.5 py-1 rounded-md text-[11px] font-bold whitespace-nowrap cursor-pointer ${
                 bookletMode === 'ABCD' ? 'btn-3d' : 'text-[var(--text-secondary)]'
               }`}
             >
-              A - B - C - D
+              A-B-C-D
             </button>
           </div>
         </div>
       </div>
 
-      {/* Bulk Import / Derive Actions */}
-      <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+      {/* Bulk Import: Camera Photo Capture + Image/PDF + Excel / CSV + Text Split + Derive */}
+      <div className="rounded-lg p-3 surface-alt border space-y-2.5" style={{ borderColor: 'var(--border-subtle)' }}>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="text-xs font-extrabold">
+            Cevap Anahtarı Yükleme (Kamera · Görsel/PDF · Excel/CSV · Toplu Metin Ayrıştırma)
+          </div>
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              data-testid="external-toggle-paste-split-btn"
+              onClick={() => setShowPasteSplit((v) => !v)}
+              className="text-xs font-bold underline cursor-pointer"
+              style={{ color: 'var(--accent-primary)' }}
+            >
+              {showPasteSplit ? 'Metin Ayrıştırıcıyı Gizle' : 'Metin Yapıştır & A-B/ABCD Ayrıştır'}
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowBreakdown((v) => !v)}
+              className="text-xs font-semibold underline cursor-pointer"
+              style={{ color: 'var(--text-secondary)' }}
+            >
+              {showBreakdown ? 'Ders Dağılımını Gizle' : 'Ders Dağılımını Göster'}
+            </button>
+          </div>
+        </div>
+
         <div className="flex flex-wrap items-center gap-2">
+          {onTriggerPhotoKeyFile && (
+            <>
+              <label
+                data-testid="external-camera-key-btn"
+                className="btn-3d px-3 py-1.5 rounded-lg text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
+              >
+                {photoLoading ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
+                    <span>Fotoğraf Okunuyor...</span>
+                  </>
+                ) : (
+                  <>
+                    <Camera className="w-3.5 h-3.5" aria-hidden="true" />
+                    <span>Cevap Anahtarı Resmi Çek</span>
+                  </>
+                )}
+                <input
+                  type="file"
+                  data-testid="external-camera-key-input"
+                  accept="image/*"
+                  capture="environment"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) onTriggerPhotoKeyFile(file);
+                    e.target.value = '';
+                  }}
+                  className="sr-only"
+                />
+              </label>
+
+              <label
+                data-testid="external-photo-pdf-upload-btn"
+                className="btn-3d-secondary px-3 py-1.5 rounded-lg text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
+              >
+                <Upload className="w-3.5 h-3.5" aria-hidden="true" />
+                <span>Görsel / PDF Dosyası Seç</span>
+                <input
+                  type="file"
+                  data-testid="external-photo-pdf-upload-input"
+                  accept="image/*,.pdf"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) onTriggerPhotoKeyFile(file);
+                    e.target.value = '';
+                  }}
+                  className="sr-only"
+                />
+              </label>
+            </>
+          )}
+
           <label
             data-testid="external-excel-upload-btn"
-            className="btn-3d-secondary px-3 py-1.5 rounded-lg text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer"
+            className="btn-3d-secondary px-3 py-1.5 rounded-lg text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer border"
+            style={{ borderColor: '#059669' }}
           >
             <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" aria-hidden="true" />
-            <span>Excel / CSV&apos;den Yayın Anahtarı Yükle</span>
+            <span>Excel / CSV&apos;den Anahtar Yükle</span>
             <input
               type="file"
               data-testid="external-excel-upload-input"
@@ -338,6 +536,7 @@ export function ExternalPublisherHub({
 
           <button
             type="button"
+            data-testid="external-excel-template-btn"
             onClick={() =>
               downloadExternalPublisherKeyTemplate({
                 gradeProfile,
@@ -345,48 +544,64 @@ export function ExternalPublisherHub({
                 publisherName: externalPublisherConfig.publisherName,
               })
             }
-            className="btn-3d-secondary px-2.5 py-1.5 rounded-lg text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer"
+            className="btn-3d-secondary px-2.5 py-1.5 rounded-lg text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
           >
             <FileDown className="w-3.5 h-3.5" aria-hidden="true" />
             <span>Örnek Anahtar Excel (.xlsx)</span>
           </button>
 
-          {onTriggerPhotoKeyFile && (
-            <label className="btn-3d-secondary px-2.5 py-1.5 rounded-lg text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer">
-              <Camera className="w-3.5 h-3.5" aria-hidden="true" />
-              <span>{photoLoading ? 'Fotoğraf Okunuyor...' : 'Fotoğraf / PDF ile Anahtar Tara'}</span>
-              <input
-                type="file"
-                accept="image/*,.pdf"
-                onChange={(e) => {
-                  const file = e.target.files?.[0];
-                  if (file) onTriggerPhotoKeyFile(file);
-                  e.target.value = '';
-                }}
-                className="sr-only"
-              />
-            </label>
+          {bookletMode !== 'A' && (
+            <button
+              type="button"
+              data-testid="external-derive-from-a-btn"
+              onClick={handleDeriveFromA}
+              className="btn-3d-secondary px-2.5 py-1.5 rounded-lg text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              <Sparkles className="w-3.5 h-3.5" aria-hidden="true" />
+              <span>{bookletMode === 'AB' ? "A'dan B'yi Türet" : "A'dan B-C-D Türet"}</span>
+            </button>
           )}
-
-          <button
-            type="button"
-            data-testid="external-derive-from-a-btn"
-            onClick={handleDeriveFromA}
-            className="btn-3d-secondary px-2.5 py-1.5 rounded-lg text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer"
-          >
-            <Sparkles className="w-3.5 h-3.5" aria-hidden="true" />
-            <span>{bookletMode === 'AB' ? "A'dan B'yi Türet" : "A'dan B-C-D Türet"}</span>
-          </button>
         </div>
 
-        <button
-          type="button"
-          onClick={() => setShowBreakdown((v) => !v)}
-          className="text-xs font-semibold underline cursor-pointer"
-          style={{ color: 'var(--accent-primary)' }}
-        >
-          {showBreakdown ? 'Ders Dağılımını Gizle' : 'Ders Dağılımını Göster'}
-        </button>
+        {showPasteSplit && (
+          <div
+            data-testid="external-paste-split-panel"
+            className="surface-card rounded-lg p-3 border space-y-2"
+            style={{ borderColor: 'var(--border-subtle)' }}
+          >
+            <div className="text-[11px] font-semibold" style={{ color: 'var(--text-secondary)' }}>
+              A, A-B veya A-B-C-D kitapçık anahtarlarını tek seferde yapıştırın (örn.{' '}
+              <code className="font-mono-num">A: 1-A 2-B... B: 1-D 2-C...</code> veya{' '}
+              <code className="font-mono-num">1 A B C D</code>); sistem otomatik kitapçıklara ayırır:
+            </div>
+            <textarea
+              rows={3}
+              data-testid="external-paste-split-textarea"
+              value={pasteRawText}
+              onChange={(e) => setPasteRawText(e.target.value)}
+              placeholder={'A: ABCDABCD...\nB: DCBADCBA...'}
+              className="w-full rounded-lg p-2.5 text-xs font-mono-num surface-alt"
+            />
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setShowPasteSplit(false)}
+                className="btn-3d-secondary px-3 py-1.5 rounded-lg text-xs font-semibold cursor-pointer"
+              >
+                Vazgeç
+              </button>
+              <button
+                type="button"
+                data-testid="external-paste-split-apply-btn"
+                onClick={handleParseCombinedText}
+                className="btn-3d px-3.5 py-1.5 rounded-lg text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
+              >
+                <Sparkles className="w-3.5 h-3.5" aria-hidden="true" />
+                <span>Ayrıştır &amp; Kitapçıklara Dağıt</span>
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       {statusNote && (
@@ -396,12 +611,14 @@ export function ExternalPublisherHub({
         </div>
       )}
 
-      {/* Answer Key Inputs Grid (2 columns in AB mode, 4 columns in ABCD mode) */}
+      {/* Answer Key Inputs Grid (1 col in Tek A, 2 cols in AB, 4 cols in ABCD) */}
       <div
         className={`grid gap-2.5 ${
-          bookletMode === 'AB'
-            ? 'grid-cols-1 md:grid-cols-2'
-            : 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-4'
+          bookletMode === 'A'
+            ? 'grid-cols-1'
+            : bookletMode === 'AB'
+              ? 'grid-cols-1 md:grid-cols-2'
+              : 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-4'
         }`}
       >
         {visibleBooklets.map((code) => {
@@ -422,18 +639,41 @@ export function ExternalPublisherHub({
                 backgroundColor: isActive ? pal.softBg : undefined,
               }}
             >
-              <div className="flex items-center justify-between gap-2 mb-1.5">
+              <div className="flex items-center justify-between gap-1.5 mb-1.5">
                 <span className="text-xs font-extrabold" style={{ color: pal.primaryColor }}>
                   {code} Kitapçığı Cevap Anahtarı
                 </span>
-                <span
-                  className={`text-[11px] font-mono-num font-bold ${
-                    isFull ? 'text-emerald-700' : ''
-                  }`}
-                  style={!isFull ? { color: 'var(--text-secondary)' } : undefined}
-                >
-                  {val.length}/{effectiveQuestionCount}
-                </span>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  {onTriggerPhotoKeyFile && (
+                    <label
+                      data-testid={`external-card-camera-${code}`}
+                      title={`${code} kitapçığı için resim çek`}
+                      className="px-1.5 py-0.5 rounded surface-alt text-[10px] font-bold inline-flex items-center gap-1 cursor-pointer hover:opacity-90"
+                    >
+                      <Camera className="w-3 h-3" style={{ color: pal.primaryColor }} aria-hidden="true" />
+                      <span>Çek</span>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        capture="environment"
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          if (file) onTriggerPhotoKeyFile(file, code);
+                          e.target.value = '';
+                        }}
+                        className="sr-only"
+                      />
+                    </label>
+                  )}
+                  <span
+                    className={`text-[11px] font-mono-num font-bold ${
+                      isFull ? 'text-emerald-700' : ''
+                    }`}
+                    style={!isFull ? { color: 'var(--text-secondary)' } : undefined}
+                  >
+                    {val.length}/{effectiveQuestionCount}
+                  </span>
+                </div>
               </div>
               <input
                 type="text"

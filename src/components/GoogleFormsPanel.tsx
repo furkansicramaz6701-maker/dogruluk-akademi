@@ -382,7 +382,7 @@ export function GoogleFormsPanel({
                 className="text-xs font-bold underline cursor-pointer"
                 style={{ color: 'var(--accent-primary)' }}
               >
-                Yayın Anahtarlarını Düzenle (OMR)
+                Yayın Anahtarı (Resim Çek / Excel Yükle)
               </button>
             </div>
             <div className="flex flex-wrap items-center gap-2">

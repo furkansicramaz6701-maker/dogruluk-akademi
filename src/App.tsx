@@ -580,18 +580,44 @@ export default function App() {
     }
   }, []);
 
+  // Narrow OMR / Karne questions when a single subject is chosen in Farklı Yayın Denemesi mode
+  const omrActiveQuestions = useMemo(() => {
+    const subjId = externalPublisherConfig.selectedSubjectId;
+    if (examSourceMode !== 'farkli-yayin' || !subjId || subjId === 'all') {
+      return questions;
+    }
+    const targetSubj = gradeProfile.subjects.find((s) => s.id === subjId);
+    if (!targetSubj) return questions;
+    const filtered = questions.filter((q) => q.subject === targetSubj.name);
+    const limit =
+      externalPublisherConfig.questionCount && externalPublisherConfig.questionCount > 0
+        ? externalPublisherConfig.questionCount
+        : targetSubj.questionCount;
+    const baseSlice = (filtered.length > 0 ? filtered : questions).slice(0, limit);
+    return baseSlice.map((q, idx) => ({
+      ...q,
+      number: idx + 1,
+    }));
+  }, [
+    questions,
+    examSourceMode,
+    externalPublisherConfig.selectedSubjectId,
+    externalPublisherConfig.questionCount,
+    gradeProfile.subjects,
+  ]);
+
   // Evaluate OMR deterministically from current state
   const [evalTick, setEvalTick] = useState(0);
   const analysis = useMemo(() => {
     void evalTick;
     const studentArr = parseAnswerString(
       studentAnswersRaw,
-      questions.length,
+      omrActiveQuestions.length,
       gradeProfile.optionCount
     );
     const keyArr = parseAnswerString(
       answerKeyRaw,
-      questions.length,
+      omrActiveQuestions.length,
       gradeProfile.optionCount
     );
     const res = evaluateOmrExam({
@@ -603,7 +629,7 @@ export default function App() {
       penaltyDivisor,
       studentAnswers: studentArr,
       answerKey: keyArr,
-      questions,
+      questions: omrActiveQuestions,
     });
     if (aiCoachSummary) {
       res.aiCoachSummary = aiCoachSummary;
@@ -613,7 +639,7 @@ export default function App() {
     evalTick,
     studentAnswersRaw,
     answerKeyRaw,
-    questions,
+    omrActiveQuestions,
     gradeProfile.optionCount,
     studentName,
     studentNumber,
@@ -870,6 +896,12 @@ export default function App() {
     };
     setStudents((prev) => [enrichedStu, ...prev]);
     const targetInst = institutions.find((i) => i.id === enrichedStu.institutionId);
+    if (targetInst) {
+      setActiveInstitutionId(targetInst.id);
+    }
+    if (examSourceMode !== 'farkli-yayin') {
+      syncGradeForStudent(enrichedStu.gradeId);
+    }
     setCover((prev) => ({
       ...prev,
       academyName: targetInst ? targetInst.name : prev.academyName,
@@ -878,15 +910,23 @@ export default function App() {
       bookletNumber: assignedNo,
       isSampleDemo: false,
     }));
-    if (targetInst) {
-      setActiveInstitutionId(targetInst.id);
-    }
-    syncGradeForStudent(enrichedStu.gradeId);
     setStudentName(enrichedStu.fullName);
     setStudentNumber(enrichedStu.studentNumber8);
     setClassroom(enrichedStu.classroom);
     setStudentAnswersRaw('');
     setHasLiveAnalysis(false);
+    if (examSourceMode === 'farkli-yayin') {
+      const extKey = resolveActiveAnswerKeyByMode({
+        examSourceMode: 'farkli-yayin',
+        bookletCode: assignedCode,
+        baseQuestions: baseExamQuestions,
+        orderSeed: bookletOrderSeed,
+        externalKeys: externalPublisherConfig.answerKeys,
+        optionCount: gradeProfile.optionCount,
+        fallbackKey: answerKeyRaw,
+      });
+      setAnswerKeyRaw(extKey);
+    }
     const gp = getGradeProfile(enrichedStu.gradeId);
     showToast(
       `${enrichedStu.fullName} kaydedildi · ${gp.shortLabel} · Kitapçık: ${assignedCode} (#${assignedNo})`
@@ -1133,6 +1173,25 @@ export default function App() {
   const handleSelectPublisherPreset = (preset: ExternalPublisherExamPreset) => {
     setActivePublisherPresetId(preset.id);
     setExamSourceMode('farkli-yayin');
+    const targetProf = getGradeProfile(preset.gradeId);
+    const nextBaseQuestions = buildAutoExamQuestions(preset.gradeId, 'dengeli');
+    const nextCode: BookletCode =
+      preset.bookletMode === 'A'
+        ? 'A'
+        : preset.bookletMode === 'AB' && (cover.bookletCode === 'C' || cover.bookletCode === 'D')
+          ? 'A'
+          : cover.bookletCode;
+    const synced = syncBookletVariantsAndOpticalKeys(
+      nextBaseQuestions,
+      nextCode,
+      bookletOrderSeed
+    );
+    setGradeId(preset.gradeId);
+    setMebOverride(null);
+    setBaseExamQuestions(nextBaseQuestions);
+    setQuestions(synced.activeQuestions);
+    setPenaltyDivisor(targetProf.penaltyDivisor);
+    setClassroom(defaultClassroomForGrade(preset.gradeId));
     setExternalPublisherConfig({
       publisherName: preset.publisherName,
       examTitle: preset.examTitle,
@@ -1140,22 +1199,30 @@ export default function App() {
       gradeId: preset.gradeId,
       optionCount: preset.optionCount,
       questionCount: preset.questionCount,
+      selectedSubjectId: 'all',
       bookletMode: preset.bookletMode,
       answerKeys: { ...preset.answerKeys },
     });
-    const nextCode: BookletCode =
-      preset.bookletMode === 'AB' && (cover.bookletCode === 'C' || cover.bookletCode === 'D')
-        ? 'A'
-        : cover.bookletCode;
     const syncedKey = preset.answerKeys[nextCode] || preset.answerKeys.A || answerKeyRaw;
     setAnswerKeyRaw(syncedKey);
     setCover((prev) => ({
       ...prev,
       bookletCode: nextCode,
       examTitle: preset.examTitle || preset.publisherName,
+      subtitle: buildGradeAppropriateSubtitle(targetProf),
+      gradeLabel: targetProf.shortLabel,
+      durationMinutes: targetProf.durationMinutes,
+      questionCount: preset.questionCount || synced.activeQuestions.length,
+      penaltyRuleLabel: formatPenaltyRuleLabel(targetProf.penaltyDivisor, true),
     }));
     showToast(
-      `Yayın yüklendi: ${preset.publisherName} (${preset.bookletMode === 'AB' ? 'A - B' : 'A - B - C - D'})`
+      `Yayın yüklendi: ${preset.publisherName} · ${targetProf.shortLabel} (${
+        preset.bookletMode === 'A'
+          ? 'Tek A'
+          : preset.bookletMode === 'AB'
+            ? 'A - B'
+            : 'A - B - C - D'
+      })`
     );
   };
 
@@ -1366,6 +1433,111 @@ export default function App() {
       penaltyRuleLabel: formatPenaltyRuleLabel(nextProfile.penaltyDivisor, true),
     }));
     showToast(`${nextProfile.label} profili (${variant.length} soru) yüklendi.`);
+  };
+
+  const handleChangeOmrGradeProfile = (nextGradeId: GradeLevelId) => {
+    setGradeId(nextGradeId);
+    setMebOverride(null);
+    setBatchAssignments([]);
+    const nextProfile = getGradeProfile(nextGradeId);
+    const nextQuestions = buildAutoExamQuestions(nextGradeId, 'dengeli');
+    const synced = syncBookletVariantsAndOpticalKeys(
+      nextQuestions,
+      cover.bookletCode,
+      bookletOrderSeed
+    );
+    const variant = synced.activeQuestions;
+    const nextStartNum = String(defaultStartBookletNumberForGrade(nextGradeId)).padStart(6, '0');
+    setBaseExamQuestions(nextQuestions);
+    setQuestions(variant);
+    setPenaltyDivisor(nextProfile.penaltyDivisor);
+    setClassroom(defaultClassroomForGrade(nextGradeId));
+    setStudentAnswersRaw('');
+    setHasLiveAnalysis(false);
+    setAiCoachSummary(undefined);
+
+    if (examSourceMode === 'farkli-yayin') {
+      setExternalPublisherConfig((prev) => ({
+        ...prev,
+        gradeId: nextGradeId,
+        optionCount: nextProfile.optionCount,
+        questionCount: variant.length,
+        selectedSubjectId: 'all',
+      }));
+      const preservedExtKey = resolveActiveAnswerKeyByMode({
+        examSourceMode: 'farkli-yayin',
+        bookletCode: cover.bookletCode,
+        baseQuestions: nextQuestions,
+        orderSeed: bookletOrderSeed,
+        externalKeys: externalPublisherConfig.answerKeys,
+        optionCount: nextProfile.optionCount,
+        fallbackKey: synced.activeAnswerKey,
+      });
+      setAnswerKeyRaw(preservedExtKey);
+    } else {
+      setAnswerKeyRaw(synced.activeAnswerKey);
+    }
+
+    setCover((prev) => ({
+      ...prev,
+      examTitle:
+        examSourceMode === 'farkli-yayin' &&
+        (externalPublisherConfig.examTitle?.trim() || externalPublisherConfig.publisherName?.trim())
+          ? externalPublisherConfig.examTitle?.trim() ||
+            externalPublisherConfig.publisherName?.trim() ||
+            nextProfile.examName
+          : nextProfile.examName,
+      subtitle: buildGradeAppropriateSubtitle(nextProfile),
+      gradeLabel: nextProfile.shortLabel,
+      bookletNumber: nextStartNum,
+      durationMinutes: nextProfile.durationMinutes,
+      questionCount: variant.length,
+      penaltyRuleLabel: formatPenaltyRuleLabel(nextProfile.penaltyDivisor, true),
+    }));
+    showToast(
+      `Optik sınıf düzeyi ${nextProfile.shortLabel} (${nextProfile.optionCount} şık · ${variant.length} soru) olarak seçildi.`
+    );
+  };
+
+  const handleChangeStudentBooklet = (studentId: string, nextCode: BookletCode) => {
+    const target = students.find((s) => s.id === studentId);
+    setStudents((prev) =>
+      prev.map((s) =>
+        s.id === studentId
+          ? {
+              ...s,
+              assignedBookletCode: nextCode,
+            }
+          : s
+      )
+    );
+    if (target && batchAssignments.length > 0) {
+      const nextKey = resolveActiveAnswerKeyByMode({
+        examSourceMode,
+        bookletCode: nextCode,
+        baseQuestions: baseExamQuestions,
+        orderSeed: bookletOrderSeed,
+        externalKeys: externalPublisherConfig.answerKeys,
+        optionCount: gradeProfile.optionCount,
+        fallbackKey: answerKeyRaw,
+      });
+      setBatchAssignments((prev) =>
+        prev.map((row) =>
+          row.studentNumber8 === target.studentNumber8
+            ? { ...row, bookletCode: nextCode, answerKey: nextKey }
+            : row
+        )
+      );
+    }
+    if (target && studentNumber === target.studentNumber8) {
+      handleSelectBookletVariant(nextCode, {
+        bookletNumber: target.assignedBookletNumber || cover.bookletNumber,
+        studentName: target.fullName,
+        studentNumber: target.studentNumber8,
+        classroom: target.classroom,
+        autoSyncAnswerKey: true,
+      });
+    }
   };
 
   const handleChangePenaltyDivisor = (nextDivisor: PenaltyDivisor) => {
@@ -2733,8 +2905,9 @@ export default function App() {
             <OmrScannerView
               institutionId={activeInstitution.id}
               institutionName={activeInstitution.name}
+              activeInstitution={activeInstitution}
               gradeProfile={gradeProfile}
-              questions={questions}
+              questions={omrActiveQuestions}
               studentAnswersRaw={studentAnswersRaw}
               answerKeyRaw={answerKeyRaw}
               studentName={studentName}
@@ -2752,6 +2925,9 @@ export default function App() {
               publisherPresets={publisherPresets}
               activePublisherPresetId={activePublisherPresetId}
               exportBusy={exportBusy}
+              onChangeGradeProfile={handleChangeOmrGradeProfile}
+              onAddStudent={handleAddStudent}
+              onChangeStudentBooklet={handleChangeStudentBooklet}
               onChangeExamSourceMode={(mode) => {
                 setExamSourceMode(mode);
                 const nextKey = resolveActiveAnswerKeyByMode({

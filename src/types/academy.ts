@@ -217,7 +217,8 @@ export interface ExternalPublisherExamConfig {
   gradeId?: GradeLevelId;
   optionCount?: 4 | 5;
   questionCount?: number;
-  bookletMode?: 'AB' | 'ABCD';
+  selectedSubjectId?: string;
+  bookletMode?: BookletDistributionPattern;
   answerKeys: Record<BookletCode, string>;
 }
 
@@ -229,7 +230,7 @@ export interface ExternalPublisherExamPreset {
   gradeId: GradeLevelId;
   optionCount: 4 | 5;
   questionCount: number;
-  bookletMode: 'AB' | 'ABCD';
+  bookletMode: BookletDistributionPattern;
   answerKeys: Record<BookletCode, string>;
   updatedAt: string;
   isBuiltIn?: boolean;

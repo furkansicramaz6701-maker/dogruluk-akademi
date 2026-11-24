@@ -412,8 +412,8 @@ export function ThreeDotStudentModal({
                       }}
                     >
                       <div className="min-w-0 space-y-0.5">
-                        <div className="flex items-center gap-2 min-w-0">
-                          <span className="text-xs font-extrabold truncate">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="text-xs font-extrabold leading-snug break-words">
                             {stu.fullName}
                           </span>
                           <span

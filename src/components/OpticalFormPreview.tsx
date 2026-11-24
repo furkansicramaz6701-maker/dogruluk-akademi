@@ -16,6 +16,7 @@ interface OpticalFormPreviewProps {
   totalQuestions: number;
   exportBusy?: boolean;
   registeredCount?: number;
+  visibleBooklets?: BookletCode[];
   onSelectBookletCode?: (code: BookletCode) => void;
   onDownloadOpticalPdf: (targetCode?: BookletCode) => Promise<void>;
   onDownloadAllOpticalPdf?: () => Promise<void>;
@@ -33,6 +34,7 @@ export function OpticalFormPreview({
   totalQuestions,
   exportBusy = false,
   registeredCount = 0,
+  visibleBooklets = BOOKLET_CODES,
   onSelectBookletCode,
   onDownloadOpticalPdf,
   onDownloadAllOpticalPdf,
@@ -156,7 +158,7 @@ export function OpticalFormPreview({
           <span className="text-[11px] font-bold mr-1" style={{ color: 'var(--text-secondary)' }}>
             Kitapçık Seç &amp; Optik İndir:
           </span>
-          {BOOKLET_CODES.map((code) => {
+          {visibleBooklets.map((code) => {
             const pal = resolveCoverColorPalette(
               { bookletCode: code, coverColorThemeId: cover.coverColorThemeId ?? 'otomatik-abcd' },
               preset
