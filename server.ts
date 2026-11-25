@@ -40,7 +40,7 @@ function extractJsonArray(rawText: string): unknown[] {
 
 async function startServer() {
   const app = express();
-  app.use(express.json({ limit: '35mb' }));
+  app.use(express.json({ limit: '50mb' }));
 
   app.get('/api/health', (_req, res) => {
     res.json({ status: 'ok', hasGeminiKey: Boolean(process.env.GEMINI_API_KEY) });
@@ -602,52 +602,122 @@ ${textContent ? `\nBelge Metni:\n${String(textContent).slice(0, 24000)}` : ''}`,
         return;
       }
 
-      const { fileBase64, fileMimeType, mode = 'student', expectedCount = 120, optionCount = 5 } = req.body ?? {};
+      const {
+        fileBase64,
+        fileMimeType,
+        mode = 'student',
+        expectedCount = 120,
+        optionCount = 5,
+        isCroppedRegion = false,
+        regionSummary = '',
+        targetBooklet = '',
+        subjectName = '',
+      } = req.body ?? {};
       if (!fileBase64 || !fileMimeType) {
         res.status(400).json({ error: 'Dosya verisi eksik.' });
         return;
       }
 
+      const cleanTargetBooklet = ['A', 'B', 'C', 'D'].includes(String(targetBooklet).trim().toUpperCase())
+        ? String(targetBooklet).trim().toUpperCase()
+        : '';
+      const cleanSubject = String(subjectName || '').trim();
       const letters = optionCount === 4 ? 'A, B, C, D' : 'A, B, C, D, E';
+      const subjectContext = cleanSubject ? ` Bu sınav/test özellikle "${cleanSubject}" dersi içindir.` : '';
+      const targetBookletContext = cleanTargetBooklet
+        ? ` Kullanıcı özellikle "${cleanTargetBooklet}" kitapçığı için cevap anahtarı yüklüyor. Tablo içinde A, B, C, D sütunları varsa "answersString" alanına kesinlikle ${cleanTargetBooklet} kitapçığının cevaplarını yaz; diğer görünen kitapçıkları da "bookletKeys" nesnesine ekle.`
+        : ' Tabloda birden fazla kitapçık sütunu (A, B, C, D) varsa tespit ettiklerini "bookletKeys" nesnesinde ayrıca paylaş.';
+
       const prompt =
         mode === 'key'
-          ? `Bu dosyadaki veya fotoğraftaki cevap anahtarını oku. İlk ${expectedCount} soru için her sorunun doğru şıkkını (${letters}) sırayla çıkar. Görselde kitapçık türü (A, B, C veya D) yazıyorsa "bookletCode" alanına yaz, görünmüyorsa boş string "" döndür.`
-          : `Bu optik cevap kağıdındaki işaretlenmiş baloncukları oku. İlk ${expectedCount} soru için öğrencinin işaretlediği şıkkı (${letters}) veya boş bırakılmışsa "-" karakterini sırayla çıkar. Görselde işaretlenen kitapçık türü (A, B, C veya D) görünüyorsa "bookletCode" alanına yaz, görünmüyorsa "" döndür.`;
+          ? isCroppedRegion
+            ? `Bu görsel kullanıcı tarafından Manuel Optik Bölge Editörü ile özellikle kırpılmış cevap anahtarı bölgesidir (${String(regionSummary || 'özel kırpım')}).${subjectContext} Yalnızca bu kırpılmış alandaki soru numaralarını ve doğru şıklarını (${letters}) sırayla çıkar; okunamayan veya boş satır varsa "-" yaz. İlk ${expectedCount} soru için doğru şıkları döndür.${targetBookletContext} Bölge içinde kitapçık türü (A, B, C veya D) görünüyorsa "bookletCode" alanına yaz, görünmüyorsa "${cleanTargetBooklet || ''}" döndür.`
+            : `Bu dosyadaki, ekran görüntüsündeki veya fotoğraftaki cevap anahtarını oku.${subjectContext} İlk ${expectedCount} soru için her sorunun doğru şıkkını (${letters}) sırayla çıkar (okunamayan/boş satır için "-" yaz).${targetBookletContext} Görselde kitapçık türü (A, B, C veya D) yazıyorsa "bookletCode" alanına yaz, görünmüyorsa "${cleanTargetBooklet || ''}" döndür.`
+          : `Bu optik cevap kağıdındaki işaretlenmiş baloncukları oku.${subjectContext} İlk ${expectedCount} soru için öğrencinin işaretlediği şıkkı (${letters}) veya boş bırakılmışsa "-" karakterini sırayla çıkar. Görselde işaretlenen kitapçık türü (A, B, C veya D) görünüyorsa "bookletCode" alanına yaz, görünmüyorsa "" döndür.`;
 
-      const response = await ai.models.generateContent({
-        model: 'gemini-4-hydrogen',
-        contents: {
-          parts: [
-            { inlineData: { mimeType: String(fileMimeType), data: String(fileBase64) } },
-            { text: prompt },
-          ],
-        },
-        config: {
-          responseMimeType: 'application/json',
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              answersString: {
-                type: Type.STRING,
-                description: `Tam olarak harfler ve boşlar için '-' içeren kesintisiz dizi, örn: ABCDE-AB...`,
-              },
-              detectedCount: { type: Type.INTEGER },
-              bookletCode: {
-                type: Type.STRING,
-                description: 'Tespit edilen kitapçık türü: A, B, C, D veya boş',
-              },
-              notes: { type: Type.STRING },
-            },
-            required: ['answersString', 'detectedCount'],
+      const callGemini = async () =>
+        ai.models.generateContent({
+          model: 'gemini-4-hydrogen',
+          contents: {
+            parts: [
+              { inlineData: { mimeType: String(fileMimeType), data: String(fileBase64) } },
+              { text: prompt },
+            ],
           },
-          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-        },
-      });
+          config: {
+            responseMimeType: 'application/json',
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                answersString: {
+                  type: Type.STRING,
+                  description: `Tam olarak harfler ve boşlar için '-' içeren kesintisiz dizi, örn: ABCDE-AB...`,
+                },
+                detectedCount: { type: Type.INTEGER },
+                bookletCode: {
+                  type: Type.STRING,
+                  description: 'Tespit edilen kitapçık türü: A, B, C, D veya boş',
+                },
+                bookletKeys: {
+                  type: Type.OBJECT,
+                  properties: {
+                    A: { type: Type.STRING },
+                    B: { type: Type.STRING },
+                    C: { type: Type.STRING },
+                    D: { type: Type.STRING },
+                  },
+                },
+                notes: { type: Type.STRING },
+              },
+              required: ['answersString', 'detectedCount'],
+            },
+            thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+          },
+        });
 
-      const parsed = JSON.parse((response.text ?? '{}').trim());
+      let response;
+      let lastErr: unknown = null;
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        try {
+          response = await callGemini();
+          lastErr = null;
+          break;
+        } catch (err) {
+          lastErr = err;
+          const rawMsg = err instanceof Error ? err.message : String(err);
+          const isTransient =
+            rawMsg.includes('503') ||
+            rawMsg.includes('UNAVAILABLE') ||
+            rawMsg.includes('429') ||
+            rawMsg.includes('RESOURCE_EXHAUSTED');
+          if (!isTransient || attempt === 2) {
+            throw err;
+          }
+          await new Promise((r) => setTimeout(r, 700 * (attempt + 1)));
+        }
+      }
+      if (!response && lastErr) {
+        throw lastErr;
+      }
+
+      const rawText = (response?.text ?? '{}').trim();
+      const jsonFence = rawText.match(/```(?:json)?\s*([\s\S]*?)```/i);
+      const parsed = JSON.parse(jsonFence ? jsonFence[1].trim() : rawText);
       res.json(parsed);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Optik okuma hatası';
+      if (message.includes('503') || message.includes('UNAVAILABLE')) {
+        res.status(503).json({
+          error: 'Gemini optik okuma servisi yoğun talep nedeniyle geçici olarak meşgul (503). Lütfen birazdan tekrar deneyin.',
+        });
+        return;
+      }
+      if (message.includes('429') || message.includes('RESOURCE_EXHAUSTED')) {
+        res.status(429).json({
+          error: 'Gemini API kota sınırına ulaşıldı (429). Kısa bir süre sonra tekrar deneyin.',
+        });
+        return;
+      }
       res.status(500).json({ error: `Optik/Cevap anahtarı okunamadı: ${message}` });
     }
   });
@@ -798,6 +868,328 @@ En Zayıf Konular: ${JSON.stringify((analysis.topicGaps ?? []).slice(0, 5))}`;
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Koç yorumu üretilemedi';
       res.status(500).json({ error: message });
+    }
+  });
+
+  // 4b. Gemini Çoklu Deneme Koçluk İçgörüleri (Coaching Insights)
+  app.post('/api/analysis/coaching-insights', async (req, res) => {
+    try {
+      const ai = getGeminiClient();
+      if (!ai) {
+        res.status(503).json({
+          error:
+            'GEMINI_API_KEY tanımlı değil. Lütfen Settings > Secrets panelinden API anahtarınızı yapılandırın.',
+        });
+        return;
+      }
+
+      const { payload } = req.body ?? {};
+      if (!payload || !payload.currentMetrics || !payload.multiExamTrend) {
+        res.status(400).json({
+          error: 'Çoklu deneme analiz ve konu eksikliği verisi eksik.',
+        });
+        return;
+      }
+
+      const prompt = `Sen Doğruluk Akademi Baş Eğitim Koçusun. Aşağıdaki öğrencinin birden fazla deneme sınavındaki performans trendini (net ve puan değişimi, kurum ortalamasıyla kıyas) ve tespit edilen konu eksiklerini analiz et. Öğrenciye kişiselleştirilmiş, somut çalışma odak alanları öner. Tüm metinler doğal, motive edici ve net Türkçe olmalıdır.
+
+Öğrenci ve Sınav Bilgisi:
+${JSON.stringify(payload.student)}
+
+Güncel Sınav Özeti:
+${JSON.stringify(payload.currentMetrics)}
+
+Çoklu Deneme Geçmişi ve Trend:
+${JSON.stringify(payload.multiExamTrend)}
+
+Ders Bazlı Performans:
+${JSON.stringify(payload.subjectMetrics)}
+
+Öncelikli Konu Eksikleri (Hakimiyet yüzdesi düşükten yükseğe):
+${JSON.stringify(payload.topicGaps)}
+
+Hata Dağılımı:
+${JSON.stringify(payload.errorBreakdown)}
+
+Kurallar:
+1. trendDirection alanı sadece "yukselis", "dengeli" veya "destek-gerekli" değerlerinden biri olsun.
+2. focusAreas dizisinde 2 ile 4 arası odak alanı ver; her biri yukarıdaki konu eksikleriyle doğrudan eşleşsin ve priority alanı "yuksek", "orta" veya "pekistirme" olsun.
+3. recommendedAction içinde somut haftalık soru sayısı, dakika ve çalışma tekniği belirt.
+4. weeklyHours alanında haftalık önerilen saati (0.5 ile 10 arası sayı) ver.`;
+
+      const callGemini = async () =>
+        ai.models.generateContent({
+          model: 'gemini-4-hydrogen',
+          contents: prompt,
+          config: {
+            thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+            responseMimeType: 'application/json',
+            responseSchema: {
+              type: Type.OBJECT,
+              required: [
+                'headline',
+                'trendDirection',
+                'trendSummary',
+                'strengthsHighlight',
+                'focusAreas',
+                'weeklyCoachNote',
+              ],
+              properties: {
+                headline: {
+                  type: Type.STRING,
+                  description: 'Kısa koçluk değerlendirme başlığı (Türkçe)',
+                },
+                trendDirection: {
+                  type: Type.STRING,
+                  enum: ['yukselis', 'dengeli', 'destek-gerekli'],
+                  description: 'yukselis, dengeli veya destek-gerekli',
+                },
+                trendSummary: {
+                  type: Type.STRING,
+                  description:
+                    'Çoklu deneme net/puan ivmesi ve akademi ortalaması kıyasını özetleyen 2-3 cümle',
+                },
+                strengthsHighlight: {
+                  type: Type.STRING,
+                  description: 'Öğrencinin güçlü olduğu ders/konu vurgusu',
+                },
+                focusAreas: {
+                  type: Type.ARRAY,
+                  minItems: '2',
+                  maxItems: '4',
+                  items: {
+                    type: Type.OBJECT,
+                    required: [
+                      'subject',
+                      'topic',
+                      'priority',
+                      'reason',
+                      'recommendedAction',
+                      'weeklyHours',
+                    ],
+                    properties: {
+                      subject: { type: Type.STRING },
+                      topic: { type: Type.STRING },
+                      priority: {
+                        type: Type.STRING,
+                        enum: ['yuksek', 'orta', 'pekistirme'],
+                        description: 'yuksek, orta veya pekistirme',
+                      },
+                      reason: {
+                        type: Type.STRING,
+                        description: 'Konu eksiğinin çoklu deneme trendine etkisi',
+                      },
+                      recommendedAction: {
+                        type: Type.STRING,
+                        description: 'Somut haftalık çalışma adımı',
+                      },
+                      weeklyHours: {
+                        type: Type.NUMBER,
+                        description: 'Önerilen haftalık çalışma saati',
+                      },
+                    },
+                  },
+                },
+                weeklyCoachNote: {
+                  type: Type.STRING,
+                  description: 'Karne ve veli özetine aktarılabilir kısa koçluk notu',
+                },
+              },
+            },
+          },
+        });
+
+      let response;
+      let lastErr: unknown = null;
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        try {
+          response = await callGemini();
+          lastErr = null;
+          break;
+        } catch (err) {
+          lastErr = err;
+          const rawMsg = err instanceof Error ? err.message : String(err);
+          const isTransient =
+            rawMsg.includes('503') ||
+            rawMsg.includes('UNAVAILABLE') ||
+            rawMsg.includes('429') ||
+            rawMsg.includes('RESOURCE_EXHAUSTED');
+          if (!isTransient || attempt === 2) {
+            throw err;
+          }
+          await new Promise((r) => setTimeout(r, 700 * (attempt + 1)));
+        }
+      }
+      if (!response && lastErr) {
+        throw lastErr;
+      }
+
+      const rawText = (response?.text ?? '{}').trim();
+      const parsed = JSON.parse(rawText);
+      res.json({ insights: parsed });
+    } catch (err) {
+      const rawMessage =
+        err instanceof Error ? err.message : 'Gemini koçluk içgörüleri oluşturulamadı.';
+      let friendly = rawMessage;
+      let status = 502;
+      if (rawMessage.includes('503') || rawMessage.includes('UNAVAILABLE')) {
+        status = 503;
+        friendly =
+          'Gemini servisi şu anda yoğun talep nedeniyle geçici olarak meşgul (503). Lütfen birkaç saniye sonra tekrar deneyin.';
+      } else if (rawMessage.includes('429') || rawMessage.includes('RESOURCE_EXHAUSTED')) {
+        status = 429;
+        friendly =
+          'Gemini API kullanım kotası sınırına ulaşıldı (429). Lütfen kısa bir süre sonra tekrar deneyin veya Settings > Secrets panelini kontrol edin.';
+      } else if (rawMessage.includes('API_KEY_INVALID') || rawMessage.includes('PERMISSION_DENIED')) {
+        status = 403;
+        friendly =
+          'Gemini API anahtarı geçersiz veya yetkisiz. Lütfen Settings > Secrets panelinden anahtarınızı kontrol edin.';
+      }
+      res.status(status).json({ error: friendly });
+    }
+  });
+
+  // 4c. Gemini AI Soru Geliştirme & Varyasyon Önerisi (Question Refinement)
+  app.post('/api/questions/refine', async (req, res) => {
+    try {
+      const ai = getGeminiClient();
+      if (!ai) {
+        res.status(503).json({
+          error:
+            'GEMINI_API_KEY tanımlı değil. Lütfen Settings > Secrets panelinden API anahtarınızı yapılandırın.',
+        });
+        return;
+      }
+
+      const { gradeLabel, optionCount = 4, mode = 'harder', instruction, question } =
+        req.body ?? {};
+
+      if (!question || !question.stem) {
+        res.status(400).json({ error: 'Düzenlenecek soru verisi eksik.' });
+        return;
+      }
+
+      const optCount = optionCount === 5 ? 5 : 4;
+      const letters = optCount === 5 ? ['A', 'B', 'C', 'D', 'E'] : ['A', 'B', 'C', 'D'];
+      const optionProperties: Record<string, { type: typeof Type.STRING }> = {};
+      letters.forEach((l) => {
+        optionProperties[l] = { type: Type.STRING };
+      });
+
+      const prompt = `Sen Türkiye MEB ve ÖSYM standartlarında çalışan kıdemli bir soru yazarısın.
+Hedef Sınıf / Sınav Düzeyi: ${gradeLabel || '8. Sınıf (LGS)'} (${optCount} şıklı sistem: ${letters.join(', ')})
+İstenen Düzenleme Modu: ${mode}
+Öğretmen Talimatı: ${instruction || 'Soruyu daha kaliteli ve dengeli hale getir.'}
+
+Mevcut Soru:
+${JSON.stringify(question)}
+
+Kurallar:
+1. Kesinlikle belirtilen sınıf düzeyine uygun dil ve kazanım seviyesi kullan (ör. ilkokul/ortaokul sorusuna YKS/TYT terimi ekleme).
+2. Tam olarak ${optCount} şık (${letters.join(', ')}) üret ve "correctOption" sadece ${letters.join(' | ')} değerlerinden biri olsun.
+3. Doğru şıkkın çözümünü "explanation" alanında adım adım net biçimde açıkla.
+4. "summaryRationale" alanında yapılan değişikliğin pedagojik gerekçesini 1-2 Türkçe cümleyle özetle.`;
+
+      const callGemini = async () =>
+        ai.models.generateContent({
+          model: 'gemini-4-hydrogen',
+          contents: prompt,
+          config: {
+            thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+            responseMimeType: 'application/json',
+            responseSchema: {
+              type: Type.OBJECT,
+              required: ['summaryRationale', 'refinedQuestion'],
+              properties: {
+                summaryRationale: {
+                  type: Type.STRING,
+                  description: 'Önerilen varyasyonun pedagojik gerekçesi (Türkçe)',
+                },
+                refinedQuestion: {
+                  type: Type.OBJECT,
+                  required: [
+                    'subject',
+                    'topic',
+                    'gainCode',
+                    'difficulty',
+                    'stem',
+                    'options',
+                    'correctOption',
+                    'explanation',
+                  ],
+                  properties: {
+                    subject: { type: Type.STRING },
+                    topic: { type: Type.STRING },
+                    gainCode: { type: Type.STRING },
+                    difficulty: {
+                      type: Type.STRING,
+                      enum: ['Kolay', 'Orta', 'Zor'],
+                    },
+                    stem: { type: Type.STRING },
+                    options: {
+                      type: Type.OBJECT,
+                      required: letters,
+                      properties: optionProperties,
+                    },
+                    correctOption: {
+                      type: Type.STRING,
+                      enum: letters,
+                    },
+                    explanation: { type: Type.STRING },
+                  },
+                },
+              },
+            },
+          },
+        });
+
+      let response;
+      let lastErr: unknown = null;
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        try {
+          response = await callGemini();
+          lastErr = null;
+          break;
+        } catch (err) {
+          lastErr = err;
+          const rawMsg = err instanceof Error ? err.message : String(err);
+          const isTransient =
+            rawMsg.includes('503') ||
+            rawMsg.includes('UNAVAILABLE') ||
+            rawMsg.includes('429') ||
+            rawMsg.includes('RESOURCE_EXHAUSTED');
+          if (!isTransient || attempt === 2) {
+            throw err;
+          }
+          await new Promise((r) => setTimeout(r, 700 * (attempt + 1)));
+        }
+      }
+      if (!response && lastErr) {
+        throw lastErr;
+      }
+
+      const rawText = (response?.text ?? '{}').trim();
+      const parsed = JSON.parse(rawText);
+      res.json({ suggestion: parsed });
+    } catch (err) {
+      const rawMessage =
+        err instanceof Error ? err.message : 'Soru varyasyonu oluşturulamadı.';
+      let friendly = rawMessage;
+      let status = 502;
+      if (rawMessage.includes('503') || rawMessage.includes('UNAVAILABLE')) {
+        status = 503;
+        friendly =
+          'Gemini servisi şu anda yoğun talep nedeniyle geçici olarak meşgul (503). Lütfen birkaç saniye sonra tekrar deneyin.';
+      } else if (rawMessage.includes('429') || rawMessage.includes('RESOURCE_EXHAUSTED')) {
+        status = 429;
+        friendly =
+          'Gemini API kullanım kotası sınırına ulaşıldı (429). Lütfen kısa bir süre sonra tekrar deneyin veya Settings > Secrets panelini kontrol edin.';
+      } else if (rawMessage.includes('API_KEY_INVALID') || rawMessage.includes('PERMISSION_DENIED')) {
+        status = 403;
+        friendly =
+          'Gemini API anahtarı geçersiz veya yetkisiz. Lütfen Settings > Secrets panelinden anahtarınızı kontrol edin.';
+      }
+      res.status(status).json({ error: friendly });
     }
   });
 

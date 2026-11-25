@@ -38,14 +38,16 @@ export function parseAnswerString(
     return result;
   }
 
-  // Check if numbered format e.g. "1-A 2:B 3.C" or CSV "1,A"
+  // Check if numbered format e.g. "1-A 2:B 3.C" or CSV "1,A" (including multi-mark tokens like "1-AB" or "2-[CD]")
   const numberedMatches = [
-    ...trimmed.matchAll(/(?:^|[\s,;|\n])(\d{1,3})\s*[:.\-,;\t ]\s*(BO[SŞ]|[A-Ea-e\-*._?])(?=$|[\s,;|\n])/gi),
+    ...trimmed.matchAll(
+      /(?:^|[\s,;|\n])(\d{1,3})\s*[:.\-,;\t ]\s*(\[[A-Za-z0-9/+,\s]+\]|\([A-Za-z0-9/+,\s]+\)|BO[SŞ]|[A-Za-z\-*._?]+)(?=$|[\s,;|\n])/gi
+    ),
   ];
-  if (numberedMatches.length >= 3) {
+  if (numberedMatches.length >= 2) {
     for (const match of numberedMatches) {
       const qNum = parseInt(match[1], 10);
-      const val = match[2].toUpperCase();
+      const val = match[2].replace(/,+$/, '').toUpperCase();
       if (qNum >= 1 && qNum <= expectedLength) {
         result[qNum - 1] = allowed.includes(val) ? val : null;
       }
@@ -53,12 +55,14 @@ export function parseAnswerString(
     return result;
   }
 
-  // Compact sequence or space/comma-separated tokens
+  // Compact sequence with optional bracketed groups e.g. "AB[CD]-E"
   const compactOnly = trimmed.replace(/\s+/g, '');
-  if (/^[A-Ea-e\-*._?]+$/.test(compactOnly)) {
-    for (let i = 0; i < Math.min(expectedLength, compactOnly.length); i++) {
-      const ch = compactOnly[i].toUpperCase();
-      result[i] = allowed.includes(ch) ? ch : null;
+  if (/^(?:\[[A-Za-z/+]+\]|\([A-Za-z/+]+\)|[A-Ea-e\-*._?])+$/.test(compactOnly)) {
+    const compactTokens =
+      compactOnly.match(/\[[A-Za-z/+]+\]|\([A-Za-z/+]+\)|[A-Ea-e\-*._?]/g) ?? [];
+    for (let i = 0; i < Math.min(expectedLength, compactTokens.length); i++) {
+      const tok = compactTokens[i].toUpperCase();
+      result[i] = allowed.includes(tok) ? tok : null;
     }
     return result;
   }
@@ -482,6 +486,7 @@ export function evaluateOmrExam(input: EvaluateOmrInput): ExamAnalysisResult {
     ...baseHistory.slice(0, 4).map((h) => ({
       ...h,
       net: Number(((h.net / 120) * totalQuestions).toFixed(2)),
+      academyAvgNet: Number(((h.academyAvgNet / 120) * totalQuestions).toFixed(2)),
     })),
     {
       examName: 'Son Deneme (Güncel)',

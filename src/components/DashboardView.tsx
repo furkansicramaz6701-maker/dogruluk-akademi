@@ -28,6 +28,7 @@ import {
   ActiveTab,
   CoverConfig,
   DynamicCurriculumOverride,
+  EducationCalendarEvent,
   ExamAnalysisResult,
   ExamQuestion,
   GradeLevelId,
@@ -55,6 +56,7 @@ import {
 import { Cube3DShowcase } from './Cube3DShowcase';
 import { InstitutionAuthPanel } from './InstitutionAuthPanel';
 import { InstitutionStudentManager } from './InstitutionStudentManager';
+import { InstructorCoachingDashboard } from './InstructorCoachingDashboard';
 import { Logo3D } from './Logo3D';
 import { NetProgressionChart } from './NetProgressionChart';
 import { ThemeSelector } from './ThemeSelector';
@@ -108,6 +110,8 @@ interface DashboardViewProps {
   onDownloadSourceZip: () => void;
   weeklyEntries?: WeeklyStudentScore[];
   weeklyQuestionCount?: WeeklyQuestionPreset;
+  calendarEvents?: EducationCalendarEvent[];
+  onBulkScheduleRemedials?: (events: EducationCalendarEvent[]) => void;
   isPrivateAdminMode?: boolean;
 }
 
@@ -161,6 +165,8 @@ export function DashboardView({
   onDownloadSourceZip,
   weeklyEntries,
   weeklyQuestionCount = 50,
+  calendarEvents = [],
+  onBulkScheduleRemedials,
   isPrivateAdminMode = false,
 }: DashboardViewProps) {
   const [recCategory, setRecCategory] = useState<'Tümü' | RecommendationCategory>('Tümü');
@@ -597,6 +603,24 @@ export function DashboardView({
         students={students}
         weeklyEntries={weeklyEntries}
         weeklyQuestionCount={weeklyQuestionCount}
+        onOpenWeeklyList={() => onNavigate('weekly')}
+      />
+
+      {/* Eğitmen Koçluk Paneli (D3 Tüm Öğrenciler Eğilimi) & Toplu Telafi Planlayıcı */}
+      <InstructorCoachingDashboard
+        activeInstitution={activeInstitution}
+        gradeProfile={gradeProfile}
+        penaltyDivisor={penaltyDivisor}
+        students={students}
+        weeklyEntries={weeklyEntries}
+        weeklyQuestionCount={weeklyQuestionCount}
+        analysis={analysis}
+        hasLiveAnalysis={hasLiveAnalysis}
+        calendarEvents={calendarEvents}
+        onBulkScheduleRemedials={(events) => {
+          onBulkScheduleRemedials?.(events);
+        }}
+        onOpenCalendar={() => onNavigate('calendar')}
         onOpenWeeklyList={() => onNavigate('weekly')}
       />
 

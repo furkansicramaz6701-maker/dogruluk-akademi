@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  analyzeOmrResponseValidation,
   buildErrorReportCsvContent,
   countDistinctErrorRows,
   formatErrorReportClipboardText,
@@ -65,3 +66,61 @@ test('validateManualOmrInputs reports exact line numbers for invalid student num
   const text = formatErrorReportClipboardText(report);
   assert.ok(text.includes('Satır #2'));
 });
+
+test('analyzeOmrResponseValidation detects Empty Bubbles, Multiple Marks, and clean readiness', () => {
+  // 1. Clean response matching expectedCount
+  const clean = analyzeOmrResponseValidation({
+    studentNumber: '20265018',
+    studentAnswersRaw: 'ABCDABCDAB',
+    answerKeyRaw: 'ABCDABCDAB',
+    expectedCount: 10,
+    optionCount: 4,
+  });
+  assert.equal(clean.severity, 'ok');
+  assert.equal(clean.validCount, 10);
+  assert.equal(clean.emptyBubbleCount, 0);
+  assert.equal(clean.multipleMarkCount, 0);
+
+  // 2. Empty bubbles (explicit '-' + trailing unmarked questions) -> warning severity
+  const withEmpties = analyzeOmrResponseValidation({
+    studentNumber: '20265018',
+    studentAnswersRaw: 'AB-D*A--',
+    answerKeyRaw: 'ABCDABCDAB',
+    expectedCount: 10,
+    optionCount: 4,
+  });
+  assert.equal(withEmpties.severity, 'warning');
+  assert.equal(withEmpties.explicitEmptyCount, 4);
+  assert.equal(withEmpties.unmarkedTrailingCount, 2);
+  assert.equal(withEmpties.emptyBubbleCount, 6);
+  assert.ok(withEmpties.warnings.some((w) => w.type === 'empty-bubbles'));
+
+  // 3. Multiple Marks in numbered format and bracketed compact format -> error severity
+  const withNumberedMulti = analyzeOmrResponseValidation({
+    studentNumber: '20265018',
+    studentAnswersRaw: '1-A 2-AB 3-C/D 4-[BD] 5--',
+    answerKeyRaw: 'ABCDE',
+    expectedCount: 5,
+    optionCount: 4,
+  });
+  assert.equal(withNumberedMulti.severity, 'error');
+  assert.equal(withNumberedMulti.multipleMarkCount, 3);
+  assert.deepEqual(
+    withNumberedMulti.multipleMarkItems.map((i) => i.questionNumber),
+    [2, 3, 4]
+  );
+  assert.equal(withNumberedMulti.emptyBubbleCount, 1);
+
+  const withCompactBracketMulti = analyzeOmrResponseValidation({
+    studentNumber: '20265018',
+    studentAnswersRaw: 'A[BC]D-E',
+    answerKeyRaw: 'ABCDE',
+    expectedCount: 5,
+    optionCount: 5,
+  });
+  assert.equal(withCompactBracketMulti.severity, 'error');
+  assert.equal(withCompactBracketMulti.multipleMarkCount, 1);
+  assert.equal(withCompactBracketMulti.multipleMarkItems[0].questionNumber, 2);
+  assert.equal(withCompactBracketMulti.explicitEmptyCount, 1);
+});
+

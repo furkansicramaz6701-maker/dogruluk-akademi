@@ -45,6 +45,7 @@ import {
   balanceQuestionOptions,
   fillMissingExplanations,
 } from '../utils/recommendations';
+import { AiQuestionRefinementPanel } from './AiQuestionRefinementPanel';
 import { QuestionVisualPreview } from './QuestionVisualPreview';
 
 interface ExamEditorViewProps {
@@ -893,6 +894,43 @@ export function ExamEditorView({
                 </select>
               </label>
             </div>
+
+            <AiQuestionRefinementPanel
+              question={activeQ}
+              gradeProfile={gradeProfile}
+              onApplyRefinement={(refined) => {
+                updateActiveQuestion({
+                  subject: refined.subject,
+                  topic: refined.topic,
+                  gainCode: refined.gainCode,
+                  difficulty: refined.difficulty,
+                  stem: refined.stem,
+                  options: refined.options,
+                  correctOption: refined.correctOption,
+                  explanation: refined.explanation,
+                });
+                notify(`Soru ${activeQ.number} Gemini AI varyasyonu ile güncellendi.`);
+              }}
+              onInsertAsVariant={(refined) => {
+                const clone: ExamQuestion = {
+                  ...activeQ,
+                  id: `q-ai-var-${Date.now()}`,
+                  subject: refined.subject,
+                  topic: refined.topic,
+                  gainCode: refined.gainCode,
+                  difficulty: refined.difficulty,
+                  stem: refined.stem,
+                  options: refined.options,
+                  correctOption: refined.correctOption,
+                  explanation: refined.explanation,
+                };
+                const copy = [...questions];
+                copy.splice(selectedIndex + 1, 0, clone);
+                onUpdateQuestions(renumber(copy));
+                setSelectedIndex(selectedIndex + 1);
+                notify(`Soru ${activeQ.number} için yeni AI varyasyonu soru #${selectedIndex + 2} olarak eklendi.`);
+              }}
+            />
 
             {/* Interactive Rich Visual Editor (Chart / Table / Math / Image) */}
             <div

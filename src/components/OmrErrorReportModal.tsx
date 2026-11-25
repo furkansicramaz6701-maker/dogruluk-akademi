@@ -4,6 +4,7 @@ import {
   AlertTriangle,
   Check,
   Copy,
+  Crop,
   FileDown,
   Filter,
   X,
@@ -21,6 +22,7 @@ interface OmrErrorReportModalProps {
   open: boolean;
   report: OmrScanErrorReport | null;
   onClose: () => void;
+  onOpenRegionEditor?: () => void;
 }
 
 const CATEGORY_BADGE_CLASSES: Record<OmrErrorCategory, string> = {
@@ -36,7 +38,12 @@ const CATEGORY_BADGE_CLASSES: Record<OmrErrorCategory, string> = {
     'bg-sky-100 text-sky-900 border-sky-200 dark:bg-sky-950/60 dark:text-sky-200 dark:border-sky-800',
 };
 
-export function OmrErrorReportModal({ open, report, onClose }: OmrErrorReportModalProps) {
+export function OmrErrorReportModal({
+  open,
+  report,
+  onClose,
+  onOpenRegionEditor,
+}: OmrErrorReportModalProps) {
   const [selectedCategory, setSelectedCategory] = useState<'all' | OmrErrorCategory>('all');
   const [copied, setCopied] = useState(false);
 
@@ -311,6 +318,20 @@ export function OmrErrorReportModal({ open, report, onClose }: OmrErrorReportMod
               <FileDown className="w-3.5 h-3.5" aria-hidden="true" />
               <span>CSV İndir</span>
             </button>
+            {onOpenRegionEditor && (
+              <button
+                type="button"
+                data-testid="omr-error-modal-region-btn"
+                onClick={() => {
+                  onClose();
+                  onOpenRegionEditor();
+                }}
+                className="btn-3d-secondary px-3 py-1.5 rounded-lg text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer"
+              >
+                <Crop className="w-3.5 h-3.5" aria-hidden="true" />
+                <span>Bölge Editöründe Kırp</span>
+              </button>
+            )}
             <button
               type="button"
               data-testid="omr-error-report-close-btn"

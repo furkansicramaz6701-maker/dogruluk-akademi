@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Archive, FileDown, Layers, Loader2, QrCode, Users } from 'lucide-react';
 import { getLogoPreset } from '../data/logos';
-import { BookletCode, CoverConfig, GradeProfile } from '../types/academy';
+import { BookletCode, CoverConfig, GradeProfile, SubjectSpec } from '../types/academy';
 import { BOOKLET_CODES, resolveCoverColorPalette } from '../utils/bookletDistribution';
 import { drawOpticalFormCanvas } from '../utils/pdfAndZip';
 import { FurkanDigitalSignature } from './FurkanDigitalSignature';
@@ -14,6 +14,9 @@ interface OpticalFormPreviewProps {
   institutionCode8: string;
   classroom: string;
   totalQuestions: number;
+  selectedSubjectId?: string;
+  selectedSubjectName?: string;
+  subjectsOverride?: SubjectSpec[];
   exportBusy?: boolean;
   registeredCount?: number;
   visibleBooklets?: BookletCode[];
@@ -32,6 +35,9 @@ export function OpticalFormPreview({
   institutionCode8,
   classroom,
   totalQuestions,
+  selectedSubjectId,
+  selectedSubjectName,
+  subjectsOverride,
   exportBusy = false,
   registeredCount = 0,
   visibleBooklets = BOOKLET_CODES,
@@ -67,6 +73,8 @@ export function OpticalFormPreview({
       classroom,
       totalQuestions,
       optionCount: gradeProfile.optionCount,
+      selectedSubjectId,
+      subjectsOverride,
     });
   }, [
     cover,
@@ -76,6 +84,8 @@ export function OpticalFormPreview({
     institutionCode8,
     classroom,
     totalQuestions,
+    selectedSubjectId,
+    subjectsOverride,
   ]);
 
   return (
@@ -88,7 +98,7 @@ export function OpticalFormPreview({
               ÖSYM / MEB Tipi Optik Cevap Kağıdı Canlı Önizleme
             </h3>
             <p className="text-xs" style={{ color: 'var(--text-secondary)' }} data-testid="optical-preview-meta">
-              Kitapçık: <strong>{cover.bookletCode}</strong> · Kitapçık No: <strong className="font-mono-num">{cover.bookletNumber || '050001'}</strong> · Kurum ({institutionCode8}) ve Öğrenci No ({studentNumber8 || '--------'}) alanları otomatik kodlanır
+              Öğrenci: <strong>{studentName || 'Seçilmedi'}</strong> · Kapsam: <strong>{selectedSubjectName ? `Tek Ders (${selectedSubjectName})` : 'Tam Deneme'} · {totalQuestions} Soru</strong> · Kitapçık: <strong>{cover.bookletCode}</strong> (<span className="font-mono-num">{cover.bookletNumber || '050001'}</span>) · Okutulabilir Karne QR&apos;lı
             </p>
           </div>
         </div>
@@ -109,7 +119,7 @@ export function OpticalFormPreview({
             <span>
               {busyKey === 'active'
                 ? 'Hazırlanıyor...'
-                : `Optik Kağıdını PDF İndir (${cover.bookletCode})`}
+                : `Kişiye Özel Optik PDF İndir (${cover.bookletCode})`}
             </span>
           </button>
 
@@ -231,6 +241,8 @@ export function OpticalFormPreview({
           data-testid="optical-sheet-canvas"
           data-booklet-code={cover.bookletCode}
           data-booklet-number={cover.bookletNumber || '050001'}
+          data-question-count={totalQuestions}
+          data-subject-scope={selectedSubjectName || 'Tam Deneme'}
           className="max-w-[540px] w-full h-auto rounded-lg shadow-xl border border-slate-300 bg-white"
           aria-label={`Optik Cevap Kağıdı Önizleme — ${cover.bookletCode} Kitapçığı`}
         />

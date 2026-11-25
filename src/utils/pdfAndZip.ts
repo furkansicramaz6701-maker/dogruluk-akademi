@@ -1,4 +1,5 @@
 import JSZip from 'jszip';
+import QRCode from 'qrcode';
 import { PDFDocument, StandardFonts, degrees, rgb } from 'pdf-lib';
 import { getGradeProfile } from '../data/curriculum';
 import { getLogoPreset } from '../data/logos';
@@ -17,8 +18,11 @@ import {
   PdfUploadStripOptions,
   QuestionVisualSpec,
   StudentRecord,
+  SubjectSpec,
   WeeklyComparisonRow,
 } from '../types/academy';
+import { buildStudentDigitalKarneUrl } from './digitalKarneQr';
+import { resolveOpticalSheetLayoutConfig } from './singleSubjectKarne';
 import {
   BOOKLET_CODES,
   buildAllBookletsAnswerKeyCsv,
@@ -1557,13 +1561,17 @@ export interface OpticalSheetRenderOptions {
   classroom?: string;
   totalQuestions?: number;
   optionCount?: 4 | 5;
+  selectedSubjectId?: string;
+  subjectsOverride?: SubjectSpec[];
+  digitalKarneBaseUrl?: string;
 }
 
 /**
- * Draws an authentic Turkish OSYM/MEB magenta/pink OMR optical form matching the reference photos:
+ * Draws an authentic Turkish OSYM/MEB magenta/pink OMR optical form:
  * - Left black timing track marks
- * - QR code, 8-digit Kurum Kodu bubble grid, 8-digit Ogrenci No bubble grid, Adi Soyadi A-Z grid
- * - Subject-grouped answer columns (Sozel/Sayisal or TYT/AYT subjects)
+ * - Real scannable QR code pointing to the student's digital report card
+ * - 8-digit Kurum Kodu bubble grid, 8-digit Ogrenci No bubble grid, Adi Soyadi A-Z grid
+ * - Adaptive single-subject (1-2 cols) or multi-subject (3-4 cols) answer bubble columns
  */
 export function drawOpticalFormCanvas(
   canvas: HTMLCanvasElement,
@@ -1584,6 +1592,22 @@ export function drawOpticalFormCanvas(
   const optionCount = opts.optionCount ?? opts.gradeProfile?.optionCount ?? 5;
   const letters = optionCount === 4 ? ['A', 'B', 'C', 'D'] : ['A', 'B', 'C', 'D', 'E'];
 
+  const totalQ = Math.max(
+    1,
+    Math.min(
+      200,
+      opts.totalQuestions ??
+        opts.gradeProfile?.subjects.reduce((s, x) => s + x.questionCount, 0) ??
+        120
+    )
+  );
+  const layoutConfig = resolveOpticalSheetLayoutConfig({
+    totalQuestions: totalQ,
+    gradeProfile: opts.gradeProfile,
+    selectedSubjectId: opts.selectedSubjectId,
+    subjectsOverride: opts.subjectsOverride,
+  });
+
   // Clean White Paper Base
   ctx.fillStyle = '#ffffff';
   ctx.fillRect(0, 0, A4_W, A4_H);
@@ -1603,43 +1627,75 @@ export function drawOpticalFormCanvas(
   ctx.fillStyle = PINK_HEADER;
   ctx.fillRect(52, 34, A4_W - 84, 52);
   ctx.fillStyle = '#ffffff';
-  ctx.font = '800 24px "Plus Jakarta Sans", sans-serif';
+  ctx.font = '800 22px "Plus Jakarta Sans", sans-serif';
   ctx.textAlign = 'left';
   ctx.textBaseline = 'middle';
-  ctx.fillText(`${instName.toUpperCase()} — OPTİK CEVAP KAĞIDI`, 72, 60);
+  const headerPrefix = layoutConfig.selectedSubjectName
+    ? `${instName.toUpperCase()} — ${layoutConfig.selectedSubjectName.toLocaleUpperCase('tr-TR')} OPTİK (${totalQ} SORU)`
+    : `${instName.toUpperCase()} — OPTİK CEVAP KAĞIDI`;
+  drawFittedSingleLineText(ctx, headerPrefix, 72, 60, A4_W - 520, '800', '"Plus Jakarta Sans", sans-serif', 22, 14);
   ctx.textAlign = 'right';
-  ctx.font = '700 15px "DM Sans", sans-serif';
+  ctx.font = '700 14.5px "DM Sans", sans-serif';
   ctx.fillText(
     `${opts.gradeProfile?.shortLabel || '5. Sınıf'} · KİTAPÇIK ${opts.cover.bookletCode} · NO:${bookletNoDigits} · KURUM: ${instCode}`,
     A4_W - 48,
     60
   );
 
-  // 1. Top-Left QR Code Block
+  // 1. Top-Left Real Scannable QR Code Block (links directly to student's digital karne)
   const qrX = 72;
   const qrY = 104;
+  const qrBoxSize = 108;
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(qrX, qrY, qrBoxSize, qrBoxSize);
   ctx.strokeStyle = '#111827';
   ctx.lineWidth = 2;
-  ctx.strokeRect(qrX, qrY, 108, 108);
-  const qrPattern = [
-    '111010111',
-    '101101101',
-    '111010111',
-    '001101001',
-    '110110110',
-    '010011010',
-    '111010101',
-    '101110011',
-    '111001111',
-  ];
-  ctx.fillStyle = '#111827';
-  qrPattern.forEach((rowStr, rIdx) => {
-    for (let cIdx = 0; cIdx < rowStr.length; cIdx++) {
-      if (rowStr[cIdx] === '1') {
-        ctx.fillRect(qrX + 9 + cIdx * 10, qrY + 9 + rIdx * 10, 9, 9);
+  ctx.strokeRect(qrX, qrY, qrBoxSize, qrBoxSize);
+
+  const fallbackClass = opts.gradeProfile ? defaultClassroomForGrade(opts.gradeProfile.id) : '5-A';
+  const qrTargetUrl = buildStudentDigitalKarneUrl({
+    baseUrl: opts.digitalKarneBaseUrl,
+    institutionCode8: instCode,
+    studentNumber: stuNum,
+    studentName: opts.studentName || 'Alihan Sarı',
+    classroom: opts.classroom || fallbackClass,
+    gradeId: opts.gradeProfile?.id || '5',
+    isSampleDemo: Boolean(opts.cover.isSampleDemo),
+  });
+
+  try {
+    const qrObj = QRCode.create(qrTargetUrl, { errorCorrectionLevel: 'M' });
+    const count = qrObj.modules.size;
+    const quietModules = 2;
+    const totalGrid = count + quietModules * 2;
+    const innerSize = qrBoxSize - 6;
+    const modulePx = innerSize / totalGrid;
+    const startX = qrX + 3 + quietModules * modulePx;
+    const startY = qrY + 3 + quietModules * modulePx;
+    ctx.fillStyle = '#0f172a';
+    for (let r = 0; r < count; r++) {
+      for (let c = 0; c < count; c++) {
+        if (qrObj.modules.get(r, c)) {
+          ctx.fillRect(
+            startX + c * modulePx,
+            startY + r * modulePx,
+            Math.ceil(modulePx * 100) / 100,
+            Math.ceil(modulePx * 100) / 100
+          );
+        }
       }
     }
-  });
+  } catch {
+    // Fallback text indicator only if QR encoder ever throws unexpectedly
+    ctx.fillStyle = '#111827';
+    ctx.font = '700 10px "DM Sans", sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('KARNE QR', qrX + qrBoxSize / 2, qrY + qrBoxSize / 2);
+  }
+  ctx.fillStyle = '#831843';
+  ctx.font = '700 9px "DM Sans", sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('KARNE QR BAĞLANTISI', qrX + qrBoxSize / 2, qrY + qrBoxSize + 12);
 
   // 2. Student Handwritten Info Box (Next to QR)
   const infoX = 196;
@@ -1654,37 +1710,47 @@ export function drawOpticalFormCanvas(
     ctx,
     `Adı Soyadı : ${stuName}`,
     infoX + 12,
-    infoY + 24,
+    infoY + 21,
     infoW - 24,
     '700',
     '"DM Sans", sans-serif',
-    14.5,
+    14,
     10
   );
-  ctx.font = '700 14.5px "DM Sans", sans-serif';
-  ctx.fillText(`Öğrenci No : ${stuNum}`, infoX + 12, infoY + 51);
-  const fallbackClass = opts.gradeProfile ? defaultClassroomForGrade(opts.gradeProfile.id) : '5-A';
+  ctx.font = '700 13.5px "DM Sans", sans-serif';
+  ctx.fillText(`Öğrenci No : ${stuNum}`, infoX + 12, infoY + 46);
   drawFittedSingleLineText(
     ctx,
     `Sınıf/Şube : ${opts.classroom || fallbackClass} · Kitapçık: ${opts.cover.bookletCode} (${bookletNoDigits})`,
     infoX + 12,
-    infoY + 78,
+    infoY + 71,
     infoW - 24,
     '700',
     '"DM Sans", sans-serif',
-    14.5,
-    10.5
+    13.5,
+    10
   );
   drawFittedSingleLineText(
     ctx,
     `Deneme     : ${opts.cover.examTitle || instName}`,
     infoX + 12,
-    infoY + 106,
+    infoY + 95,
     infoW - 24,
     '700',
     '"DM Sans", sans-serif',
-    14.5,
-    10.5
+    13.5,
+    10
+  );
+  drawFittedSingleLineText(
+    ctx,
+    `Kapsam     : ${layoutConfig.selectedSubjectName ? `Tek Ders (${layoutConfig.selectedSubjectName})` : 'Tüm Dersler'} · ${totalQ} Soru · ${optionCount} Şık`,
+    infoX + 12,
+    infoY + 118,
+    infoW - 24,
+    '700',
+    '"DM Sans", sans-serif',
+    12.5,
+    9.5
   );
 
   // Correct Coding Example + Kitapçık Türü Box
@@ -1838,64 +1904,79 @@ export function drawOpticalFormCanvas(
     });
   }
 
-  // 5. Bottom Answer Section: Subject-Grouped Columns
+  // 5. Bottom Answer Section: Adaptive Single-Subject or Multi-Subject Columns
   const ansTop = 690;
   const ansBottom = A4_H - 96;
-  const totalQ = opts.totalQuestions ?? opts.gradeProfile?.subjects.reduce((s, x) => s + x.questionCount, 0) ?? 120;
-  const subjects = opts.gradeProfile?.subjects ?? [
-    { id: 'turkce', name: 'TÜRKÇE', questionCount: 40, topics: [] },
-    { id: 'sosyal', name: 'SOSYAL BİL.', questionCount: 20, topics: [] },
-    { id: 'mat', name: 'MATEMATİK', questionCount: 40, topics: [] },
-    { id: 'fen', name: 'FEN BİL.', questionCount: 20, topics: [] },
-  ];
-
-  // Build up to 4 visual columns cleanly distributing up to 120 questions (30-40 rows per column)
-  const numCols = 4;
-  const colGap = 14;
+  const { numCols, rowsPerCol, columns } = layoutConfig;
+  const colGap = numCols === 1 ? 0 : 16;
   const gridLeft = 72;
   const gridTotalW = A4_W - 48 - gridLeft;
-  const colWidth = (gridTotalW - colGap * (numCols - 1)) / numCols;
-  const rowsPerCol = Math.ceil(totalQ / numCols);
-  const rowStep = Math.min(24, Math.floor((ansBottom - ansTop - 44) / Math.max(1, rowsPerCol)));
+  const maxSingleColW = Math.min(gridTotalW, 560);
+  const colWidth =
+    numCols === 1 ? maxSingleColW : (gridTotalW - colGap * (numCols - 1)) / numCols;
+  const colStartLeft =
+    numCols === 1 ? gridLeft + (gridTotalW - colWidth) / 2 : gridLeft;
+  const maxRowStep = numCols === 1 ? 42 : numCols === 2 ? 32 : 24;
+  const rowStep = Math.min(maxRowStep, Math.floor((ansBottom - ansTop - 52) / Math.max(1, rowsPerCol)));
+  const bubbleR = numCols === 1 ? 11.5 : numCols === 2 ? 9.8 : 8.5;
 
   let qCursor = 1;
   for (let colIdx = 0; colIdx < numCols; colIdx++) {
-    const cx = gridLeft + colIdx * (colWidth + colGap);
+    const cx = colStartLeft + colIdx * (colWidth + colGap);
     ctx.strokeStyle = PINK;
     ctx.lineWidth = 2;
     ctx.strokeRect(cx, ansTop, colWidth, ansBottom - ansTop);
 
     ctx.fillStyle = PINK_HEADER;
-    ctx.fillRect(cx, ansTop, colWidth, 30);
+    ctx.fillRect(cx, ansTop, colWidth, 32);
     ctx.fillStyle = '#ffffff';
-    ctx.font = '800 13px "Plus Jakarta Sans", sans-serif';
+    ctx.font = '800 13.5px "Plus Jakarta Sans", sans-serif';
     ctx.textAlign = 'center';
-    const subjLabel = subjects[colIdx]?.name.toUpperCase() || `BÖLÜM ${colIdx + 1}`;
-    ctx.fillText(subjLabel.slice(0, 18), cx + colWidth / 2, ansTop + 15);
+    const subjLabel = columns[colIdx]?.title || `BÖLÜM ${colIdx + 1}`;
+    drawFittedSingleLineText(
+      ctx,
+      subjLabel,
+      cx + colWidth / 2,
+      ansTop + 16,
+      colWidth - 16,
+      '800',
+      '"Plus Jakarta Sans", sans-serif',
+      13.5,
+      10
+    );
+
+    const numColX = numCols === 1 ? cx + 88 : cx + 34;
+    const firstBubbleX = numCols === 1 ? cx + 160 : cx + 58;
+    const availableBubbleSpan = colWidth - (firstBubbleX - cx) - 24;
+    const optSpacing =
+      numCols <= 2
+        ? Math.min(58, Math.max(34, availableBubbleSpan / Math.max(1, letters.length - 0.3)))
+        : optionCount === 4
+          ? 42
+          : 34;
 
     for (let r = 0; r < rowsPerCol && qCursor <= totalQ; r++) {
-      const ry = ansTop + 46 + r * rowStep;
-      // Alternating subtle zebra row tint
+      const ry = ansTop + 52 + r * rowStep;
       if (r % 2 === 1) {
         ctx.fillStyle = 'rgba(251, 207, 232, 0.22)';
         ctx.fillRect(cx + 2, ry - rowStep / 2 + 1, colWidth - 4, rowStep - 1);
       }
 
       ctx.fillStyle = '#831843';
-      ctx.font = '700 12px "JetBrains Mono", monospace';
+      ctx.font = numCols === 1 ? '700 14px "JetBrains Mono", monospace' : '700 12px "JetBrains Mono", monospace';
       ctx.textAlign = 'right';
-      ctx.fillText(String(qCursor).padStart(2, '0'), cx + 34, ry);
+      ctx.fillText(String(qCursor).padStart(2, '0'), numColX, ry);
 
       letters.forEach((opt, oi) => {
-        const bx = cx + 58 + oi * (optionCount === 4 ? 42 : 34);
+        const bx = firstBubbleX + oi * optSpacing;
         ctx.strokeStyle = PINK;
-        ctx.lineWidth = 1.5;
+        ctx.lineWidth = numCols <= 2 ? 1.8 : 1.5;
         ctx.beginPath();
-        ctx.arc(bx, ry, 8.5, 0, Math.PI * 2);
+        ctx.arc(bx, ry, bubbleR, 0, Math.PI * 2);
         ctx.stroke();
 
         ctx.fillStyle = PINK;
-        ctx.font = '700 10px "DM Sans", sans-serif';
+        ctx.font = numCols === 1 ? '700 11.5px "DM Sans", sans-serif' : '700 10px "DM Sans", sans-serif';
         ctx.textAlign = 'center';
         ctx.fillText(opt, bx, ry + 0.5);
       });
@@ -1955,6 +2036,8 @@ export async function generateMultiBookletOpticalPdf(params: {
   studentName?: string;
   studentNumber8?: string;
   classroom?: string;
+  selectedSubjectId?: string;
+  subjectsOverride?: SubjectSpec[];
   entries?: MultiOpticalEntry[];
 }): Promise<Uint8Array> {
   const entries: MultiOpticalEntry[] =
@@ -1972,7 +2055,7 @@ export async function generateMultiBookletOpticalPdf(params: {
 
   const pdfDoc = await PDFDocument.create();
   const canvas = document.createElement('canvas');
-  const totalQ = Math.max(params.totalQuestions ?? 120, 20);
+  const totalQ = Math.max(1, params.totalQuestions ?? 120);
   const optCount = params.optionCount ?? params.gradeProfile?.optionCount ?? 5;
 
   for (const entry of entries) {
@@ -1989,6 +2072,8 @@ export async function generateMultiBookletOpticalPdf(params: {
       classroom: entry.classroom ?? params.classroom,
       totalQuestions: totalQ,
       optionCount: optCount,
+      selectedSubjectId: params.selectedSubjectId,
+      subjectsOverride: params.subjectsOverride,
     });
     const jpgBytes = await canvasToEncodedBytes(canvas, 'image/jpeg', 0.9);
     const img = await pdfDoc.embedJpg(jpgBytes);
@@ -2009,10 +2094,12 @@ export async function generateAllOpticalFormsZip(params: {
   studentName?: string;
   studentNumber8?: string;
   classroom?: string;
+  selectedSubjectId?: string;
+  subjectsOverride?: SubjectSpec[];
   entries?: MultiOpticalEntry[];
 }): Promise<Blob> {
   const zip = new JSZip();
-  const totalQ = Math.max(params.totalQuestions ?? 120, 20);
+  const totalQ = Math.max(1, params.totalQuestions ?? 120);
   const optCount = params.optionCount ?? params.gradeProfile?.optionCount ?? 5;
 
   for (const code of BOOKLET_CODES) {
@@ -2026,6 +2113,8 @@ export async function generateAllOpticalFormsZip(params: {
       studentNumber8: params.studentNumber8,
       institutionCode8: params.institutionCode8 || params.cover.institutionCode8,
       classroom: params.classroom,
+      selectedSubjectId: params.selectedSubjectId,
+      subjectsOverride: params.subjectsOverride,
     });
     const fileName = buildOpticalPdfFilename(
       variantCover,
@@ -2420,14 +2509,23 @@ export async function generateStudentReportCardPdfWithPreview(
 
   drawAcademyCrestCanvas(ctx1, 108, 106, 42, preset);
 
+  const isSingleSubjKarne = analysis.subjectMetrics.length === 1 && analysis.totalQuestions > 0;
   ctx1.textAlign = 'left';
   ctx1.fillStyle = '#ffffff';
   ctx1.font = '800 32px "Plus Jakarta Sans", sans-serif';
-  ctx1.fillText(`${cover.academyName.toUpperCase()} — ÖĞRENCİ KARNE ANALİZİ`, 172, 92);
+  ctx1.fillText(
+    isSingleSubjKarne
+      ? `${cover.academyName.toUpperCase()} — TEK DERS GELİŞMİŞ KARNE`
+      : `${cover.academyName.toUpperCase()} — ÖĞRENCİ KARNE ANALİZİ`,
+    172,
+    92
+  );
   ctx1.fillStyle = '#e0f2fe';
   ctx1.font = '700 18px "DM Sans", sans-serif';
   ctx1.fillText(
-    `${effectiveProfile.label} · ${effectiveProfile.optionCount} Şıklı Değerlendirme (${penaltyText})`,
+    isSingleSubjKarne
+      ? `${analysis.subjectMetrics[0].subject} (${analysis.totalQuestions} Soru) · ${effectiveProfile.shortLabel} · ${penaltyText}`
+      : `${effectiveProfile.label} · ${effectiveProfile.optionCount} Şıklı Değerlendirme (${penaltyText})`,
     172,
     126
   );
@@ -2664,64 +2762,109 @@ export async function generateStudentReportCardPdfWithPreview(
     y1 += rowH;
   });
 
-  // Bar Chart Comparison: Öğrenci vs Akademi Ortalaması (Vibrant Multi-Color 3D Bars)
+  // Bar Chart Comparison: Single-Subject Topic Mastery OR Multi-Subject vs Academy Average
   y1 += 28;
   ctx1.fillStyle = '#0f172a';
   ctx1.font = '800 21px "Plus Jakarta Sans", sans-serif';
   ctx1.textAlign = 'left';
-  ctx1.fillText('2. ÖĞRENCİ NETİ VS AKADEMİ ORTALAMASI GRAFİĞİ', 58, y1);
+  ctx1.fillText(
+    isSingleSubjKarne
+      ? `2. ${analysis.subjectMetrics[0].subject.toLocaleUpperCase('tr-TR')} KONU BAZLI KAZANIM PERFORMANSI`
+      : '2. ÖĞRENCİ NETİ VS AKADEMİ ORTALAMASI GRAFİĞİ',
+    58,
+    y1
+  );
   y1 += 16;
 
-  const chartBoxH = Math.min(282, 42 + Math.min(6, analysis.subjectMetrics.length) * 39);
+  const chartRowCount = isSingleSubjKarne
+    ? Math.max(1, Math.min(6, analysis.topicGaps.length))
+    : Math.max(1, Math.min(6, analysis.subjectMetrics.length));
+  const chartBoxH = Math.min(282, 42 + chartRowCount * 39);
   ctx1.fillStyle = '#f8fafc';
   ctx1.fillRect(58, y1, A4_W - 116, chartBoxH);
   ctx1.strokeStyle = '#93c5fd';
   ctx1.lineWidth = 2;
   ctx1.strokeRect(58, y1, A4_W - 116, chartBoxH);
 
-  ctx1.fillStyle = '#1d4ed8';
-  ctx1.fillRect(76, y1 + 12, 16, 12);
-  ctx1.fillStyle = '#334155';
-  ctx1.font = '600 13.5px "DM Sans", sans-serif';
-  ctx1.fillText('Öğrenci Neti', 100, y1 + 23);
+  if (isSingleSubjKarne) {
+    ctx1.fillStyle = '#0d9488';
+    ctx1.fillRect(76, y1 + 12, 16, 12);
+    ctx1.fillStyle = '#334155';
+    ctx1.font = '600 13.5px "DM Sans", sans-serif';
+    ctx1.fillText('Konu Hakimiyeti (%)', 100, y1 + 23);
 
-  ctx1.fillStyle = '#10b981';
-  ctx1.fillRect(220, y1 + 12, 16, 12);
-  ctx1.fillStyle = '#334155';
-  ctx1.fillText('Akademi Ortalaması', 244, y1 + 23);
+    const subjPalette = ['#2563eb', '#0d9488', '#7c3aed', '#d97706', '#e11d48', '#0284c7'];
+    analysis.topicGaps.slice(0, 6).forEach((t, idx) => {
+      const ry = y1 + 42 + idx * 39;
+      const barColor =
+        t.status === 'Tam Hakimiyet'
+          ? '#10b981'
+          : t.status === 'Geliştirilmeli'
+            ? '#f59e0b'
+            : subjPalette[idx % subjPalette.length];
+      ctx1.fillStyle = '#0f172a';
+      ctx1.font = '700 13px "DM Sans", sans-serif';
+      ctx1.textAlign = 'left';
+      ctx1.fillText(t.topic.slice(0, 26), 76, ry + 18);
 
-  const subjPalette = ['#2563eb', '#0d9488', '#7c3aed', '#d97706', '#e11d48', '#0284c7'];
-  const maxSubjQ = Math.max(1, ...analysis.subjectMetrics.map((s) => s.total));
-  analysis.subjectMetrics.slice(0, 6).forEach((s, idx) => {
-    const ry = y1 + 42 + idx * 39;
-    const barColor = subjPalette[idx % subjPalette.length];
-    ctx1.fillStyle = '#0f172a';
-    ctx1.font = '700 13.5px "DM Sans", sans-serif';
-    ctx1.textAlign = 'left';
-    ctx1.fillText(s.subject.slice(0, 22), 76, ry + 16);
+      const barStart = 320;
+      const barMaxW = 680;
+      const fillW = Math.max(8, (Math.max(0, Math.min(100, t.masteryPct)) / 100) * barMaxW);
+      ctx1.fillStyle = '#e2e8f0';
+      ctx1.fillRect(barStart, ry + 6, barMaxW, 14);
+      ctx1.fillStyle = barColor;
+      ctx1.fillRect(barStart, ry + 6, fillW, 14);
 
-    const barStart = 290;
-    const barMaxW = 720;
-    const stuW = Math.max(8, (Math.max(0, s.net) / maxSubjQ) * barMaxW);
-    const avgW = Math.max(8, (Math.max(0, s.academyAvgNet) / maxSubjQ) * barMaxW);
+      ctx1.textAlign = 'right';
+      ctx1.fillStyle = '#0f172a';
+      ctx1.font = '700 13px "JetBrains Mono", monospace';
+      ctx1.fillText(`${t.correct}/${t.total} (%${t.masteryPct})`, A4_W - 76, ry + 18);
+    });
+  } else {
+    ctx1.fillStyle = '#1d4ed8';
+    ctx1.fillRect(76, y1 + 12, 16, 12);
+    ctx1.fillStyle = '#334155';
+    ctx1.font = '600 13.5px "DM Sans", sans-serif';
+    ctx1.fillText('Öğrenci Neti', 100, y1 + 23);
 
-    ctx1.fillStyle = '#e2e8f0';
-    ctx1.fillRect(barStart, ry + 2, barMaxW, 12);
-    ctx1.fillStyle = 'rgba(15, 23, 42, 0.14)';
-    ctx1.fillRect(barStart + 2, ry + 4, stuW, 12);
-    ctx1.fillStyle = barColor;
-    ctx1.fillRect(barStart, ry + 2, stuW, 12);
-
-    ctx1.fillStyle = '#e2e8f0';
-    ctx1.fillRect(barStart, ry + 18, barMaxW, 9);
     ctx1.fillStyle = '#10b981';
-    ctx1.fillRect(barStart, ry + 18, avgW, 9);
+    ctx1.fillRect(220, y1 + 12, 16, 12);
+    ctx1.fillStyle = '#334155';
+    ctx1.fillText('Akademi Ortalaması', 244, y1 + 23);
 
-    ctx1.textAlign = 'right';
-    ctx1.fillStyle = '#0f172a';
-    ctx1.font = '700 13px "JetBrains Mono", monospace';
-    ctx1.fillText(`${s.net.toFixed(1)} / Ort: ${s.academyAvgNet.toFixed(1)}`, A4_W - 76, ry + 17);
-  });
+    const subjPalette = ['#2563eb', '#0d9488', '#7c3aed', '#d97706', '#e11d48', '#0284c7'];
+    const maxSubjQ = Math.max(1, ...analysis.subjectMetrics.map((s) => s.total));
+    analysis.subjectMetrics.slice(0, 6).forEach((s, idx) => {
+      const ry = y1 + 42 + idx * 39;
+      const barColor = subjPalette[idx % subjPalette.length];
+      ctx1.fillStyle = '#0f172a';
+      ctx1.font = '700 13.5px "DM Sans", sans-serif';
+      ctx1.textAlign = 'left';
+      ctx1.fillText(s.subject.slice(0, 22), 76, ry + 16);
+
+      const barStart = 290;
+      const barMaxW = 720;
+      const stuW = Math.max(8, (Math.max(0, s.net) / maxSubjQ) * barMaxW);
+      const avgW = Math.max(8, (Math.max(0, s.academyAvgNet) / maxSubjQ) * barMaxW);
+
+      ctx1.fillStyle = '#e2e8f0';
+      ctx1.fillRect(barStart, ry + 2, barMaxW, 12);
+      ctx1.fillStyle = 'rgba(15, 23, 42, 0.14)';
+      ctx1.fillRect(barStart + 2, ry + 4, stuW, 12);
+      ctx1.fillStyle = barColor;
+      ctx1.fillRect(barStart, ry + 2, stuW, 12);
+
+      ctx1.fillStyle = '#e2e8f0';
+      ctx1.fillRect(barStart, ry + 18, barMaxW, 9);
+      ctx1.fillStyle = '#10b981';
+      ctx1.fillRect(barStart, ry + 18, avgW, 9);
+
+      ctx1.textAlign = 'right';
+      ctx1.fillStyle = '#0f172a';
+      ctx1.font = '700 13px "JetBrains Mono", monospace';
+      ctx1.fillText(`${s.net.toFixed(1)} / Ort: ${s.academyAvgNet.toFixed(1)}`, A4_W - 76, ry + 17);
+    });
+  }
 
   // Difficulty & Error Type Colorful 3D Cards
   const bottomBlockY = Math.min(Math.max(y1 + chartBoxH + 22, 1290), A4_H - 90 - 262);

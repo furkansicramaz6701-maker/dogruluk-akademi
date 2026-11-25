@@ -1959,6 +1959,12 @@ export default function App() {
     showToast(`Takvime eklendi: ${ev.title} (${ev.date})`);
   };
 
+  const handleBulkAddCalendarEvents = (events: EducationCalendarEvent[]) => {
+    if (events.length === 0) return;
+    setCalendarEvents((prev) => [...events, ...prev]);
+    showToast(`${events.length} toplu telafi etütü Eğitim Takvimine eklendi.`);
+  };
+
   const handleScheduleRemedial = (topicGap: TopicGapMetric) => {
     const ev = buildRemedialCalendarEvent({
       topicGap,
@@ -2897,6 +2903,8 @@ export default function App() {
               onDownloadSourceZip={handleDownloadSourceZip}
               weeklyEntries={weeklyEntriesByInst[activeInstitution.id]}
               weeklyQuestionCount={weeklyQuestionCount}
+              calendarEvents={calendarEvents}
+              onBulkScheduleRemedials={handleBulkAddCalendarEvents}
               isPrivateAdminMode={loginMode === 'admin'}
             />
           )}
@@ -3185,6 +3193,8 @@ export default function App() {
               activeInstitutionId={activeInstitution.id}
               studentPhone={activeStudentParentPhone}
               calendarEvents={calendarEvents}
+              weeklyEntries={weeklyEntriesByInst[activeInstitution.id] ?? []}
+              weeklyQuestionCount={weeklyQuestionCount}
               openEndedAnalysis={openEndedAnalysis}
               exportBusy={exportBusy}
               onUpdateCoachSummary={(summary) => {

@@ -32,6 +32,7 @@ import {
 import QRCode from 'qrcode';
 import { getLogoPreset } from '../data/logos';
 import {
+  CoachingInsightsReport,
   CoverConfig,
   CustomParentMessageTemplate,
   DetailedAnalysisType,
@@ -42,7 +43,9 @@ import {
   ParentMessageTemplateMode,
   ReportCardType,
   TopicGapMetric,
+  WeeklyStudentScore,
 } from '../types/academy';
+import { buildQuickShareWhatsAppSummary } from '../utils/coachingInsights';
 import { buildStudentDigitalKarneUrl } from '../utils/digitalKarneQr';
 import {
   buildStudentReportPdfFilename,
@@ -69,12 +72,15 @@ import {
   resolveReportCardDevelopmentStatus,
   sanitizeExamLabelForGrade,
 } from '../utils/weeklyAnalysis';
+import { CoachingInsightsPanel } from './CoachingInsightsPanel';
 import { DigitalKarneQrCard } from './DigitalKarneQrCard';
 import { DynamicAchievementBadge } from './DynamicAchievementBadge';
 import { FurkanDigitalSignature } from './FurkanDigitalSignature';
 import { KarneTrendSparkline } from './KarneTrendSparkline';
+import { MultiExamComparativeChart } from './MultiExamComparativeChart';
 import { PdfPreviewDocType, PdfPreviewModal } from './PdfPreviewModal';
 import { ReportsAnalysisChart } from './ReportsAnalysisChart';
+import { SubjectBreakdownSection } from './SubjectBreakdownSection';
 
 interface ReportsAnalysisViewProps {
   analysis: ExamAnalysisResult;
@@ -86,6 +92,8 @@ interface ReportsAnalysisViewProps {
   activeInstitutionId?: string;
   studentPhone?: string;
   calendarEvents?: EducationCalendarEvent[];
+  weeklyEntries?: WeeklyStudentScore[];
+  weeklyQuestionCount?: number;
   openEndedAnalysis?: OpenEndedPaperAnalysis | null;
   exportBusy?: boolean;
   onUpdateCoachSummary: (summary: string) => void;
@@ -126,6 +134,8 @@ export function ReportsAnalysisView({
   activeInstitutionId,
   studentPhone,
   calendarEvents = [],
+  weeklyEntries = [],
+  weeklyQuestionCount = 20,
   openEndedAnalysis = null,
   exportBusy = false,
   onUpdateCoachSummary,
@@ -270,6 +280,11 @@ export function ReportsAnalysisView({
   }, [digitalKarneUrl]);
 
   const [parentPhoneInput, setParentPhoneInput] = useState<string>(studentPhone || '');
+  const [latestCoachingInsights, setLatestCoachingInsights] =
+    useState<CoachingInsightsReport | null>(null);
+  const [quickShareOpen, setQuickShareOpen] = useState<boolean>(false);
+  const [quickShareCopied, setQuickShareCopied] = useState<boolean>(false);
+  const quickShareRef = useRef<HTMLElement | null>(null);
   const [templateMode, setTemplateMode] = useState<ParentMessageTemplateMode>(() =>
     !hasLiveAnalysis && openEndedAnalysis ? 'open-ended-10' : 'auto'
   );
@@ -614,6 +629,35 @@ Haftalık Aksiyon Planı:
 3. Boş bırakılan ${analysis.totalBlank} soru için süre tutarak branş denemesi çöz.
 4. Mevcut ivmenle bir sonraki denemede ${analysis.projectedNet.toFixed(1)} net (${analysis.projectedScore.toFixed(1)} puan) bandına ulaşabilirsin.`;
 
+  const quickShareSummary = useMemo(
+    () =>
+      buildQuickShareWhatsAppSummary({
+        analysis,
+        gradeProfile,
+        academyName: effectiveInstitutionName,
+        coachingInsights: latestCoachingInsights,
+      }),
+    [analysis, gradeProfile, effectiveInstitutionName, latestCoachingInsights]
+  );
+
+  const quickShareWhatsAppHref = buildWhatsAppHref(
+    parentPhoneInput,
+    quickShareSummary.text
+  );
+
+  const handleQuickShareTrigger = () => {
+    setParentMessage(quickShareSummary.text);
+    setQuickShareOpen(true);
+    setQuickShareCopied(true);
+    if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(quickShareSummary.text).catch(() => {});
+    }
+    window.setTimeout(() => {
+      quickShareRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }, 60);
+    window.setTimeout(() => setQuickShareCopied(false), 2600);
+  };
+
   const whatsappHref = buildWhatsAppHref(parentPhoneInput, parentMessage);
   const smsHref = buildSmsHref(parentPhoneInput, parentMessage);
 
@@ -648,6 +692,16 @@ Haftalık Aksiyon Planı:
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2.5">
+          <button
+            type="button"
+            onClick={handleQuickShareTrigger}
+            data-testid="reports-quick-share-btn"
+            title="Öğrenci sonuçlarını, güçlü yönlerini ve Coaching Insights çalışma odak alanını WhatsApp uyumlu özet olarak oluştur"
+            className="btn-3d px-3.5 py-2 rounded-xl text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
+          >
+            <Share2 className="w-4 h-4" aria-hidden="true" />
+            <span>Hızlı Paylaş (WhatsApp)</span>
+          </button>
           <button
             type="button"
             onClick={() => handleOpenPdfPreview('parent')}
@@ -748,6 +802,99 @@ Haftalık Aksiyon Planı:
             Kapat
           </button>
         </div>
+      )}
+
+      {quickShareOpen && (
+        <section
+          ref={quickShareRef}
+          aria-label="Hızlı WhatsApp Paylaşım Özeti"
+          data-testid="quick-share-preview-card"
+          className="surface-card rounded-xl p-4 space-y-3 border scroll-mt-24"
+          style={{ borderColor: 'var(--border-subtle)' }}
+        >
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <Share2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400" aria-hidden="true" />
+              <h3 className="text-sm font-extrabold">
+                WhatsApp Hızlı Paylaşım Özeti
+              </h3>
+              <span
+                className="text-[11px] font-semibold"
+                style={{ color: 'var(--text-secondary)' }}
+              >
+                {quickShareSummary.usedGeminiInsights
+                  ? '· Gemini Coaching Insights odak alanı dahil'
+                  : '· Kazanım analizinden otomatik odak alanı dahil'}
+              </span>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                data-testid="quick-share-copy-btn"
+                onClick={() => {
+                  if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+                    navigator.clipboard.writeText(quickShareSummary.text).catch(() => {});
+                  }
+                  setQuickShareCopied(true);
+                  window.setTimeout(() => setQuickShareCopied(false), 2200);
+                }}
+                className="btn-3d-secondary px-3 py-1.5 rounded-lg text-xs font-bold whitespace-nowrap cursor-pointer inline-flex items-center gap-1.5"
+              >
+                {quickShareCopied ? (
+                  <>
+                    <Check className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" aria-hidden="true" />
+                    <span>Kopyalandı</span>
+                  </>
+                ) : (
+                  <>
+                    <Copy className="w-3.5 h-3.5" aria-hidden="true" />
+                    <span>Özeti Kopyala</span>
+                  </>
+                )}
+              </button>
+              <a
+                href={quickShareWhatsAppHref}
+                target="_blank"
+                rel="noopener noreferrer"
+                data-testid="quick-share-whatsapp-link"
+                className="px-3.5 py-1.5 rounded-lg text-xs font-bold whitespace-nowrap bg-emerald-600 hover:bg-emerald-700 text-white inline-flex items-center gap-1.5"
+              >
+                <Send className="w-3.5 h-3.5" aria-hidden="true" />
+                <span>WhatsApp ile Gönder</span>
+              </a>
+              <button
+                type="button"
+                onClick={() => setQuickShareOpen(false)}
+                className="btn-3d-secondary px-2.5 py-1.5 rounded-lg text-xs font-bold cursor-pointer"
+              >
+                Kapat
+              </button>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+            <div className="surface-alt rounded-lg p-3 border" style={{ borderColor: 'var(--border-subtle)' }}>
+              <div className="font-extrabold text-emerald-700 dark:text-emerald-300 mb-1">
+                Güçlü Yönler
+              </div>
+              <p style={{ color: 'var(--text-secondary)' }}>{quickShareSummary.strengthsText}</p>
+            </div>
+            <div className="surface-alt rounded-lg p-3 border" style={{ borderColor: 'var(--border-subtle)' }}>
+              <div className="font-extrabold mb-1" style={{ color: 'var(--accent-primary)' }}>
+                Çalışma Odak Alanı (Coaching Insights)
+              </div>
+              <p style={{ color: 'var(--text-secondary)' }}>{quickShareSummary.focusAreaText}</p>
+            </div>
+          </div>
+
+          <pre
+            data-testid="quick-share-generated-text"
+            className="surface-alt rounded-lg p-3 text-xs whitespace-pre-wrap font-sans leading-relaxed border"
+            style={{ borderColor: 'var(--border-subtle)' }}
+          >
+            {quickShareSummary.text}
+          </pre>
+        </section>
       )}
 
       {!hasLiveAnalysis && !openEndedAnalysis && (
@@ -1282,6 +1429,34 @@ Haftalık Aksiyon Planı:
         hasLiveAnalysis={hasLiveAnalysis}
         openEndedAnalysis={openEndedAnalysis}
         institutionName={effectiveInstitutionName}
+        onOpenOmr={onOpenOmr}
+      />
+
+      <MultiExamComparativeChart
+        analysis={analysis}
+        hasLiveAnalysis={hasLiveAnalysis}
+        openEndedAnalysis={openEndedAnalysis}
+        onOpenOmr={onOpenOmr}
+      />
+
+      <SubjectBreakdownSection
+        analysis={analysis}
+        hasLiveAnalysis={hasLiveAnalysis}
+        onScheduleRemedial={onScheduleRemedial}
+        onOpenOmr={onOpenOmr}
+      />
+
+      <CoachingInsightsPanel
+        analysis={analysis}
+        gradeProfile={gradeProfile}
+        hasLiveAnalysis={hasLiveAnalysis}
+        penaltyDivisor={analysis.penaltyDivisor}
+        weeklyEntries={weeklyEntries}
+        weeklyQuestionCount={weeklyQuestionCount}
+        onScheduleRemedial={onScheduleRemedial}
+        onApplyCoachNote={onUpdateCoachSummary}
+        onInsightsChange={setLatestCoachingInsights}
+        onQuickShare={handleQuickShareTrigger}
         onOpenOmr={onOpenOmr}
       />
 

@@ -128,25 +128,32 @@ export function inspectAnswerStringReadability(
     return null;
   }
 
-  // 2. Check compact or whitespace-separated OMR sequence
+  // 2. Check compact (including bracketed multi-mark tokens like AB[CD]E) or whitespace-separated OMR sequence
   const compact = raw.replace(/[\s,;|\t]+/g, '');
   if (!compact) return null;
 
+  const compactUnits =
+    compact.match(/\[[^\]]+\]|\([^)]+\)|./g) ?? [];
   const invalidChars: string[] = [];
   let readableCount = 0;
   let hasOptionEOn4 = false;
+  let hasMultiMark = false;
 
-  for (let i = 0; i < compact.length; i++) {
-    const ch = compact[i].toUpperCase();
-    if (allowedLetters.includes(ch)) {
+  for (let i = 0; i < compactUnits.length; i++) {
+    const unit = compactUnits[i];
+    const upperUnit = unit.toUpperCase();
+    if (upperUnit.length === 1 && allowedLetters.includes(upperUnit)) {
       readableCount++;
-    } else if (blankChars.has(ch)) {
+    } else if (upperUnit.length === 1 && blankChars.has(upperUnit)) {
       // Valid blank marker
+    } else if (/^[\[(]([A-E/+]+)[\])]$/.test(upperUnit)) {
+      hasMultiMark = true;
+      invalidChars.push(`${i + 1}.sıra:'${unit}'`);
     } else {
-      if (ch === 'E' && optionCount === 4) {
+      if (upperUnit === 'E' && optionCount === 4) {
         hasOptionEOn4 = true;
       }
-      invalidChars.push(`${i + 1}.sıra:'${compact[i]}'`);
+      invalidChars.push(`${i + 1}.sıra:'${unit}'`);
     }
   }
 
@@ -157,7 +164,9 @@ export function inspectAnswerStringReadability(
       readableCount,
       reason: hasOptionEOn4
         ? `4 şıklı sınavda geçersiz 'E' şıkkı veya okunmayan karakter tespit edildi (${invalidChars.slice(0, 5).join(', ')}).`
-        : `Cevap satırında okunamayan veya şık dışı karakterler var (${invalidChars.slice(0, 5).join(', ')}). Yalnızca ${allowedLetters.join('-')} ve boş için '-' kullanılmalıdır.`,
+        : hasMultiMark
+          ? `Çoklu / çift şık işaretlemesi tespit edildi (${invalidChars.slice(0, 5).join(', ')}). Her soru için yalnızca tek bir şık (${allowedLetters.join('-')}) veya boş ('-') bulunmalıdır.`
+          : `Cevap satırında okunamayan veya şık dışı karakterler var (${invalidChars.slice(0, 5).join(', ')}). Yalnızca ${allowedLetters.join('-')} ve boş için '-' kullanılmalıdır.`,
     };
   }
 
@@ -444,3 +453,340 @@ export function formatErrorReportClipboardText(report: OmrScanErrorReport): stri
 export function countDistinctErrorRows(errors: OmrScanErrorItem[]): number {
   return new Set(errors.map((e) => `${e.sheetName}::${e.rowNumber}`)).size;
 }
+
+export interface OmrValidationTokenIssue {
+  questionNumber: number;
+  rawToken: string;
+}
+
+export interface OmrValidationWarning {
+  id: string;
+  type:
+    | 'empty-bubbles'
+    | 'multiple-marks'
+    | 'invalid-option'
+    | 'short-scan'
+    | 'student-number'
+    | 'answer-key';
+  label: string;
+  detail: string;
+  severity: 'warning' | 'error';
+}
+
+export interface OmrValidationSummary {
+  hasStudentInput: boolean;
+  expectedCount: number;
+  scannedCount: number;
+  validCount: number;
+  explicitEmptyCount: number;
+  unmarkedTrailingCount: number;
+  emptyBubbleCount: number;
+  emptyQuestionNumbers: number[];
+  multipleMarkCount: number;
+  multipleMarkItems: OmrValidationTokenIssue[];
+  invalidOptionCount: number;
+  invalidOptionItems: OmrValidationTokenIssue[];
+  studentNumberValid: boolean;
+  studentNumberIssue?: string;
+  answerKeyReady: boolean;
+  answerKeyMarkedCount: number;
+  severity: 'idle' | 'ok' | 'warning' | 'error';
+  headline: string;
+  warnings: OmrValidationWarning[];
+}
+
+function classifySingleOrMultiToken(
+  rawToken: string,
+  allowedLetters: string[],
+  blankChars: Set<string>
+): 'valid' | 'empty' | 'multiple' | 'invalid' {
+  const cleaned = rawToken.trim().replace(/,+$/, '');
+  if (!cleaned) return 'empty';
+  const upper = cleaned.toUpperCase();
+
+  if (blankChars.has(upper) || /^[\-*. _]+$/.test(upper) || /^BO[SŞ]$/.test(upper)) {
+    return 'empty';
+  }
+  if (upper.length === 1 && allowedLetters.includes(upper)) {
+    return 'valid';
+  }
+
+  // Strip bracket/parenthesis & separators to check for multiple-bubble marks (e.g. AB, A/B, [CD], A+B)
+  const unwrapped = upper.replace(/^[\[(]|[\])]$/g, '');
+  const parts = unwrapped
+    .split(/[/,+&\s]+/)
+    .map((p) => p.trim())
+    .filter(Boolean);
+  if (parts.length >= 2 && parts.every((p) => p.length === 1 && allowedLetters.includes(p))) {
+    return 'multiple';
+  }
+  const lettersOnly = unwrapped.replace(/[/,+&\s]/g, '');
+  if (
+    lettersOnly.length >= 2 &&
+    /^[A-E]+$/.test(lettersOnly) &&
+    [...lettersOnly].every((ch) => allowedLetters.includes(ch))
+  ) {
+    return 'multiple';
+  }
+
+  return 'invalid';
+}
+
+export function analyzeOmrResponseValidation(params: {
+  studentNumber?: string;
+  studentAnswersRaw: string;
+  answerKeyRaw?: string;
+  expectedCount: number;
+  optionCount: 4 | 5;
+}): OmrValidationSummary {
+  const {
+    studentNumber = '',
+    studentAnswersRaw,
+    answerKeyRaw = '',
+    expectedCount,
+    optionCount,
+  } = params;
+
+  const safeExpected = Math.max(1, expectedCount || 20);
+  const allowedLetters = optionCount === 4 ? ['A', 'B', 'C', 'D'] : ['A', 'B', 'C', 'D', 'E'];
+  const blankChars = new Set(['-', '*', '.', '_']);
+
+  const stuNoCheck = validateStudentNumberField(studentNumber);
+  const keyTrimmed = answerKeyRaw.trim();
+  const keyUnits = keyTrimmed
+    ? keyTrimmed.replace(/[\s,;|\t\n]+/g, '').match(/\[[^\]]+\]|\([^)]+\)|./g) ?? []
+    : [];
+  const answerKeyMarkedCount = keyUnits.filter((u) =>
+    allowedLetters.includes(u.toUpperCase())
+  ).length;
+  const answerKeyReady = Boolean(keyTrimmed) && answerKeyMarkedCount > 0;
+
+  const raw = studentAnswersRaw.trim();
+  if (!raw) {
+    const warnings: OmrValidationWarning[] = [];
+    if (!stuNoCheck.valid && stuNoCheck.reason) {
+      warnings.push({
+        id: 'student-number',
+        type: 'student-number',
+        label: 'Öğrenci No Hatası',
+        detail: stuNoCheck.reason,
+        severity: 'error',
+      });
+    }
+    if (!answerKeyReady) {
+      warnings.push({
+        id: 'answer-key',
+        type: 'answer-key',
+        label: 'Eksik Cevap Anahtarı',
+        detail: 'Kaydetmeden önce geçerli bir cevap anahtarı yükleyin veya yazın.',
+        severity: 'warning',
+      });
+    }
+    return {
+      hasStudentInput: false,
+      expectedCount: safeExpected,
+      scannedCount: 0,
+      validCount: 0,
+      explicitEmptyCount: 0,
+      unmarkedTrailingCount: 0,
+      emptyBubbleCount: 0,
+      emptyQuestionNumbers: [],
+      multipleMarkCount: 0,
+      multipleMarkItems: [],
+      invalidOptionCount: 0,
+      invalidOptionItems: [],
+      studentNumberValid: stuNoCheck.valid,
+      studentNumberIssue: stuNoCheck.reason,
+      answerKeyReady,
+      answerKeyMarkedCount,
+      severity: !stuNoCheck.valid ? 'error' : 'idle',
+      headline: !stuNoCheck.valid
+        ? 'Öğrenci numarası doğrulanamadı; kaydetmeden önce düzeltin.'
+        : 'Öğrenci optik cevapları girildiğinde boş ve çoklu işaretleme kontrolü otomatik çalışır.',
+      warnings,
+    };
+  }
+
+  let validCount = 0;
+  const explicitEmptyQuestions: number[] = [];
+  const multipleMarkItems: OmrValidationTokenIssue[] = [];
+  const invalidOptionItems: OmrValidationTokenIssue[] = [];
+  let scannedCount = 0;
+
+  const numberedMatches = [
+    ...raw.matchAll(
+      /(?:^|[\s,;|\n\t])(\d{1,3})\s*[:.\-,;\t ]\s*(\[[A-Za-z0-9/+,\s]+\]|\([A-Za-z0-9/+,\s]+\)|[^\s;|\n\t]+)/g
+    ),
+  ];
+
+  if (numberedMatches.length >= 2 || (numberedMatches.length === 1 && /^\d{1,3}\s*[:.\-]/.test(raw))) {
+    const seenQuestions = new Set<number>();
+    for (const match of numberedMatches) {
+      const qNo = parseInt(match[1], 10);
+      const token = match[2].replace(/,+$/, '');
+      if (qNo < 1 || qNo > safeExpected) continue;
+      seenQuestions.add(qNo);
+      const kind = classifySingleOrMultiToken(token, allowedLetters, blankChars);
+      if (kind === 'valid') validCount++;
+      else if (kind === 'empty') explicitEmptyQuestions.push(qNo);
+      else if (kind === 'multiple') multipleMarkItems.push({ questionNumber: qNo, rawToken: token });
+      else invalidOptionItems.push({ questionNumber: qNo, rawToken: token });
+    }
+    scannedCount = seenQuestions.size;
+  } else {
+    const splitTokens = raw
+      .split(/[\s,;|\n\t]+/)
+      .map((t) => t.trim())
+      .filter(Boolean);
+    const hasMultiCharSeparatedTokens =
+      splitTokens.length >= 2 &&
+      splitTokens.some((t) => t.length >= 2);
+
+    if (hasMultiCharSeparatedTokens) {
+      scannedCount = splitTokens.length;
+      splitTokens.forEach((tok, idx) => {
+        const qNo = idx + 1;
+        const kind = classifySingleOrMultiToken(tok, allowedLetters, blankChars);
+        if (kind === 'valid') validCount++;
+        else if (kind === 'empty') explicitEmptyQuestions.push(qNo);
+        else if (kind === 'multiple') multipleMarkItems.push({ questionNumber: qNo, rawToken: tok });
+        else invalidOptionItems.push({ questionNumber: qNo, rawToken: tok });
+      });
+    } else {
+      const compact = raw.replace(/[\s,;|\n\t]+/g, '');
+      const units = compact.match(/\[[^\]]+\]|\([^)]+\)|./g) ?? [];
+      scannedCount = units.length;
+      units.forEach((unit, idx) => {
+        const qNo = idx + 1;
+        const kind = classifySingleOrMultiToken(unit, allowedLetters, blankChars);
+        if (kind === 'valid') validCount++;
+        else if (kind === 'empty') explicitEmptyQuestions.push(qNo);
+        else if (kind === 'multiple') multipleMarkItems.push({ questionNumber: qNo, rawToken: unit });
+        else invalidOptionItems.push({ questionNumber: qNo, rawToken: unit });
+      });
+    }
+  }
+
+  const unmarkedTrailingCount = Math.max(0, safeExpected - scannedCount);
+  const trailingQuestionNumbers: number[] = [];
+  for (let q = scannedCount + 1; q <= safeExpected && trailingQuestionNumbers.length < 15; q++) {
+    trailingQuestionNumbers.push(q);
+  }
+  const emptyQuestionNumbers = Array.from(
+    new Set([...explicitEmptyQuestions, ...trailingQuestionNumbers])
+  ).sort((a, b) => a - b);
+  const explicitEmptyCount = explicitEmptyQuestions.length;
+  const emptyBubbleCount = explicitEmptyCount + unmarkedTrailingCount;
+  const multipleMarkCount = multipleMarkItems.length;
+  const invalidOptionCount = invalidOptionItems.length;
+
+  const warnings: OmrValidationWarning[] = [];
+
+  if (!stuNoCheck.valid && stuNoCheck.reason) {
+    warnings.push({
+      id: 'student-number',
+      type: 'student-number',
+      label: 'Geçersiz Öğrenci Numarası',
+      detail: stuNoCheck.reason,
+      severity: 'error',
+    });
+  }
+
+  if (multipleMarkCount > 0) {
+    const sample = multipleMarkItems
+      .slice(0, 5)
+      .map((item) => `S${item.questionNumber}:${item.rawToken}`)
+      .join(', ');
+    warnings.push({
+      id: 'multiple-marks',
+      type: 'multiple-marks',
+      label: `Çoklu İşaretleme (Multiple Marks · ${multipleMarkCount})`,
+      detail: `${multipleMarkCount} soruda birden fazla şık işaretlenmiş görünüyor (${sample}${multipleMarkCount > 5 ? '…' : ''}). Kaydetmeden önce tek şıkka indirin veya '-' yapın.`,
+      severity: 'error',
+    });
+  }
+
+  if (invalidOptionCount > 0) {
+    const sample = invalidOptionItems
+      .slice(0, 5)
+      .map((item) => `S${item.questionNumber}:'${item.rawToken}'`)
+      .join(', ');
+    warnings.push({
+      id: 'invalid-option',
+      type: 'invalid-option',
+      label: `Okunmayan / Geçersiz Şık (${invalidOptionCount})`,
+      detail: `${invalidOptionCount} konumda ${allowedLetters.join('-')} dışında karakter bulundu (${sample}${invalidOptionCount > 5 ? '…' : ''}).`,
+      severity: 'error',
+    });
+  }
+
+  if (emptyBubbleCount > 0) {
+    const sampleQ = emptyQuestionNumbers
+      .slice(0, 8)
+      .map((n) => `S${n}`)
+      .join(', ');
+    const parts: string[] = [];
+    if (explicitEmptyCount > 0) parts.push(`${explicitEmptyCount} açık boş ('-')`);
+    if (unmarkedTrailingCount > 0) parts.push(`${unmarkedTrailingCount} eksik/taranmayan son soru`);
+    warnings.push({
+      id: 'empty-bubbles',
+      type: 'empty-bubbles',
+      label: `Boş İşaretleme (Empty Bubbles · ${emptyBubbleCount})`,
+      detail: `${parts.join(' + ')} tespit edildi${sampleQ ? ` (${sampleQ}${emptyQuestionNumbers.length > 8 ? '…' : ''})` : ''}. Öğrenci gerçekten boş bıraktıysa kaydetmeye devam edebilirsiniz.`,
+      severity: 'warning',
+    });
+  }
+
+  if (!answerKeyReady) {
+    warnings.push({
+      id: 'answer-key',
+      type: 'answer-key',
+      label: 'Cevap Anahtarı Eksik',
+      detail: 'Analiz ve kayıt öncesinde geçerli cevap anahtarı eklenmelidir.',
+      severity: 'error',
+    });
+  }
+
+  const hasBlockingError =
+    !stuNoCheck.valid ||
+    multipleMarkCount > 0 ||
+    invalidOptionCount > 0 ||
+    !answerKeyReady;
+
+  const severity: OmrValidationSummary['severity'] = hasBlockingError
+    ? 'error'
+    : emptyBubbleCount > 0
+      ? 'warning'
+      : 'ok';
+
+  let headline = 'Tüm satırlar temiz: boş veya çoklu işaretleme hatası yok, kaydetmeye hazır.';
+  if (hasBlockingError) {
+    const errorCount = warnings.filter((w) => w.severity === 'error').length;
+    headline = `Kaydetmeden önce düzeltilmesi gereken ${errorCount} kritik doğrulama bulgusu var.`;
+  } else if (emptyBubbleCount > 0) {
+    headline = `${emptyBubbleCount} boş işaretleme (Empty Bubbles) tespit edildi — optik kağıtla teyit edip kaydedebilirsiniz.`;
+  }
+
+  return {
+    hasStudentInput: true,
+    expectedCount: safeExpected,
+    scannedCount,
+    validCount,
+    explicitEmptyCount,
+    unmarkedTrailingCount,
+    emptyBubbleCount,
+    emptyQuestionNumbers,
+    multipleMarkCount,
+    multipleMarkItems,
+    invalidOptionCount,
+    invalidOptionItems,
+    studentNumberValid: stuNoCheck.valid,
+    studentNumberIssue: stuNoCheck.reason,
+    answerKeyReady,
+    answerKeyMarkedCount,
+    severity,
+    headline,
+    warnings,
+  };
+}
+

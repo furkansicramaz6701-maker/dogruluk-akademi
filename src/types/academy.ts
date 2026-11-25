@@ -597,6 +597,41 @@ export interface WeeklyCohortInsights {
   highAchieverCount: number;
 }
 
+export type CoachingTrendDirection = 'yukselis' | 'dengeli' | 'destek-gerekli';
+
+export type CoachingFocusPriority = 'yuksek' | 'orta' | 'pekistirme';
+
+export interface CoachingFocusArea {
+  subject: string;
+  topic: string;
+  priority: CoachingFocusPriority;
+  reason: string;
+  recommendedAction: string;
+  weeklyHours: number;
+}
+
+export interface CoachingInsightsReport {
+  headline: string;
+  trendDirection: CoachingTrendDirection;
+  trendSummary: string;
+  strengthsHighlight: string;
+  focusAreas: CoachingFocusArea[];
+  weeklyCoachNote: string;
+  generatedAt: string;
+}
+
+export interface MultiExamTrendSummary {
+  exams: HistoricalExamPoint[];
+  examCount: number;
+  firstExam: HistoricalExamPoint | null;
+  latestExam: HistoricalExamPoint | null;
+  netDelta: number;
+  scoreDelta: number;
+  recentStepNetDelta: number;
+  avgGapVsAcademy: number;
+  momentum: CoachingTrendDirection;
+}
+
 export type ActiveTab =
   | 'dashboard'
   | 'weekly'
@@ -609,4 +644,5 @@ export type ActiveTab =
   | 'forms'
   | 'drive'
   | 'sample';
+
 
