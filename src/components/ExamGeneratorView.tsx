@@ -58,6 +58,7 @@ import {
   extractCurriculumOverrideFromText,
   parseQuestionsSpreadsheet,
 } from '../utils/dynamicQuestionSource';
+import { NumericStepperInput } from './NumericStepperInput';
 import {
   computeKeptUploadedPdfIndices,
   extractPrintableTextFromPdfBytes,
@@ -1746,17 +1747,26 @@ export function ExamGeneratorView({
                 />
               </label>
 
-              <label className="block text-xs font-semibold">
-                <span style={{ color: 'var(--text-secondary)' }}>Üretilecek Soru Sayısı</span>
-                <input
-                  type="number"
-                  min={10}
-                  max={120}
-                  value={mebQuestionCount}
-                  onChange={(e) => setMebQuestionCount(Math.max(10, Number(e.target.value) || 40))}
-                  className="mt-1 w-full rounded-lg px-3 py-2 text-xs surface-card font-mono-num"
-                />
-              </label>
+              <div className="block text-xs font-semibold">
+                <label
+                  htmlFor="meb-question-count-input"
+                  style={{ color: 'var(--text-secondary)' }}
+                >
+                  Üretilecek Soru Sayısı
+                </label>
+                <div className="mt-1">
+                  <NumericStepperInput
+                    id="meb-question-count-input"
+                    ariaLabel="MEB Üretilecek Soru Sayısı"
+                    inputTestId="meb-question-count-input"
+                    value={mebQuestionCount}
+                    min={10}
+                    max={120}
+                    surfaceClass="surface-card"
+                    onChange={(val) => setMebQuestionCount(val)}
+                  />
+                </div>
+              </div>
 
               <div className="flex items-end">
                 <label className="btn-3d-secondary w-full py-2 px-4 rounded-xl text-xs font-bold text-center cursor-pointer inline-flex items-center justify-center gap-1.5">
@@ -1813,62 +1823,70 @@ export function ExamGeneratorView({
         {/* TAB 2: Dinamik Kaynak Mikseri & Excel Soru Bankası */}
         {aiTab === 'dynamic-mix' && (
           <div className="surface-alt rounded-xl p-4 space-y-4">
-            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-              <label className="surface-card rounded-lg p-3 block text-xs font-semibold">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+              <div className="surface-card rounded-lg p-3 block text-xs font-semibold">
                 <span style={{ color: 'var(--text-secondary)' }}>Müfredat Havuzu (Adet)</span>
-                <input
-                  type="number"
-                  min={0}
-                  max={120}
-                  value={sourceMix.curriculumPool}
-                  onChange={(e) =>
-                    setSourceMix((p) => ({ ...p, curriculumPool: Math.max(0, Number(e.target.value)) }))
-                  }
-                  className="mt-1.5 w-full rounded-md px-2.5 py-1.5 text-sm font-mono-num surface-alt"
-                />
-              </label>
+                <div className="mt-1.5">
+                  <NumericStepperInput
+                    ariaLabel="Müfredat Havuzu Adedi"
+                    inputTestId="mix-curriculum-count-input"
+                    value={sourceMix.curriculumPool}
+                    min={0}
+                    max={120}
+                    surfaceClass="surface-alt"
+                    compact
+                    onChange={(val) => setSourceMix((p) => ({ ...p, curriculumPool: val }))}
+                  />
+                </div>
+              </div>
 
-              <label className="surface-card rounded-lg p-3 block text-xs font-semibold">
+              <div className="surface-card rounded-lg p-3 block text-xs font-semibold">
                 <span style={{ color: 'var(--text-secondary)' }}>MEB Müfredat PDF (Adet)</span>
-                <input
-                  type="number"
-                  min={0}
-                  max={120}
-                  value={sourceMix.mebPdf}
-                  onChange={(e) =>
-                    setSourceMix((p) => ({ ...p, mebPdf: Math.max(0, Number(e.target.value)) }))
-                  }
-                  className="mt-1.5 w-full rounded-md px-2.5 py-1.5 text-sm font-mono-num surface-alt"
-                />
-              </label>
+                <div className="mt-1.5">
+                  <NumericStepperInput
+                    ariaLabel="MEB Müfredat PDF Adedi"
+                    inputTestId="mix-meb-count-input"
+                    value={sourceMix.mebPdf}
+                    min={0}
+                    max={120}
+                    surfaceClass="surface-alt"
+                    compact
+                    onChange={(val) => setSourceMix((p) => ({ ...p, mebPdf: val }))}
+                  />
+                </div>
+              </div>
 
-              <label className="surface-card rounded-lg p-3 block text-xs font-semibold">
+              <div className="surface-card rounded-lg p-3 block text-xs font-semibold">
                 <span style={{ color: 'var(--text-secondary)' }}>İnternet Araştırması (Adet)</span>
-                <input
-                  type="number"
-                  min={0}
-                  max={120}
-                  value={sourceMix.internetSearch}
-                  onChange={(e) =>
-                    setSourceMix((p) => ({ ...p, internetSearch: Math.max(0, Number(e.target.value)) }))
-                  }
-                  className="mt-1.5 w-full rounded-md px-2.5 py-1.5 text-sm font-mono-num surface-alt"
-                />
-              </label>
+                <div className="mt-1.5">
+                  <NumericStepperInput
+                    ariaLabel="İnternet Araştırması Adedi"
+                    inputTestId="mix-internet-count-input"
+                    value={sourceMix.internetSearch}
+                    min={0}
+                    max={120}
+                    surfaceClass="surface-alt"
+                    compact
+                    onChange={(val) => setSourceMix((p) => ({ ...p, internetSearch: val }))}
+                  />
+                </div>
+              </div>
 
-              <label className="surface-card rounded-lg p-3 block text-xs font-semibold">
+              <div className="surface-card rounded-lg p-3 block text-xs font-semibold">
                 <span style={{ color: 'var(--text-secondary)' }}>Özel Soru Bankası / Excel</span>
-                <input
-                  type="number"
-                  min={0}
-                  max={120}
-                  value={sourceMix.textbookBank}
-                  onChange={(e) =>
-                    setSourceMix((p) => ({ ...p, textbookBank: Math.max(0, Number(e.target.value)) }))
-                  }
-                  className="mt-1.5 w-full rounded-md px-2.5 py-1.5 text-sm font-mono-num surface-alt"
-                />
-              </label>
+                <div className="mt-1.5">
+                  <NumericStepperInput
+                    ariaLabel="Özel Soru Bankası Adedi"
+                    inputTestId="mix-bank-count-input"
+                    value={sourceMix.textbookBank}
+                    min={0}
+                    max={120}
+                    surfaceClass="surface-alt"
+                    compact
+                    onChange={(val) => setSourceMix((p) => ({ ...p, textbookBank: val }))}
+                  />
+                </div>
+              </div>
             </div>
 
             <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
@@ -1926,10 +1944,11 @@ export function ExamGeneratorView({
                   className="mt-1 w-full rounded-lg px-3 py-2 text-sm surface-card"
                 />
               </label>
-              <label className="block text-xs font-semibold">
-                <span style={{ color: 'var(--text-secondary)' }}>Zorluk & Adet</span>
-                <div className="mt-1 grid grid-cols-2 gap-2">
+              <div className="block text-xs font-semibold">
+                <span style={{ color: 'var(--text-secondary)' }}>Zorluk &amp; Adet</span>
+                <div className="mt-1 grid grid-cols-2 gap-2 items-center">
                   <select
+                    aria-label="İnternet araştırması zorluk seviyesi"
                     value={searchDifficulty}
                     onChange={(e) => setSearchDifficulty(e.target.value as DifficultyLevel)}
                     className="rounded-lg px-2 py-2 text-sm surface-card"
@@ -1938,16 +1957,18 @@ export function ExamGeneratorView({
                     <option value="Orta">Orta</option>
                     <option value="Zor">Zor</option>
                   </select>
-                  <input
-                    type="number"
+                  <NumericStepperInput
+                    ariaLabel="İnternetten üretilecek soru adedi"
+                    inputTestId="internet-search-count-input"
+                    value={searchCount}
                     min={1}
                     max={15}
-                    value={searchCount}
-                    onChange={(e) => setSearchCount(Number(e.target.value))}
-                    className="rounded-lg px-2 py-2 text-sm surface-card font-mono-num"
+                    surfaceClass="surface-card"
+                    compact
+                    onChange={(val) => setSearchCount(val)}
                   />
                 </div>
-              </label>
+              </div>
               <div className="flex items-end">
                 <button
                   type="button"
@@ -2010,17 +2031,26 @@ export function ExamGeneratorView({
                   ))}
                 </select>
               </label>
-              <label className="block text-xs font-semibold">
-                <span style={{ color: 'var(--text-secondary)' }}>Üretilecek Soru Adedi</span>
-                <input
-                  type="number"
-                  min={1}
-                  max={20}
-                  value={textbookCount}
-                  onChange={(e) => setTextbookCount(Number(e.target.value))}
-                  className="mt-1 w-full rounded-lg px-3 py-2 text-sm surface-card font-mono-num"
-                />
-              </label>
+              <div className="block text-xs font-semibold">
+                <label
+                  htmlFor="textbook-quick-count-input"
+                  style={{ color: 'var(--text-secondary)' }}
+                >
+                  Üretilecek Soru Adedi
+                </label>
+                <div className="mt-1">
+                  <NumericStepperInput
+                    id="textbook-quick-count-input"
+                    ariaLabel="Ders kitabından üretilecek soru adedi"
+                    inputTestId="textbook-quick-count-input"
+                    value={textbookCount}
+                    min={1}
+                    max={20}
+                    surfaceClass="surface-card"
+                    onChange={(val) => setTextbookCount(val)}
+                  />
+                </div>
+              </div>
               <div className="flex items-end">
                 <label className="btn-3d-secondary w-full py-2.5 px-4 rounded-xl text-xs font-bold text-center cursor-pointer">
                   {textbookFile
@@ -2197,15 +2227,27 @@ export function ExamGeneratorView({
                 className="mt-1 w-full rounded-lg px-3 py-2 text-sm surface-alt"
               />
             </label>
-            <label className="block text-xs font-semibold">
-              <span style={{ color: 'var(--text-secondary)' }}>Sınav Süresi (Dakika)</span>
-              <input
-                type="number"
-                value={cover.durationMinutes}
-                onChange={(e) => onUpdateCover({ durationMinutes: Number(e.target.value) })}
-                className="mt-1 w-full rounded-lg px-3 py-2 text-sm surface-alt font-mono-num"
-              />
-            </label>
+            <div className="block text-xs font-semibold">
+              <label
+                htmlFor="cover-duration-minutes-input"
+                style={{ color: 'var(--text-secondary)' }}
+              >
+                Sınav Süresi (Dakika)
+              </label>
+              <div className="mt-1">
+                <NumericStepperInput
+                  id="cover-duration-minutes-input"
+                  ariaLabel="Sınav Süresi Dakika"
+                  inputTestId="cover-duration-minutes-input"
+                  value={cover.durationMinutes}
+                  min={10}
+                  max={300}
+                  step={5}
+                  surfaceClass="surface-alt"
+                  onChange={(val) => onUpdateCover({ durationMinutes: val })}
+                />
+              </div>
+            </div>
             <div className="block text-xs font-semibold sm:col-span-2">
               <span style={{ color: 'var(--text-secondary)' }}>Aktif Renk Paleti &amp; Düzen Önizleme</span>
               {(() => {

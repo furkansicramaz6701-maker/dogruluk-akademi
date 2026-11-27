@@ -21,6 +21,7 @@ interface MultiExamComparativeChartProps {
   analysis: ExamAnalysisResult;
   hasLiveAnalysis: boolean;
   openEndedAnalysis?: OpenEndedPaperAnalysis | null;
+  isSamplePreview?: boolean;
   onOpenOmr?: () => void;
 }
 
@@ -99,6 +100,7 @@ export function MultiExamComparativeChart({
   analysis,
   hasLiveAnalysis,
   openEndedAnalysis,
+  isSamplePreview = false,
   onOpenOmr,
 }: MultiExamComparativeChartProps) {
   const [selectedSubject, setSelectedSubject] = useState<string>('ALL');
@@ -111,8 +113,9 @@ export function MultiExamComparativeChart({
         analysis,
         hasLiveAnalysis,
         openEndedAnalysis,
+        isSamplePreview,
       }),
-    [analysis, hasLiveAnalysis, openEndedAnalysis]
+    [analysis, hasLiveAnalysis, openEndedAnalysis, isSamplePreview]
   );
 
   // Reset subject selection cleanly if grade changes
@@ -129,10 +132,12 @@ export function MultiExamComparativeChart({
   const subjectLabel =
     activeSubject === 'ALL' ? 'Tüm Sınav (Genel Net)' : activeSubject;
 
-  if (!hasLiveAnalysis && !openEndedAnalysis) {
+  const isFirstExamOnly = dataset.examPoints.length === 1;
+
+  if ((!hasLiveAnalysis && !openEndedAnalysis) || dataset.examPoints.length === 0) {
     return (
       <section
-        aria-label="Son 5 Sınav Karşılaştırmalı Gelişim"
+        aria-label="Deneme Karşılaştırmalı Gelişim"
         data-testid="multi-exam-comparative-section"
         className="surface-card rounded-xl p-5 border"
         style={{ borderColor: 'var(--border-subtle)' }}
@@ -142,10 +147,10 @@ export function MultiExamComparativeChart({
             <Layers className="w-5 h-5" style={{ color: 'var(--chart-1)' }} aria-hidden="true" />
             <div>
               <h3 className="text-base font-bold">
-                Son 5 Sınav Karşılaştırmalı Ders Gelişimi
+                Çoklu Sınav Karşılaştırmalı Ders Gelişimi
               </h3>
               <p className="text-xs mt-0.5" style={{ color: 'var(--text-secondary)' }}>
-                Optik değerlendirme yapıldığında öğrencinin son 5 denemedeki ders bazlı ilerlemesi sınıf ortalamasıyla karşılaştırılır.
+                Henüz deneme yapılmamış — İlk deneme kaydı bekleniyor. Optik okuma değerlendirildiğinde ders bazlı gelişim burada kaydedilir.
               </p>
             </div>
           </div>
@@ -179,10 +184,14 @@ export function MultiExamComparativeChart({
           />
           <div>
             <h3 id="multi-exam-comparative-heading" className="text-base font-extrabold">
-              Son 5 Sınav Karşılaştırmalı Gelişim ({subjectLabel})
+              {isFirstExamOnly
+                ? `İlk Deneme Kaydı & Gelişim Takibi (${subjectLabel})`
+                : `Son ${dataset.examPoints.length} Sınav Karşılaştırmalı Gelişim (${subjectLabel})`}
             </h3>
             <p className="text-xs mt-0.5" style={{ color: 'var(--text-secondary)' }}>
-              Öğrencinin son 5 denemedeki ilerleyişini ders seçerek ve sınıf ortalaması katmanını açıp kapatarak inceleyin.
+              {isFirstExamOnly
+                ? 'Kurumda kaydedilen ilk deneme sonucu esas alındı; sonraki denemeler eklendikçe gelişim eğrisi otomatik uzar.'
+                : `Öğrencinin son ${dataset.examPoints.length} denemedeki ilerleyişini ders seçerek ve sınıf ortalaması katmanını açıp kapatarak inceleyin.`}
             </p>
           </div>
         </div>
@@ -283,20 +292,26 @@ export function MultiExamComparativeChart({
 
         <div className="surface-alt rounded-xl p-3">
           <div className="text-[11px] font-semibold" style={{ color: 'var(--text-secondary)' }}>
-            5 Sınavlık İlerleme İvmesi
+            {isFirstExamOnly ? 'Kayıt Durumu' : `${dataset.examPoints.length} Sınavlık İlerleme İvmesi`}
           </div>
-          <div
-            className={`text-lg font-extrabold font-mono-num mt-0.5 ${
-              series.trendDelta5Exams >= 0
-                ? 'text-emerald-600 dark:text-emerald-400'
-                : 'text-rose-600 dark:text-rose-400'
-            }`}
-          >
-            {series.trendDelta5Exams >= 0 ? '+' : ''}
-            {metricMode === 'net'
-              ? `${series.trendDelta5Exams.toFixed(2)} Net`
-              : `%${series.trendDelta5Exams.toFixed(1)}`}
-          </div>
+          {isFirstExamOnly ? (
+            <div className="text-lg font-extrabold font-mono-num mt-0.5" style={{ color: 'var(--accent-primary)' }}>
+              İlk Deneme Kaydı
+            </div>
+          ) : (
+            <div
+              className={`text-lg font-extrabold font-mono-num mt-0.5 ${
+                series.trendDelta5Exams >= 0
+                  ? 'text-emerald-600 dark:text-emerald-400'
+                  : 'text-rose-600 dark:text-rose-400'
+              }`}
+            >
+              {series.trendDelta5Exams >= 0 ? '+' : ''}
+              {metricMode === 'net'
+                ? `${series.trendDelta5Exams.toFixed(2)} Net`
+                : `%${series.trendDelta5Exams.toFixed(1)}`}
+            </div>
+          )}
         </div>
       </div>
 
@@ -380,7 +395,9 @@ export function MultiExamComparativeChart({
           )}
         </div>
         <span className="text-[11px] font-mono-num" style={{ color: 'var(--text-secondary)' }}>
-          1. Sınav → 5. Son Deneme
+          {isFirstExamOnly
+            ? '1. Deneme (İlk Kayıt)'
+            : `1. Sınav → ${dataset.examPoints.length}. Son Deneme`}
         </span>
       </div>
     </section>

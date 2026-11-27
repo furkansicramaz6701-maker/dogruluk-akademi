@@ -24,12 +24,15 @@ import {
   Trophy,
   Users,
 } from 'lucide-react';
+import { NumericStepperInput } from './NumericStepperInput';
 import {
   CoverConfig,
   GradeProfile,
   Institution,
   ParentMessageTemplateMode,
   PenaltyDivisor,
+  PersistedExamRecord,
+  PrizeExamDefinition,
   StudentRecord,
   WeeklyBulkFilterMode,
   WeeklyComparisonRow,
@@ -71,11 +74,13 @@ import { getLogoPreset } from '../data/logos';
 import { DriveUploadPayload } from './GoogleDrivePanel';
 import { DynamicAchievementBadge } from './DynamicAchievementBadge';
 import { FurkanDigitalSignature } from './FurkanDigitalSignature';
+import { InstitutionRankingsBoard } from './InstitutionRankingsBoard';
 
 const QUESTION_PRESETS: WeeklyQuestionPreset[] = [20, 40, 50, 60, 80, 90, 120];
 
 interface WeeklyComparisonViewProps {
   activeInstitution: Institution;
+  institutions?: Institution[];
   gradeProfile: GradeProfile;
   penaltyDivisor?: PenaltyDivisor;
   onChangePenaltyDivisor?: (divisor: PenaltyDivisor) => void;
@@ -90,10 +95,23 @@ interface WeeklyComparisonViewProps {
   onExternalEntriesChange?: (next: WeeklyStudentScore[]) => void;
   externalQuestionCount?: WeeklyQuestionPreset;
   onExternalQuestionCountChange?: (next: WeeklyQuestionPreset) => void;
+  examHistory?: PersistedExamRecord[];
+  examHistoryByInst?: Record<string, PersistedExamRecord[]>;
+  weeklyEntriesByInst?: Record<string, WeeklyStudentScore[]>;
+  prizeExams?: PrizeExamDefinition[];
+  prizeExamsByInst?: Record<string, PrizeExamDefinition[]>;
+  activePrizeExamId?: string | null;
+  isPrivateAdminMode?: boolean;
+  onSelectInstitution?: (inst: Institution) => void;
+  onCreatePrizeExam?: (exam: PrizeExamDefinition) => void;
+  onDeletePrizeExam?: (id: string) => void;
+  onActivatePrizeExamForOmr?: (prizeExamId: string | null) => void;
+  onOpenOmr?: () => void;
 }
 
 export function WeeklyComparisonView({
   activeInstitution,
+  institutions,
   gradeProfile,
   penaltyDivisor,
   onChangePenaltyDivisor,
@@ -108,6 +126,18 @@ export function WeeklyComparisonView({
   onExternalEntriesChange,
   externalQuestionCount,
   onExternalQuestionCountChange,
+  examHistory = [],
+  examHistoryByInst,
+  weeklyEntriesByInst,
+  prizeExams = [],
+  prizeExamsByInst,
+  activePrizeExamId = null,
+  isPrivateAdminMode = false,
+  onSelectInstitution,
+  onCreatePrizeExam,
+  onDeletePrizeExam,
+  onActivatePrizeExamForOmr,
+  onOpenOmr,
 }: WeeklyComparisonViewProps) {
   const [internalQuestionCount, setInternalQuestionCount] = useState<WeeklyQuestionPreset>(50);
   const questionCount = externalQuestionCount ?? internalQuestionCount;
@@ -694,6 +724,19 @@ export function WeeklyComparisonView({
 
           <button
             type="button"
+            data-testid="weekly-jump-rankings-btn"
+            onClick={() => {
+              const el = document.getElementById('weekly-institution-rankings-board');
+              el?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            }}
+            className="btn-3d-secondary px-3.5 py-2 rounded-xl text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer"
+          >
+            <Trophy className="w-3.5 h-3.5 text-amber-500" aria-hidden="true" />
+            <span>Kurum &amp; Sınıf Başarısı</span>
+          </button>
+
+          <button
+            type="button"
             disabled={busyExport}
             onClick={async () => {
               if (!driveConnected) {
@@ -840,52 +883,56 @@ export function WeeklyComparisonView({
                 className="mt-1 w-full rounded-lg px-2.5 py-2 text-xs surface-card font-mono-num"
               />
             </label>
-            <label className="block text-[11px] font-semibold">
+            <div className="block text-[11px] font-semibold">
               <span style={{ color: 'var(--text-secondary)' }}>KTS-1 D / Y</span>
-              <div className="mt-1 flex gap-1">
-                <input
-                  type="number"
+              <div className="mt-1 grid grid-cols-2 gap-1.5">
+                <NumericStepperInput
+                  compact
                   min={0}
                   max={questionCount}
+                  step={1}
                   value={newK1Correct}
-                  onChange={(e) => setNewK1Correct(Number(e.target.value))}
-                  aria-label="KTS 1 Doğru"
-                  className="w-1/2 rounded-lg px-2 py-2 text-xs surface-card font-mono-num"
+                  onChange={(val) => setNewK1Correct(val)}
+                  ariaLabel="KTS 1 Doğru"
+                  surfaceClass="surface-card"
                 />
-                <input
-                  type="number"
+                <NumericStepperInput
+                  compact
                   min={0}
                   max={questionCount}
+                  step={1}
                   value={newK1Wrong}
-                  onChange={(e) => setNewK1Wrong(Number(e.target.value))}
-                  aria-label="KTS 1 Yanlış"
-                  className="w-1/2 rounded-lg px-2 py-2 text-xs surface-card font-mono-num"
+                  onChange={(val) => setNewK1Wrong(val)}
+                  ariaLabel="KTS 1 Yanlış"
+                  surfaceClass="surface-card"
                 />
               </div>
-            </label>
-            <label className="block text-[11px] font-semibold">
+            </div>
+            <div className="block text-[11px] font-semibold">
               <span style={{ color: 'var(--text-secondary)' }}>KTS-2 D / Y</span>
-              <div className="mt-1 flex gap-1">
-                <input
-                  type="number"
+              <div className="mt-1 grid grid-cols-2 gap-1.5">
+                <NumericStepperInput
+                  compact
                   min={0}
                   max={questionCount}
+                  step={1}
                   value={newK2Correct}
-                  onChange={(e) => setNewK2Correct(Number(e.target.value))}
-                  aria-label="KTS 2 Doğru"
-                  className="w-1/2 rounded-lg px-2 py-2 text-xs surface-card font-mono-num"
+                  onChange={(val) => setNewK2Correct(val)}
+                  ariaLabel="KTS 2 Doğru"
+                  surfaceClass="surface-card"
                 />
-                <input
-                  type="number"
+                <NumericStepperInput
+                  compact
                   min={0}
                   max={questionCount}
+                  step={1}
                   value={newK2Wrong}
-                  onChange={(e) => setNewK2Wrong(Number(e.target.value))}
-                  aria-label="KTS 2 Yanlış"
-                  className="w-1/2 rounded-lg px-2 py-2 text-xs surface-card font-mono-num"
+                  onChange={(val) => setNewK2Wrong(val)}
+                  ariaLabel="KTS 2 Yanlış"
+                  surfaceClass="surface-card"
                 />
               </div>
-            </label>
+            </div>
             <label className="block text-[11px] font-semibold">
               <span style={{ color: 'var(--text-secondary)' }}>Zayıf Konu Notu</span>
               <input
@@ -1101,6 +1148,33 @@ export function WeeklyComparisonView({
         </>
       )}
 
+      {/* Haftalık Kurum Sıra Başarısı, Kurum Sınıf Başarısı & Ödüllü Deneme Sıralamaları */}
+      <InstitutionRankingsBoard
+        activeInstitution={activeInstitution}
+        institutions={institutions}
+        examHistory={examHistory}
+        examHistoryByInst={examHistoryByInst}
+        weeklyEntriesByInst={{
+          ...(weeklyEntriesByInst ?? {}),
+          [activeInstitution.id]: entries,
+        }}
+        prizeExams={prizeExams}
+        prizeExamsByInst={prizeExamsByInst}
+        activePrizeExamId={activePrizeExamId}
+        students={students}
+        gradeProfile={gradeProfile}
+        penaltyDivisor={effectivePenaltyDivisor}
+        weeklyQuestionCount={kts2Meta.questionCount}
+        weeklyExamTitle={kts2Meta.name}
+        weeklyExamDate={kts2Meta.date}
+        isPrivateAdminMode={isPrivateAdminMode}
+        onSelectInstitution={onSelectInstitution}
+        onCreatePrizeExam={(exam) => onCreatePrizeExam?.(exam)}
+        onDeletePrizeExam={(id) => onDeletePrizeExam?.(id)}
+        onActivatePrizeExamForOmr={(id) => onActivatePrizeExamForOmr?.(id)}
+        onOpenOmr={onOpenOmr}
+      />
+
       {/* Ranked Table + Parent Messaging Workbench */}
       <div className="grid grid-cols-1 xl:grid-cols-12 gap-6 items-start">
         <section className="xl:col-span-8 surface-card rounded-xl p-5 space-y-4">
@@ -1259,28 +1333,30 @@ export function WeeklyComparisonView({
                         </td>
                         <td className="py-2 px-1 text-right font-mono-num whitespace-nowrap">
                           {isEditing && sourceEntry ? (
-                            <div className="inline-flex items-center gap-0.5" onClick={(ev) => ev.stopPropagation()}>
-                              <input
-                                type="number"
+                            <div className="inline-flex items-center gap-1" onClick={(ev) => ev.stopPropagation()}>
+                              <NumericStepperInput
+                                compact
                                 min={0}
                                 max={kts1Meta.questionCount}
+                                step={1}
                                 value={sourceEntry.kts1Correct}
-                                onChange={(ev) =>
-                                  handleInlineEntryUpdate(row.studentId, { kts1Correct: Number(ev.target.value) })
+                                onChange={(val) =>
+                                  handleInlineEntryUpdate(row.studentId, { kts1Correct: val })
                                 }
-                                aria-label={`${row.studentName} KTS-1 Doğru`}
-                                className="w-9 rounded px-0.5 py-0.5 text-[11px] surface-alt text-center"
+                                ariaLabel={`${row.studentName} KTS-1 Doğru`}
+                                className="w-[82px]"
                               />
-                              <input
-                                type="number"
+                              <NumericStepperInput
+                                compact
                                 min={0}
                                 max={kts1Meta.questionCount}
+                                step={1}
                                 value={sourceEntry.kts1Wrong}
-                                onChange={(ev) =>
-                                  handleInlineEntryUpdate(row.studentId, { kts1Wrong: Number(ev.target.value) })
+                                onChange={(val) =>
+                                  handleInlineEntryUpdate(row.studentId, { kts1Wrong: val })
                                 }
-                                aria-label={`${row.studentName} KTS-1 Yanlış`}
-                                className="w-9 rounded px-0.5 py-0.5 text-[11px] surface-alt text-center"
+                                ariaLabel={`${row.studentName} KTS-1 Yanlış`}
+                                className="w-[82px]"
                               />
                             </div>
                           ) : (
@@ -1294,28 +1370,30 @@ export function WeeklyComparisonView({
                         </td>
                         <td className="py-2 px-1 text-right font-mono-num font-bold whitespace-nowrap" style={{ color: 'var(--accent-primary)' }}>
                           {isEditing && sourceEntry ? (
-                            <div className="inline-flex items-center gap-0.5" onClick={(ev) => ev.stopPropagation()}>
-                              <input
-                                type="number"
+                            <div className="inline-flex items-center gap-1" onClick={(ev) => ev.stopPropagation()}>
+                              <NumericStepperInput
+                                compact
                                 min={0}
                                 max={kts2Meta.questionCount}
+                                step={1}
                                 value={sourceEntry.kts2Correct}
-                                onChange={(ev) =>
-                                  handleInlineEntryUpdate(row.studentId, { kts2Correct: Number(ev.target.value) })
+                                onChange={(val) =>
+                                  handleInlineEntryUpdate(row.studentId, { kts2Correct: val })
                                 }
-                                aria-label={`${row.studentName} KTS-2 Doğru`}
-                                className="w-9 rounded px-0.5 py-0.5 text-[11px] surface-alt text-center"
+                                ariaLabel={`${row.studentName} KTS-2 Doğru`}
+                                className="w-[82px]"
                               />
-                              <input
-                                type="number"
+                              <NumericStepperInput
+                                compact
                                 min={0}
                                 max={kts2Meta.questionCount}
+                                step={1}
                                 value={sourceEntry.kts2Wrong}
-                                onChange={(ev) =>
-                                  handleInlineEntryUpdate(row.studentId, { kts2Wrong: Number(ev.target.value) })
+                                onChange={(val) =>
+                                  handleInlineEntryUpdate(row.studentId, { kts2Wrong: val })
                                 }
-                                aria-label={`${row.studentName} KTS-2 Yanlış`}
-                                className="w-9 rounded px-0.5 py-0.5 text-[11px] surface-alt text-center"
+                                ariaLabel={`${row.studentName} KTS-2 Yanlış`}
+                                className="w-[82px]"
                               />
                             </div>
                           ) : (

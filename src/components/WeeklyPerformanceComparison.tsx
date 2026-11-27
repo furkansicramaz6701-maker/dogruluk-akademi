@@ -15,6 +15,7 @@ import {
   GradeProfile,
   Institution,
   PenaltyDivisor,
+  PersistedExamRecord,
   StudentRecord,
   WeeklyQuestionPreset,
   WeeklyStudentScore,
@@ -37,6 +38,8 @@ interface WeeklyPerformanceComparisonProps {
   students: StudentRecord[];
   weeklyEntries?: WeeklyStudentScore[];
   weeklyQuestionCount?: WeeklyQuestionPreset;
+  examHistory?: PersistedExamRecord[];
+  isSamplePreview?: boolean;
   kts1Name?: string;
   kts2Name?: string;
   onOpenWeeklyList: () => void;
@@ -167,6 +170,8 @@ export function WeeklyPerformanceComparison({
   students,
   weeklyEntries,
   weeklyQuestionCount = 50,
+  examHistory = [],
+  isSamplePreview = false,
   kts1Name = 'KTS-1',
   kts2Name = 'KTS-2',
   onOpenWeeklyList,
@@ -182,13 +187,16 @@ export function WeeklyPerformanceComparison({
     if (weeklyEntries && weeklyEntries.length > 0) {
       return weeklyEntries;
     }
+    if (!isSamplePreview) {
+      return [];
+    }
     return buildSampleWeeklyCohort({
       institution: activeInstitution,
       gradeId: gradeProfile.id,
       questionCount: weeklyQuestionCount,
       existingStudents: students,
     });
-  }, [weeklyEntries, activeInstitution, gradeProfile.id, weeklyQuestionCount, students]);
+  }, [weeklyEntries, isSamplePreview, activeInstitution, gradeProfile.id, weeklyQuestionCount, students]);
 
   const comparisonRows = useMemo(
     () =>
@@ -251,7 +259,11 @@ export function WeeklyPerformanceComparison({
               {formatPenaltyRuleLabel(penaltyDivisor, true)} ·{' '}
               {hasLiveWeeklyEntries
                 ? 'Canlı Haftalık Liste Verisi'
-                : 'Örnek Kohort Trend Önizlemesi'}
+                : isSamplePreview
+                  ? 'Örnek Kohort Trend Önizlemesi'
+                  : examHistory.length > 0
+                    ? `${examHistory.length} Deneme Kaydı Mevcut · Haftalık KTS Karşılaştırması Bekleniyor`
+                    : 'Henüz haftalık KTS verisi girilmedi'}
             </p>
           </div>
         </div>
@@ -475,7 +487,20 @@ export function WeeklyPerformanceComparison({
       </div>
 
       {/* Recharts Two-Week Trendline Chart */}
-      {dataset.points.length === 0 ? (
+      {effectiveEntries.length === 0 ? (
+        <div
+          className="surface-alt rounded-xl p-6 text-center space-y-2 border"
+          style={{ borderColor: 'var(--border-subtle)' }}
+          data-testid="weekly-trend-empty-state"
+        >
+          <p className="text-sm font-bold">
+            Henüz haftalık KTS karşılaştırma kaydı girilmemiş
+          </p>
+          <p className="text-xs max-w-xl mx-auto" style={{ color: 'var(--text-secondary)' }}>
+            {activeInstitution.name} için dışarıdan örnek öğrenci verisi eklenmez. Haftalık Liste &amp; Karşılaştırma sekmesinden öğrenci puanlarını girdiğinizde iki haftalık trend burada oluşur.
+          </p>
+        </div>
+      ) : dataset.points.length === 0 ? (
         <div
           className="surface-alt rounded-xl p-8 text-center space-y-3"
           data-testid="weekly-trend-empty-filter"

@@ -122,3 +122,70 @@ test('buildGradeNetProgression excludes Turkey-wide benchmarks when includeTurke
     assert.equal(pt.examName.includes('Türkiye'), false);
   }
 });
+
+test('buildGradeNetProgression returns zero points when examHistory is empty in live mode and renders 1. Deneme on first record', () => {
+  const g7 = getGradeProfile('7');
+  const inst = DEFAULT_INSTITUTIONS[0];
+
+  const emptyLive = buildGradeNetProgression({
+    gradeProfile: g7,
+    questionCount: 12,
+    penaltyDivisor: 3,
+    institutionId: inst.id,
+    institutionCode8: inst.code8,
+    students: [],
+    examHistory: [],
+    isSamplePreview: false,
+  });
+
+  assert.equal(emptyLive.points.length, 0);
+  assert.equal(emptyLive.summary.latestInstitutionNet, 0);
+  assert.equal(emptyLive.summary.evaluatedStudentCount, 0);
+
+  const firstLive = buildGradeNetProgression({
+    gradeProfile: g7,
+    questionCount: 12,
+    penaltyDivisor: 3,
+    institutionId: inst.id,
+    institutionCode8: inst.code8,
+    students: [],
+    examHistory: [
+      {
+        id: 'rec-1',
+        institutionId: inst.id,
+        studentId: 'stu-1',
+        studentName: 'Alihan Sarı',
+        studentNumber8: '48192034',
+        classroom: '7-A',
+        gradeId: '7',
+        examTitle: 'Matematik 12 Soruluk İlk Kayıt',
+        examDate: '26.11.2026',
+        createdAt: '2026-11-26T10:00:00.000Z',
+        totalQuestions: 12,
+        totalCorrect: 10,
+        totalWrong: 1,
+        totalBlank: 1,
+        totalNet: 9.67,
+        estimatedScore: 422.5,
+        maxScore: 500,
+        subjectMetrics: [
+          {
+            subject: 'Matematik',
+            total: 12,
+            correct: 10,
+            wrong: 1,
+            blank: 1,
+            net: 9.67,
+            accuracyPct: 83,
+          },
+        ],
+      },
+    ],
+    isSamplePreview: false,
+  });
+
+  assert.equal(firstLive.points.length, 1);
+  assert.equal(firstLive.points[0].shortLabel, '1. İlk Deneme');
+  assert.equal(firstLive.summary.latestInstitutionNet, 9.67);
+  assert.equal(firstLive.summary.evaluatedStudentCount, 1);
+});

@@ -48,40 +48,43 @@ interface CoachingInsightsPanelProps {
 
 const DIRECTION_STYLES: Record<
   CoachingTrendDirection,
-  { label: string; colorClass: string; bgClass: string }
+  { label: string; colorClass: string; dotClass: string }
 > = {
   yukselis: {
     label: 'Yükseliş İvmesi',
     colorClass: 'text-emerald-700 dark:text-emerald-300',
-    bgClass: 'bg-emerald-500/12 border-emerald-500/30',
+    dotClass: 'bg-emerald-500',
   },
   dengeli: {
     label: 'Dengeli Seyir',
     colorClass: 'text-blue-700 dark:text-blue-300',
-    bgClass: 'bg-blue-500/12 border-blue-500/30',
+    dotClass: 'bg-blue-500',
   },
   'destek-gerekli': {
     label: 'Destek & Telafi Odağı',
     colorClass: 'text-rose-700 dark:text-rose-300',
-    bgClass: 'bg-rose-500/12 border-rose-500/30',
+    dotClass: 'bg-rose-500',
   },
 };
 
 const PRIORITY_STYLES: Record<
   CoachingFocusPriority,
-  { label: string; badgeClass: string }
+  { label: string; textClass: string; dotClass: string }
 > = {
   yuksek: {
     label: 'Yüksek Öncelik',
-    badgeClass: 'bg-rose-600 text-white',
+    textClass: 'text-rose-700 dark:text-rose-300',
+    dotClass: 'bg-rose-500',
   },
   orta: {
     label: 'Orta Öncelik',
-    badgeClass: 'bg-amber-600 text-white',
+    textClass: 'text-amber-700 dark:text-amber-300',
+    dotClass: 'bg-amber-500',
   },
   pekistirme: {
     label: 'Pekiştirme',
-    badgeClass: 'bg-emerald-600 text-white',
+    textClass: 'text-emerald-700 dark:text-emerald-300',
+    dotClass: 'bg-emerald-500',
   },
 };
 
@@ -236,18 +239,23 @@ export function CoachingInsightsPanel({
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
               <h3 id="coaching-insights-title" className="text-base font-extrabold">
-                Coaching Insights — Çoklu Deneme &amp; Konu Odağı Analizi
+                Coaching Insights — Deneme &amp; Konu Odağı Analizi
               </h3>
               <span
-                className={`px-2 py-0.5 rounded-md text-[11px] font-bold border ${momentumMeta.bgClass} ${momentumMeta.colorClass}`}
+                className={`inline-flex items-center gap-1.5 text-[11px] font-bold ${momentumMeta.colorClass}`}
               >
+                <span className={`w-1.5 h-1.5 rounded-full ${momentumMeta.dotClass}`} aria-hidden="true" />
                 {momentumMeta.label}
               </span>
             </div>
             <p className="text-xs mt-0.5" style={{ color: 'var(--text-secondary)' }}>
               {hasLiveAnalysis
-                ? `${analysis.studentName || 'Öğrenci'} · ${trendSummary.examCount} deneme geçmişi ve ${prioritizedGaps.length} öncelikli konu açığı Gemini ile analiz edilir`
-                : 'Çoklu deneme performans trendi ve kişiselleştirilmiş çalışma odak alanları için optik değerlendirme bekleniyor'}
+                ? `${analysis.studentName || 'Öğrenci'} · ${
+                    trendSummary.examCount <= 1
+                      ? '1. Deneme (İlk Kayıt)'
+                      : `${trendSummary.examCount} deneme geçmişi`
+                  } ve ${prioritizedGaps.length} öncelikli konu açığı Gemini ile analiz edilir`
+                : 'Henüz deneme yapılmamış — Optik değerlendirme tamamlandığında kişisel çalışma odak alanları burada üretilir'}
             </p>
           </div>
         </div>
@@ -311,8 +319,7 @@ export function CoachingInsightsPanel({
           style={{ color: 'var(--text-secondary)' }}
           data-testid="coaching-insights-empty-state"
         >
-          Öğrenciye ait optik form değerlendirildiğinde veya örnek deneme simülasyonu yüklendiğinde, son{' '}
-          <strong>{Math.max(2, trendSummary.examCount)} denemelik</strong> net/puan gidişatı ile eksik kazanımlar burada Gemini AI tarafından analiz edilerek kişisel çalışma odak alanlarına dönüştürülür.
+          Öğrenciye ait optik form değerlendirildiğinde, <strong>ilk deneme kaydından itibaren</strong> net/puan gidişatı ile eksik kazanımlar burada Gemini AI tarafından analiz edilerek kişisel çalışma odak alanlarına dönüştürülür.
         </div>
       ) : (
         <>
@@ -320,31 +327,38 @@ export function CoachingInsightsPanel({
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <div className="surface-alt rounded-xl p-3.5 space-y-1">
               <div className="text-[11px] font-semibold" style={{ color: 'var(--text-secondary)' }}>
-                Çoklu Deneme Net Trendi ({trendSummary.examCount} Sınav)
+                {trendSummary.examCount <= 1
+                  ? 'İlk Deneme Kaydı (1 Sınav)'
+                  : `Çoklu Deneme Net Trendi (${trendSummary.examCount} Sınav)`}
               </div>
               <div className="flex items-baseline gap-2">
                 <span className="text-xl font-display font-extrabold font-mono-num">
-                  {trendSummary.netDelta >= 0 ? '+' : ''}
-                  {trendSummary.netDelta.toFixed(2)} Net
+                  {trendSummary.examCount <= 1
+                    ? `${(trendSummary.latestExam?.net ?? analysis.totalNet).toFixed(2)} Net`
+                    : `${trendSummary.netDelta >= 0 ? '+' : ''}${trendSummary.netDelta.toFixed(2)} Net`}
                 </span>
-                <span
-                  className={`text-xs font-mono-num font-bold inline-flex items-center gap-0.5 ${
-                    trendSummary.recentStepNetDelta >= 0
-                      ? 'text-emerald-600 dark:text-emerald-400'
-                      : 'text-rose-600 dark:text-rose-400'
-                  }`}
-                >
-                  {trendSummary.recentStepNetDelta >= 0 ? (
-                    <TrendingUp className="w-3.5 h-3.5" aria-hidden="true" />
-                  ) : (
-                    <TrendingDown className="w-3.5 h-3.5" aria-hidden="true" />
-                  )}
-                  Son sınav: {trendSummary.recentStepNetDelta >= 0 ? '+' : ''}
-                  {trendSummary.recentStepNetDelta.toFixed(2)}
-                </span>
+                {trendSummary.examCount > 1 && (
+                  <span
+                    className={`text-xs font-mono-num font-bold inline-flex items-center gap-0.5 ${
+                      trendSummary.recentStepNetDelta >= 0
+                        ? 'text-emerald-600 dark:text-emerald-400'
+                        : 'text-rose-600 dark:text-rose-400'
+                    }`}
+                  >
+                    {trendSummary.recentStepNetDelta >= 0 ? (
+                      <TrendingUp className="w-3.5 h-3.5" aria-hidden="true" />
+                    ) : (
+                      <TrendingDown className="w-3.5 h-3.5" aria-hidden="true" />
+                    )}
+                    Son sınav: {trendSummary.recentStepNetDelta >= 0 ? '+' : ''}
+                    {trendSummary.recentStepNetDelta.toFixed(2)}
+                  </span>
+                )}
               </div>
               <div className="text-[11px] font-mono-num" style={{ color: 'var(--text-secondary)' }}>
-                İlk: {trendSummary.firstExam?.net.toFixed(1) ?? '0.0'}n → Son: {trendSummary.latestExam?.net.toFixed(1) ?? '0.0'}n
+                {trendSummary.examCount <= 1
+                  ? `İlk Deneme Kaydı: ${(trendSummary.latestExam?.net ?? analysis.totalNet).toFixed(1)}n`
+                  : `İlk: ${trendSummary.firstExam?.net.toFixed(1) ?? '0.0'}n → Son: ${trendSummary.latestExam?.net.toFixed(1) ?? '0.0'}n`}
               </div>
             </div>
 
@@ -414,7 +428,10 @@ export function CoachingInsightsPanel({
             >
               <Loader2 className="w-4 h-4 animate-spin shrink-0" style={{ color: 'var(--accent-primary)' }} aria-hidden="true" />
               <span>
-                Gemini {trendSummary.examCount} denemenin net trendini ve {prioritizedGaps.length} konu açığını analiz ederek kişisel odak planı hazırlıyor...
+                {trendSummary.examCount <= 1
+                  ? 'Gemini ilk deneme kaydını ve'
+                  : `Gemini ${trendSummary.examCount} denemenin net trendini ve`}{' '}
+                {prioritizedGaps.length} konu açığını analiz ederek kişisel odak planı hazırlıyor...
               </span>
             </div>
           )}
@@ -504,13 +521,15 @@ export function CoachingInsightsPanel({
                                   {area.topic}
                                 </h5>
                               </div>
-                              <div className="flex items-center gap-1.5 shrink-0">
-                                <span className={`px-2 py-0.5 rounded-md text-[10px] font-extrabold ${pStyle.badgeClass}`}>
+                              <div className="flex items-center gap-2 shrink-0 text-[10px] font-bold">
+                                <span className={`inline-flex items-center gap-1 uppercase tracking-wide ${pStyle.textClass}`}>
+                                  <span className={`w-1.5 h-1.5 rounded-full ${pStyle.dotClass}`} aria-hidden="true" />
                                   {pStyle.label}
                                 </span>
+                                <span style={{ color: 'var(--border-subtle)' }} aria-hidden="true">|</span>
                                 <span
-                                  className="px-2 py-0.5 rounded-md text-[10px] font-mono-num font-bold surface-card inline-flex items-center gap-1 border"
-                                  style={{ borderColor: 'var(--border-subtle)' }}
+                                  className="font-mono-num inline-flex items-center gap-1"
+                                  style={{ color: 'var(--text-secondary)' }}
                                 >
                                   <Clock className="w-3 h-3" aria-hidden="true" />
                                   {area.weeklyHours} sa/hf

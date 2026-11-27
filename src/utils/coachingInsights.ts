@@ -85,11 +85,13 @@ export function buildMultiExamTrendSummary(
   };
 
   const historyPoints = analysis.historicalTrend ?? [];
-  const currentPoint =
-    historyPoints.length > 0 &&
-    historyPoints[historyPoints.length - 1].examName.includes('Son Deneme')
-      ? historyPoints[historyPoints.length - 1]
-      : null;
+  const lastPoint = historyPoints.length > 0 ? historyPoints[historyPoints.length - 1] : null;
+  const isCurrentMarker =
+    lastPoint !== null &&
+    (lastPoint.examName.includes('Son Deneme') ||
+      lastPoint.examName.includes('(Güncel)') ||
+      lastPoint.examName.includes('(İlk Kayıt)'));
+  const currentPoint = isCurrentMarker ? lastPoint : null;
   const priorHistory = currentPoint ? historyPoints.slice(0, -1) : historyPoints;
 
   priorHistory.forEach(pushUnique);

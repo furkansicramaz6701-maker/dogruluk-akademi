@@ -1,3 +1,5 @@
+import { preprocessAnswerInputForSubject } from './examAnalysis';
+
 export type OmrErrorCategory =
   | 'invalid-student-number'
   | 'unreadable-answers'
@@ -191,6 +193,7 @@ export function validateManualOmrInputs(params: {
   optionCount: 4 | 5;
   requireStudentAnswers?: boolean;
   validateAnswerKey?: boolean;
+  subjectName?: string;
 }): OmrScanErrorReport {
   const {
     sourceName,
@@ -201,6 +204,7 @@ export function validateManualOmrInputs(params: {
     optionCount,
     requireStudentAnswers = true,
     validateAnswerKey = false,
+    subjectName,
   } = params;
 
   const errors: OmrScanErrorItem[] = [];
@@ -229,8 +233,9 @@ export function validateManualOmrInputs(params: {
     }
   }
 
-  // 2. Validate Student Answer Lines
-  const trimmedAns = studentAnswersRaw.trim();
+  // 2. Validate Student Answer Lines (strip QR tags and isolate selected subject if present)
+  const preprocessedAnswers = preprocessAnswerInputForSubject(studentAnswersRaw, subjectName);
+  const trimmedAns = preprocessedAnswers.trim();
   if (!trimmedAns && requireStudentAnswers) {
     totalRowsChecked++;
     errors.push({
@@ -245,7 +250,7 @@ export function validateManualOmrInputs(params: {
       reason: 'Öğrenci optik cevap alanı boş; okunacak cevap satırı bulunamadı.',
     });
   } else if (trimmedAns) {
-    const lines = studentAnswersRaw
+    const lines = preprocessedAnswers
       .split(/\r?\n/)
       .map((line, idx) => ({ line: line.trim(), lineNo: idx + 1 }))
       .filter((x) => x.line.length > 0);
@@ -361,7 +366,8 @@ export function validateManualOmrInputs(params: {
 
   // 3. Validate Answer Key if requested
   if (validateAnswerKey) {
-    const trimmedKey = answerKeyRaw.trim();
+    const preprocessedKey = preprocessAnswerInputForSubject(answerKeyRaw, subjectName);
+    const trimmedKey = preprocessedKey.trim();
     if (!trimmedKey) {
       totalRowsChecked++;
       errors.push({
@@ -374,7 +380,7 @@ export function validateManualOmrInputs(params: {
         reason: 'Değerlendirme yapılabilmesi için cevap anahtarı girilmelidir.',
       });
     } else {
-      const keyLines = answerKeyRaw
+      const keyLines = preprocessedKey
         .split(/\r?\n/)
         .map((l, idx) => ({ line: l.trim(), lineNo: idx + 1 }))
         .filter((x) => x.line.length > 0);
@@ -538,6 +544,7 @@ export function analyzeOmrResponseValidation(params: {
   answerKeyRaw?: string;
   expectedCount: number;
   optionCount: 4 | 5;
+  subjectName?: string;
 }): OmrValidationSummary {
   const {
     studentNumber = '',
@@ -545,6 +552,7 @@ export function analyzeOmrResponseValidation(params: {
     answerKeyRaw = '',
     expectedCount,
     optionCount,
+    subjectName,
   } = params;
 
   const safeExpected = Math.max(1, expectedCount || 20);
@@ -552,7 +560,7 @@ export function analyzeOmrResponseValidation(params: {
   const blankChars = new Set(['-', '*', '.', '_']);
 
   const stuNoCheck = validateStudentNumberField(studentNumber);
-  const keyTrimmed = answerKeyRaw.trim();
+  const keyTrimmed = preprocessAnswerInputForSubject(answerKeyRaw, subjectName).trim();
   const keyUnits = keyTrimmed
     ? keyTrimmed.replace(/[\s,;|\t\n]+/g, '').match(/\[[^\]]+\]|\([^)]+\)|./g) ?? []
     : [];
@@ -561,7 +569,7 @@ export function analyzeOmrResponseValidation(params: {
   ).length;
   const answerKeyReady = Boolean(keyTrimmed) && answerKeyMarkedCount > 0;
 
-  const raw = studentAnswersRaw.trim();
+  const raw = preprocessAnswerInputForSubject(studentAnswersRaw, subjectName).trim();
   if (!raw) {
     const warnings: OmrValidationWarning[] = [];
     if (!stuNoCheck.valid && stuNoCheck.reason) {
@@ -620,19 +628,21 @@ export function analyzeOmrResponseValidation(params: {
   ];
 
   if (numberedMatches.length >= 2 || (numberedMatches.length === 1 && /^\d{1,3}\s*[:.\-]/.test(raw))) {
-    const seenQuestions = new Set<number>();
+    const tokenByQuestion = new Map<number, string>();
     for (const match of numberedMatches) {
       const qNo = parseInt(match[1], 10);
       const token = match[2].replace(/,+$/, '');
       if (qNo < 1 || qNo > safeExpected) continue;
-      seenQuestions.add(qNo);
+      tokenByQuestion.set(qNo, token);
+    }
+    for (const [qNo, token] of tokenByQuestion.entries()) {
       const kind = classifySingleOrMultiToken(token, allowedLetters, blankChars);
       if (kind === 'valid') validCount++;
       else if (kind === 'empty') explicitEmptyQuestions.push(qNo);
       else if (kind === 'multiple') multipleMarkItems.push({ questionNumber: qNo, rawToken: token });
       else invalidOptionItems.push({ questionNumber: qNo, rawToken: token });
     }
-    scannedCount = seenQuestions.size;
+    scannedCount = tokenByQuestion.size;
   } else {
     const splitTokens = raw
       .split(/[\s,;|\n\t]+/)

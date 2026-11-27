@@ -44,7 +44,7 @@ test('buildMultiExamTrendSummary calculates deltas, momentum, and deduplicates e
   // Deneme 1..3 + extra Haftalık KTS-1 + Son Deneme (Güncel) = 5 (Deneme 1 deduplicated)
   assert.equal(summary.examCount, 5);
   assert.equal(summary.firstExam?.examName, 'Deneme 1');
-  assert.equal(summary.latestExam?.examName, 'Son Deneme (Güncel)');
+  assert.equal(summary.latestExam?.examName, '4. Deneme (Güncel)');
   assert.equal(
     summary.netDelta,
     Number((analysis.totalNet - analysis.historicalTrend[0].net).toFixed(2))
@@ -100,7 +100,8 @@ test('buildCoachingInsightsPayload prioritizes lowest-mastery topic gaps for Gem
 
   const payload = buildCoachingInsightsPayload(analysis, profile);
   assert.equal(payload.student.name, 'Mert Demir');
-  assert.ok(payload.multiExamTrend.examCount >= 2);
+  assert.equal(payload.multiExamTrend.examCount, 1);
+  assert.equal(payload.multiExamTrend.exams[0]?.examName, '1. Deneme (İlk Kayıt)');
   assert.ok(payload.topicGaps.length > 0);
   // Assert descending gap severity (ascending masteryPct)
   for (let i = 1; i < payload.topicGaps.length; i += 1) {

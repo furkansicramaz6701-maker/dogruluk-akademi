@@ -8,7 +8,6 @@ import {
   FileSpreadsheet,
   Library,
   Loader2,
-  Minus,
   Plus,
   Save,
   Sparkles,
@@ -16,6 +15,7 @@ import {
   Upload,
   AlertTriangle,
 } from 'lucide-react';
+import { NumericStepperInput } from './NumericStepperInput';
 import {
   BookletCode,
   ExternalPublisherExamConfig,
@@ -91,17 +91,6 @@ export function ExternalPublisherHub({
     externalPublisherConfig.questionCount && externalPublisherConfig.questionCount > 0
       ? externalPublisherConfig.questionCount
       : questionsCount;
-
-  const [questionCountDraft, setQuestionCountDraft] = useState<string>(String(effectiveQuestionCount));
-  useEffect(() => {
-    setQuestionCountDraft(String(effectiveQuestionCount));
-  }, [effectiveQuestionCount]);
-
-  const commitQuestionCount = (rawVal: number) => {
-    const clamped = Math.max(5, Math.min(200, Math.round(rawVal)));
-    setQuestionCountDraft(String(clamped));
-    onUpdateConfig({ questionCount: clamped });
-  };
 
   const activeKeyHealth = useMemo(
     () =>
@@ -396,64 +385,23 @@ export function ExternalPublisherHub({
         <div className="lg:col-span-2">
           <label
             htmlFor="external-publisher-qcount-input"
-            className="block text-xs font-semibold"
+            className="block text-xs font-semibold mb-1"
             style={{ color: 'var(--text-secondary)' }}
           >
             Soru Sayısı
           </label>
-          <div className="mt-1 flex items-center gap-1">
-            <button
-              type="button"
-              data-testid="external-publisher-qcount-dec"
-              aria-label="Soru sayısını 1 azalt"
-              onClick={() => commitQuestionCount(effectiveQuestionCount - 1)}
-              className="btn-3d-secondary px-2 py-1.5 rounded-lg text-xs font-bold shrink-0 cursor-pointer"
-            >
-              <Minus className="w-3.5 h-3.5" aria-hidden="true" />
-            </button>
-            <input
-              id="external-publisher-qcount-input"
-              type="text"
-              inputMode="numeric"
-              pattern="[0-9]*"
-              data-testid="external-publisher-qcount-input"
-              value={questionCountDraft}
-              onChange={(e) => {
-                const digitsOnly = e.target.value.replace(/\D/g, '').slice(0, 3);
-                setQuestionCountDraft(digitsOnly);
-                if (digitsOnly !== '') {
-                  const parsed = Number(digitsOnly);
-                  if (parsed >= 5 && parsed <= 200) {
-                    onUpdateConfig({ questionCount: parsed });
-                  }
-                }
-              }}
-              onBlur={() => {
-                const parsed = Number(questionCountDraft);
-                if (!questionCountDraft || !Number.isFinite(parsed)) {
-                  setQuestionCountDraft(String(effectiveQuestionCount));
-                } else {
-                  commitQuestionCount(parsed);
-                }
-              }}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') {
-                  const parsed = Number(questionCountDraft);
-                  commitQuestionCount(Number.isFinite(parsed) && parsed > 0 ? parsed : effectiveQuestionCount);
-                }
-              }}
-              className="w-full min-w-[54px] text-center rounded-lg px-2 py-1.5 text-xs surface-alt font-mono-num font-bold"
-            />
-            <button
-              type="button"
-              data-testid="external-publisher-qcount-inc"
-              aria-label="Soru sayısını 1 artır"
-              onClick={() => commitQuestionCount(effectiveQuestionCount + 1)}
-              className="btn-3d-secondary px-2 py-1.5 rounded-lg text-xs font-bold shrink-0 cursor-pointer"
-            >
-              <Plus className="w-3.5 h-3.5" aria-hidden="true" />
-            </button>
-          </div>
+          <NumericStepperInput
+            id="external-publisher-qcount-input"
+            ariaLabel="Soru Sayısı"
+            inputTestId="external-publisher-qcount-input"
+            decTestId="external-publisher-qcount-dec"
+            incTestId="external-publisher-qcount-inc"
+            min={5}
+            max={200}
+            step={1}
+            value={effectiveQuestionCount}
+            onChange={(nextVal) => onUpdateConfig({ questionCount: nextVal })}
+          />
         </div>
 
         <div className="lg:col-span-2">
@@ -511,7 +459,7 @@ export function ExternalPublisherHub({
               key={presetQ}
               type="button"
               data-testid={`external-qcount-preset-${presetQ}`}
-              onClick={() => commitQuestionCount(presetQ)}
+              onClick={() => onUpdateConfig({ questionCount: presetQ })}
               className={`px-2 py-1 rounded-md text-[11px] font-mono-num font-bold cursor-pointer transition-colors ${
                 isSelected ? 'btn-3d' : 'surface-alt hover:opacity-85'
               }`}

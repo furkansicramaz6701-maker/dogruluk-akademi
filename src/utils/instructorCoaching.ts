@@ -190,6 +190,7 @@ export function buildInstructorCoachingDataset(params: {
   weeklyQuestionCount?: WeeklyQuestionPreset | number;
   activeAnalysis?: ExamAnalysisResult;
   hasLiveAnalysis?: boolean;
+  includeSampleFallback?: boolean;
 }): InstructorCoachingDataset {
   const instStudents = params.students.filter(
     (s) => s.institutionId === params.institution.id
@@ -201,14 +202,87 @@ export function buildInstructorCoachingDataset(params: {
       params.gradeProfile.subjects.reduce((acc, s) => acc + s.questionCount, 0)
   );
 
+  // Build real evaluated student entries if no manual weeklyEntries exist yet
+  const evaluatedWeeklyEntries: WeeklyStudentScore[] = [];
+  if (!hasLiveWeekly) {
+    if (params.hasLiveAnalysis && params.activeAnalysis && params.activeAnalysis.studentName.trim()) {
+      const a = params.activeAnalysis;
+      const weakGap = [...a.topicGaps].sort((x, y) => x.masteryPct - y.masteryPct)[0];
+      evaluatedWeeklyEntries.push({
+        studentId: a.studentNumber || 'active-eval-1',
+        studentName: a.studentName,
+        studentNumber8: a.studentNumber || '00000001',
+        classroom: a.classroom || `${params.gradeProfile.shortLabel}-A`,
+        kts1Correct: a.totalCorrect,
+        kts1Wrong: a.totalWrong,
+        kts1Blank: a.totalBlank,
+        kts2Correct: a.totalCorrect,
+        kts2Wrong: a.totalWrong,
+        kts2Blank: a.totalBlank,
+        weakTopicNote: weakGap ? `${weakGap.subject}: ${weakGap.topic}` : 'İlk deneme analizi',
+      });
+    } else {
+      instStudents
+        .filter((s) => Boolean(s.lastOmrAnswers && s.lastOmrAnswers.trim().length > 0))
+        .forEach((stu) => {
+          const tokens = stu.lastOmrAnswers!.trim().toUpperCase().split('');
+          const keys = (stu.lastAnswerKey ?? '').trim().toUpperCase().split('');
+          const len = Math.min(questionCount, Math.max(tokens.length, keys.length));
+          let c = 0;
+          let w = 0;
+          let b = 0;
+          for (let i = 0; i < len; i++) {
+            const sAns = tokens[i];
+            const kAns = keys[i];
+            if (!sAns || sAns === '-') b++;
+            else if (kAns && sAns === kAns) c++;
+            else if (kAns) w++;
+          }
+          evaluatedWeeklyEntries.push({
+            studentId: stu.id,
+            studentName: stu.fullName,
+            studentNumber8: stu.studentNumber8,
+            classroom: stu.classroom,
+            kts1Correct: c,
+            kts1Wrong: w,
+            kts1Blank: b,
+            kts2Correct: c,
+            kts2Wrong: w,
+            kts2Blank: b,
+            weakTopicNote: `${params.gradeProfile.subjects[0]?.name ?? 'Genel'} İlk Deneme`,
+          });
+        });
+    }
+  }
+
   const rawEntries: WeeklyStudentScore[] = hasLiveWeekly
     ? (params.weeklyEntries as WeeklyStudentScore[])
-    : buildSampleWeeklyCohort({
-        institution: params.institution,
-        gradeId: params.gradeProfile.id,
-        questionCount,
-        existingStudents: instStudents,
-      });
+    : evaluatedWeeklyEntries.length > 0
+      ? evaluatedWeeklyEntries
+      : params.includeSampleFallback
+        ? buildSampleWeeklyCohort({
+            institution: params.institution,
+            gradeId: params.gradeProfile.id,
+            questionCount,
+            existingStudents: instStudents,
+          })
+        : [];
+
+  if (rawEntries.length === 0) {
+    return {
+      isLiveCohort: false,
+      questionCount,
+      totalStudents: 0,
+      avgLatestNet: 0,
+      avgLatestScore: 0,
+      risingCount: 0,
+      supportCount: 0,
+      examLabels: ['1. Deneme'],
+      cohortCurve: [],
+      studentTrends: [],
+      knowledgeGapGroups: [],
+    };
+  }
 
   const comparisonRows = computeWeeklyComparison({
     entries: rawEntries,
@@ -224,10 +298,13 @@ export function buildInstructorCoachingDataset(params: {
       : undefined;
 
   const studentTrends: StudentTrendSeries[] = comparisonRows.map((row, idx) => {
-    const startNet = Math.max(0, row.kts1Net * 0.88 - ((idx % 3) - 1) * 0.6);
-    const midNet1 = startNet + (row.kts1Net - startNet) * 0.55;
+    const isSingleEvaluated = !hasLiveWeekly && !params.includeSampleFallback;
+    const startNet = isSingleEvaluated
+      ? row.kts1Net
+      : Math.max(0, row.kts1Net * 0.88 - ((idx % 3) - 1) * 0.6);
+    const midNet1 = isSingleEvaluated ? row.kts1Net : startNet + (row.kts1Net - startNet) * 0.55;
     const midNet2 = row.kts1Net;
-    const midNet3 = row.kts1Net + (row.kts2Net - row.kts1Net) * 0.52;
+    const midNet3 = isSingleEvaluated ? row.kts2Net : row.kts1Net + (row.kts2Net - row.kts1Net) * 0.52;
     let endNet = row.kts2Net;
 
     // Anchor evaluated live student to their exact active analysis net if names/numbers match

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Archive, FileDown, Layers, Loader2, QrCode, Users } from 'lucide-react';
 import { getLogoPreset } from '../data/logos';
-import { BookletCode, CoverConfig, GradeProfile, SubjectSpec } from '../types/academy';
+import { BookletCode, CoverConfig, ExamSourceMode, GradeProfile, SubjectSpec } from '../types/academy';
 import { BOOKLET_CODES, resolveCoverColorPalette } from '../utils/bookletDistribution';
 import { drawOpticalFormCanvas } from '../utils/pdfAndZip';
 import { FurkanDigitalSignature } from './FurkanDigitalSignature';
@@ -17,6 +17,8 @@ interface OpticalFormPreviewProps {
   selectedSubjectId?: string;
   selectedSubjectName?: string;
   subjectsOverride?: SubjectSpec[];
+  activeAnswerKey?: string;
+  examSourceMode?: ExamSourceMode;
   exportBusy?: boolean;
   registeredCount?: number;
   visibleBooklets?: BookletCode[];
@@ -38,6 +40,8 @@ export function OpticalFormPreview({
   selectedSubjectId,
   selectedSubjectName,
   subjectsOverride,
+  activeAnswerKey,
+  examSourceMode = 'kurum',
   exportBusy = false,
   registeredCount = 0,
   visibleBooklets = BOOKLET_CODES,
@@ -75,6 +79,8 @@ export function OpticalFormPreview({
       optionCount: gradeProfile.optionCount,
       selectedSubjectId,
       subjectsOverride,
+      activeAnswerKey,
+      examSourceMode,
     });
   }, [
     cover,
@@ -86,6 +92,8 @@ export function OpticalFormPreview({
     totalQuestions,
     selectedSubjectId,
     subjectsOverride,
+    activeAnswerKey,
+    examSourceMode,
   ]);
 
   return (
@@ -98,7 +106,7 @@ export function OpticalFormPreview({
               ÖSYM / MEB Tipi Optik Cevap Kağıdı Canlı Önizleme
             </h3>
             <p className="text-xs" style={{ color: 'var(--text-secondary)' }} data-testid="optical-preview-meta">
-              Öğrenci: <strong>{studentName || 'Seçilmedi'}</strong> · Kapsam: <strong>{selectedSubjectName ? `Tek Ders (${selectedSubjectName})` : 'Tam Deneme'} · {totalQuestions} Soru</strong> · Kitapçık: <strong>{cover.bookletCode}</strong> (<span className="font-mono-num">{cover.bookletNumber || '050001'}</span>) · Okutulabilir Karne QR&apos;lı
+              Öğrenci: <strong>{studentName || 'Seçilmedi'}</strong> · Kapsam: <strong>{selectedSubjectName ? `Tek Ders (${selectedSubjectName})` : 'Tam Deneme'} · {totalQuestions} Soru</strong> · Kitapçık: <strong>{cover.bookletCode}</strong> (<span className="font-mono-num">{cover.bookletNumber || '050001'}</span>) · Çift Karekod (Karne QR + Şifreli Analiz QR)
             </p>
           </div>
         </div>
@@ -243,6 +251,7 @@ export function OpticalFormPreview({
           data-booklet-number={cover.bookletNumber || '050001'}
           data-question-count={totalQuestions}
           data-subject-scope={selectedSubjectName || 'Tam Deneme'}
+          data-has-dual-qr="true"
           className="max-w-[540px] w-full h-auto rounded-lg shadow-xl border border-slate-300 bg-white"
           aria-label={`Optik Cevap Kağıdı Önizleme — ${cover.bookletCode} Kitapçığı`}
         />

@@ -30,6 +30,7 @@ import {
 } from '../utils/bookletDistribution';
 import { triggerDownload } from '../utils/pdfAndZip';
 import { getLogoPreset } from '../data/logos';
+import { NumericStepperInput } from './NumericStepperInput';
 
 interface BatchBookletPanelProps {
   institution: Institution;
@@ -205,9 +206,9 @@ export function BatchBookletPanel({
 
       {/* Configuration Row */}
       <div className="surface-alt rounded-xl p-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 items-end">
-        <label className="block text-xs font-semibold">
+        <div className="block text-xs font-semibold">
           <span style={{ color: 'var(--text-secondary)' }}>Oluşturulacak Deneme / Öğrenci Adedi</span>
-          <div className="mt-1 flex gap-1.5">
+          <div className="mt-1 flex flex-wrap items-center gap-1.5">
             <select
               value={[20, 30, 50, 60, 100].includes(batchCount) ? batchCount : 'custom'}
               onChange={(e) => {
@@ -215,7 +216,7 @@ export function BatchBookletPanel({
               }}
               aria-label="Hazır deneme adedi seçimi"
               data-testid="batch-count-select"
-              className="flex-1 rounded-lg px-2.5 py-2 text-xs surface-card font-bold"
+              className="flex-1 min-w-[120px] rounded-lg px-2.5 py-2 text-xs surface-card font-bold"
             >
               <option value={20}>20 Adet (1 Şube)</option>
               <option value={30}>30 Adet (Tek Sınıf)</option>
@@ -226,17 +227,20 @@ export function BatchBookletPanel({
                 <option value="custom">Özel: {batchCount} Adet</option>
               )}
             </select>
-            <input
-              type="number"
-              min={1}
-              max={200}
-              value={batchCount}
-              onChange={(e) => setBatchCount(Math.max(1, Math.min(200, Number(e.target.value) || 1)))}
-              aria-label="Özel kitapçık adedi"
-              className="w-16 rounded-lg px-2 py-2 text-xs font-mono-num font-bold surface-card text-center"
-            />
+            <div className="w-32 shrink-0">
+              <NumericStepperInput
+                ariaLabel="Özel kitapçık adedi"
+                inputTestId="batch-custom-count-input"
+                value={batchCount}
+                min={1}
+                max={200}
+                surfaceClass="surface-card"
+                compact
+                onChange={(val) => setBatchCount(val)}
+              />
+            </div>
           </div>
-        </label>
+        </div>
 
         <label className="block text-xs font-semibold">
           <span style={{ color: 'var(--text-secondary)' }}>Başlangıç Kitapçık No (6 Hane)</span>

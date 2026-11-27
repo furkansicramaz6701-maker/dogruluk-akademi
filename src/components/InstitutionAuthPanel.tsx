@@ -9,6 +9,7 @@ import {
   StudentRecord,
 } from '../types/academy';
 import { createDefaultPermissions } from '../utils/institutionCodes';
+import { NumericStepperInput } from './NumericStepperInput';
 
 interface InstitutionAuthPanelProps {
   institutions: Institution[];
@@ -348,20 +349,20 @@ export function InstitutionAuthPanel({
               </select>
             </label>
 
-            <label className="block text-xs font-semibold">
+            <div className="block text-xs font-semibold space-y-1">
               <span style={{ color: 'var(--text-secondary)' }}>Öğrenci Kayıt Kotası</span>
-              <input
-                type="number"
+              <NumericStepperInput
                 min={10}
                 max={10000}
                 step={10}
+                ariaLabel="Öğrenci Kayıt Kotası"
+                surfaceClass="surface-card"
                 value={perms.maxStudents}
-                onChange={(e) =>
-                  patchPerms({ maxStudents: Math.max(10, Number(e.target.value) || 100) })
+                onChange={(val) =>
+                  patchPerms({ maxStudents: Math.max(10, val) })
                 }
-                className="mt-1 w-full rounded-lg px-3 py-2 text-xs font-mono-num surface-card"
               />
-            </label>
+            </div>
 
             <div className="pt-1 space-y-1.5 text-xs">
               <div className="flex items-center justify-between">

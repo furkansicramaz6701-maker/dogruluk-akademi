@@ -365,6 +365,17 @@ export interface HistoricalExamPoint {
   academyAvgNet: number;
 }
 
+export interface BookletColumnAlignmentReport {
+  bookletCode: BookletCode;
+  matchedKeyColumn: BookletCode;
+  keyLength: number;
+  studentAnswerLength: number;
+  expectedQuestionCount: number;
+  hasColumnShift: boolean;
+  autoAligned: boolean;
+  message: string;
+}
+
 export interface ExamAnalysisResult {
   studentName: string;
   studentNumber: string;
@@ -394,6 +405,7 @@ export interface ExamAnalysisResult {
   projectedScore: number;
   projectedNet: number;
   aiCoachSummary?: string;
+  columnAlignment?: BookletColumnAlignmentReport;
 }
 
 export type ReportCardType =
@@ -632,6 +644,79 @@ export interface MultiExamTrendSummary {
   momentum: CoachingTrendDirection;
 }
 
+export type ExamRecordSource = 'kurum' | 'farkli-yayin' | 'odullu';
+
+export type RankingPeriodFilter = 'all' | 'daily' | 'weekly' | 'monthly';
+
+export interface PrizeExamDefinition {
+  id: string;
+  institutionId: string;
+  title: string;
+  prizeDescription: string;
+  period: 'daily' | 'weekly' | 'monthly';
+  gradeId: GradeLevelId | 'all';
+  gradeIds?: GradeLevelId[];
+  sourceMode: ExamSourceMode;
+  publisherName?: string;
+  examDate: string;
+  createdAt: string;
+}
+
+export interface PersistedExamRecord {
+  id: string;
+  institutionId: string;
+  studentId: string;
+  studentName: string;
+  studentNumber8: string;
+  classroom: string;
+  gradeId: GradeLevelId;
+  examTitle: string;
+  examDate: string;
+  createdAt: string;
+  bookletCode?: BookletCode;
+  subjectScopeId?: string;
+  subjectScopeName?: string;
+  examSource?: ExamRecordSource;
+  publisherName?: string;
+  prizeExamId?: string;
+  prizeTitle?: string;
+  totalQuestions: number;
+  totalCorrect: number;
+  totalWrong: number;
+  totalBlank: number;
+  totalNet: number;
+  estimatedScore: number;
+  maxScore: number;
+  subjectMetrics?: Array<{
+    subject: string;
+    total: number;
+    correct: number;
+    wrong: number;
+    blank: number;
+    net: number;
+    accuracyPct: number;
+  }>;
+}
+
+export type QrPreCheckStatus = 'none' | 'matched' | 'mismatch' | 'unregistered';
+
+export interface QrPreCheckResult {
+  status: QrPreCheckStatus;
+  qrDetected: boolean;
+  qrRawValue?: string;
+  extractedStudentNumber?: string;
+  extractedStudentName?: string;
+  extractedInstitutionCode?: string;
+  extractedBookletCode?: BookletCode;
+  extractedSubjectName?: string;
+  matchedStudentId?: string;
+  matchedStudentName?: string;
+  matchedStudentNumber?: string;
+  institutionMismatch: boolean;
+  studentMismatch: boolean;
+  message: string;
+}
+
 export type ActiveTab =
   | 'dashboard'
   | 'weekly'
@@ -644,5 +729,6 @@ export type ActiveTab =
   | 'forms'
   | 'drive'
   | 'sample';
+
 
 

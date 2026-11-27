@@ -17,6 +17,7 @@ import {
   GradeProfile,
   Institution,
   PenaltyDivisor,
+  PersistedExamRecord,
   StudentRecord,
 } from '../types/academy';
 import { formatPenaltyRuleLabel } from '../utils/examAnalysis';
@@ -36,6 +37,7 @@ interface NetProgressionChartProps {
   activeStudentName: string;
   activeStudentNet: number;
   activeExamTitle: string;
+  examHistory?: PersistedExamRecord[];
   showTurkeyBenchmark?: boolean;
   isSamplePreview?: boolean;
 }
@@ -122,6 +124,7 @@ export function NetProgressionChart({
   activeStudentName,
   activeStudentNet,
   activeExamTitle,
+  examHistory,
   showTurkeyBenchmark = true,
   isSamplePreview = false,
 }: NetProgressionChartProps) {
@@ -140,6 +143,7 @@ export function NetProgressionChart({
         institutionId: activeInstitution.id,
         institutionCode8: activeInstitution.code8,
         students,
+        examHistory,
         includeTurkeyBenchmark: showTurkeyBenchmark,
         isSamplePreview,
         liveAnalysis: {
@@ -156,6 +160,7 @@ export function NetProgressionChart({
       activeInstitution.id,
       activeInstitution.code8,
       students,
+      examHistory,
       showTurkeyBenchmark,
       isSamplePreview,
       hasLiveAnalysis,
@@ -166,6 +171,7 @@ export function NetProgressionChart({
   );
 
   const activePoint = useMemo(() => {
+    if (dataset.points.length === 0) return undefined;
     const matched = dataset.points.find((p) => p.id === selectedPointId);
     return matched ?? dataset.points[dataset.points.length - 1];
   }, [dataset.points, selectedPointId]);
@@ -415,214 +421,233 @@ export function NetProgressionChart({
         )}
       </div>
 
-      {/* Interactive Recharts Canvas */}
-      <div
-        className="w-full min-w-0 h-[290px]"
-        data-testid="net-progression-recharts-container"
-      >
-        <ResponsiveContainer width="100%" height="100%">
-          {chartType === 'area' ? (
-            <ComposedChart
-              data={dataset.points}
-              margin={{ top: 14, right: 18, left: -4, bottom: 4 }}
-              onClick={(state) => {
-                const idx = typeof state?.activeTooltipIndex === 'number' ? state.activeTooltipIndex : -1;
-                if (idx >= 0 && dataset.points[idx]) {
-                  setSelectedPointId(dataset.points[idx].id);
-                }
-              }}
-            >
-              <defs>
-                <linearGradient id="instAreaFill" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="var(--accent-primary)" stopOpacity={0.28} />
-                  <stop offset="95%" stopColor="var(--accent-primary)" stopOpacity={0.02} />
-                </linearGradient>
-                <linearGradient id="turkeyAreaFill" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="var(--chart-3)" stopOpacity={0.2} />
-                  <stop offset="95%" stopColor="var(--chart-3)" stopOpacity={0.01} />
-                </linearGradient>
-              </defs>
-
-              <CartesianGrid strokeDasharray="3 3" stroke="var(--border-subtle)" vertical={false} />
-              <XAxis
-                dataKey="shortLabel"
-                interval={0}
-                padding={{ left: 14, right: 14 }}
-                tickFormatter={(val: string) => val.replace('Deneme ', 'D')}
-                tick={{ fill: 'var(--text-secondary)', fontSize: 12, fontWeight: 600 }}
-                axisLine={{ stroke: 'var(--border-subtle)' }}
-                tickLine={false}
-              />
-              <YAxis
-                domain={
-                  !showTurkeyBenchmark && !hasAnyNonZeroInstitutionPoint
-                    ? [0, dataset.summary.maxQuestions]
-                    : [
-                        (dataMin: number) => Math.max(0, Math.floor((dataMin - 6) / 5) * 5),
-                        (dataMax: number) =>
-                          Math.min(dataset.summary.maxQuestions, Math.ceil((dataMax + 6) / 5) * 5),
-                      ]
-                }
-                tick={{ fill: 'var(--text-secondary)', fontSize: 12 }}
-                axisLine={false}
-                tickLine={false}
-                width={42}
-              />
-              <Tooltip content={<NetChartTooltip showTurkeyBenchmark={showTurkeyBenchmark} />} />
-              {showTurkey && (
-                <ReferenceLine
-                  y={dataset.summary.latestTurkeyNet}
-                  stroke="var(--chart-3)"
-                  strokeDasharray="4 4"
-                  strokeOpacity={0.6}
-                />
-              )}
-
-              {showInstitution && (
-                <Area
-                  type="monotone"
-                  dataKey="institutionAvgNet"
-                  name="Kurum Geneli Ort."
-                  stroke="var(--accent-primary)"
-                  strokeWidth={3}
-                  fill="url(#instAreaFill)"
-                  isAnimationActive={false}
-                  activeDot={{ r: 6, strokeWidth: 2, stroke: '#ffffff' }}
-                  dot={{ r: 4, strokeWidth: 2, fill: 'var(--accent-primary)' }}
-                />
-              )}
-
-              {showTurkey && (
-                <Area
-                  type="monotone"
-                  dataKey="turkeyAvgNet"
-                  name="Türkiye Geneli Ort."
-                  stroke="var(--chart-3)"
-                  strokeWidth={2.5}
-                  strokeDasharray={scopeMode === 'both' ? '5 4' : undefined}
-                  fill="url(#turkeyAreaFill)"
-                  isAnimationActive={false}
-                  activeDot={{ r: 5, strokeWidth: 2, stroke: '#ffffff' }}
-                  dot={{ r: 3.5, fill: 'var(--chart-3)' }}
-                />
-              )}
-
-              {hasStudentOverlay && (
-                <Line
-                  type="monotone"
-                  dataKey="activeStudentNet"
-                  name={activeStudentName || 'Aktif Öğrenci'}
-                  stroke="var(--chart-4)"
-                  strokeWidth={2.5}
-                  isAnimationActive={false}
-                  dot={{ r: 5, fill: 'var(--chart-4)' }}
-                  connectNulls={false}
-                />
-              )}
-            </ComposedChart>
-          ) : (
-            <BarChart
-              data={dataset.points}
-              margin={{ top: 14, right: 18, left: -4, bottom: 4 }}
-              onClick={(state) => {
-                const idx = typeof state?.activeTooltipIndex === 'number' ? state.activeTooltipIndex : -1;
-                if (idx >= 0 && dataset.points[idx]) {
-                  setSelectedPointId(dataset.points[idx].id);
-                }
-              }}
-            >
-              <CartesianGrid strokeDasharray="3 3" stroke="var(--border-subtle)" vertical={false} />
-              <XAxis
-                dataKey="shortLabel"
-                interval={0}
-                tickFormatter={(val: string) => val.replace('Deneme ', 'D')}
-                tick={{ fill: 'var(--text-secondary)', fontSize: 12, fontWeight: 600 }}
-                axisLine={{ stroke: 'var(--border-subtle)' }}
-                tickLine={false}
-              />
-              <YAxis
-                domain={[0, dataset.summary.maxQuestions]}
-                tick={{ fill: 'var(--text-secondary)', fontSize: 12 }}
-                axisLine={false}
-                tickLine={false}
-                width={42}
-              />
-              <Tooltip content={<NetChartTooltip showTurkeyBenchmark={showTurkeyBenchmark} />} />
-              {showInstitution && (
-                <Bar
-                  dataKey="institutionAvgNet"
-                  name="Kurum Geneli Ort."
-                  fill="var(--accent-primary)"
-                  radius={[6, 6, 0, 0]}
-                  maxBarSize={36}
-                  isAnimationActive={false}
-                />
-              )}
-              {showTurkey && (
-                <Bar
-                  dataKey="turkeyAvgNet"
-                  name="Türkiye Geneli Ort."
-                  fill="var(--chart-3)"
-                  radius={[6, 6, 0, 0]}
-                  maxBarSize={36}
-                  isAnimationActive={false}
-                />
-              )}
-            </BarChart>
-          )}
-        </ResponsiveContainer>
-      </div>
-
-      {/* Interactive Exam Selector Strip — Clicking any deneme focuses its exact readout */}
-      <div className="space-y-2.5">
-        <div className="flex flex-wrap items-center gap-2">
-          {dataset.points.map((pt) => {
-            const isFocused = activePoint.id === pt.id;
-            return (
-              <button
-                key={pt.id}
-                type="button"
-                data-testid={`net-point-btn-${pt.shortLabel.replace(/\s+/g, '-').toLowerCase()}`}
-                aria-pressed={isFocused}
-                onClick={() => setSelectedPointId(pt.id)}
-                className={`px-3 py-1.5 rounded-lg text-xs font-bold cursor-pointer transition-colors ${
-                  isFocused ? 'btn-3d' : 'btn-3d-secondary'
-                }`}
-              >
-                {pt.shortLabel}
-              </button>
-            );
-          })}
-        </div>
-
+      {dataset.points.length === 0 ? (
         <div
-          className="surface-alt rounded-xl px-4 py-3 flex flex-wrap items-center justify-between gap-3 text-xs"
-          data-testid="net-focused-point-detail"
+          data-testid="net-progression-empty-state"
+          className="surface-alt rounded-xl p-6 text-center space-y-1.5 border"
+          style={{ borderColor: 'var(--border-subtle)' }}
         >
-          <div className="min-w-0">
-            <span className="font-bold">{activePoint.examName}</span>
-            <span className="mx-2" style={{ color: 'var(--text-secondary)' }} aria-hidden="true">·</span>
-            <span style={{ color: 'var(--text-secondary)' }}>
-              {activePoint.date} · {activePoint.participantCount.toLocaleString('tr-TR')} katılımcı
-            </span>
+          <div className="text-sm font-bold">
+            Henüz deneme yapılmamış — İlk deneme kaydı bekleniyor
           </div>
-          <div className="flex flex-wrap items-center gap-4 font-mono-num font-bold">
-            {showInstitution && (
-              <span style={{ color: 'var(--accent-primary)' }}>
-                Kurum: {activePoint.institutionAvgNet.toFixed(2)} Net
-                {activePoint.institutionDelta !== 0
-                  ? ` (${activePoint.institutionDelta > 0 ? '+' : ''}${activePoint.institutionDelta.toFixed(2)})`
-                  : ''}
-              </span>
-            )}
-            {showTurkey && (
-              <span style={{ color: 'var(--chart-3)' }}>
-                Türkiye: {activePoint.turkeyAvgNet.toFixed(2)} Net
-              </span>
-            )}
-          </div>
+          <p className="text-xs max-w-xl mx-auto" style={{ color: 'var(--text-secondary)' }}>
+            {activeInstitution.name} için kayıtlı bir deneme sonucu bulunmuyor. Optik Okuma modülünden ilk deneme değerlendirildiğinde “1. Deneme (İlk Kayıt)” burada otomatik grafik olarak oluşur.
+          </p>
         </div>
-      </div>
+      ) : (
+        <>
+          {/* Interactive Recharts Canvas */}
+          <div
+            className="w-full min-w-0 h-[290px]"
+            data-testid="net-progression-recharts-container"
+          >
+            <ResponsiveContainer width="100%" height="100%">
+              {chartType === 'area' ? (
+                <ComposedChart
+                  data={dataset.points}
+                  margin={{ top: 14, right: 18, left: -4, bottom: 4 }}
+                  onClick={(state) => {
+                    const idx = typeof state?.activeTooltipIndex === 'number' ? state.activeTooltipIndex : -1;
+                    if (idx >= 0 && dataset.points[idx]) {
+                      setSelectedPointId(dataset.points[idx].id);
+                    }
+                  }}
+                >
+                  <defs>
+                    <linearGradient id="instAreaFill" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="var(--accent-primary)" stopOpacity={0.28} />
+                      <stop offset="95%" stopColor="var(--accent-primary)" stopOpacity={0.02} />
+                    </linearGradient>
+                    <linearGradient id="turkeyAreaFill" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="var(--chart-3)" stopOpacity={0.2} />
+                      <stop offset="95%" stopColor="var(--chart-3)" stopOpacity={0.01} />
+                    </linearGradient>
+                  </defs>
+
+                  <CartesianGrid strokeDasharray="3 3" stroke="var(--border-subtle)" vertical={false} />
+                  <XAxis
+                    dataKey="shortLabel"
+                    interval={0}
+                    padding={{ left: 14, right: 14 }}
+                    tickFormatter={(val: string) => val.replace('Deneme ', 'D')}
+                    tick={{ fill: 'var(--text-secondary)', fontSize: 12, fontWeight: 600 }}
+                    axisLine={{ stroke: 'var(--border-subtle)' }}
+                    tickLine={false}
+                  />
+                  <YAxis
+                    domain={
+                      !showTurkeyBenchmark && !hasAnyNonZeroInstitutionPoint
+                        ? [0, dataset.summary.maxQuestions]
+                        : [
+                            (dataMin: number) => Math.max(0, Math.floor((dataMin - 6) / 5) * 5),
+                            (dataMax: number) =>
+                              Math.min(dataset.summary.maxQuestions, Math.ceil((dataMax + 6) / 5) * 5),
+                          ]
+                    }
+                    tick={{ fill: 'var(--text-secondary)', fontSize: 12 }}
+                    axisLine={false}
+                    tickLine={false}
+                    width={42}
+                  />
+                  <Tooltip content={<NetChartTooltip showTurkeyBenchmark={showTurkeyBenchmark} />} />
+                  {showTurkey && (
+                    <ReferenceLine
+                      y={dataset.summary.latestTurkeyNet}
+                      stroke="var(--chart-3)"
+                      strokeDasharray="4 4"
+                      strokeOpacity={0.6}
+                    />
+                  )}
+
+                  {showInstitution && (
+                    <Area
+                      type="monotone"
+                      dataKey="institutionAvgNet"
+                      name="Kurum Geneli Ort."
+                      stroke="var(--accent-primary)"
+                      strokeWidth={3}
+                      fill="url(#instAreaFill)"
+                      isAnimationActive={false}
+                      activeDot={{ r: 6, strokeWidth: 2, stroke: '#ffffff' }}
+                      dot={{ r: 4, strokeWidth: 2, fill: 'var(--accent-primary)' }}
+                    />
+                  )}
+
+                  {showTurkey && (
+                    <Area
+                      type="monotone"
+                      dataKey="turkeyAvgNet"
+                      name="Türkiye Geneli Ort."
+                      stroke="var(--chart-3)"
+                      strokeWidth={2.5}
+                      strokeDasharray={scopeMode === 'both' ? '5 4' : undefined}
+                      fill="url(#turkeyAreaFill)"
+                      isAnimationActive={false}
+                      activeDot={{ r: 5, strokeWidth: 2, stroke: '#ffffff' }}
+                      dot={{ r: 3.5, fill: 'var(--chart-3)' }}
+                    />
+                  )}
+
+                  {hasStudentOverlay && (
+                    <Line
+                      type="monotone"
+                      dataKey="activeStudentNet"
+                      name={activeStudentName || 'Aktif Öğrenci'}
+                      stroke="var(--chart-4)"
+                      strokeWidth={2.5}
+                      isAnimationActive={false}
+                      dot={{ r: 5, fill: 'var(--chart-4)' }}
+                      connectNulls={false}
+                    />
+                  )}
+                </ComposedChart>
+              ) : (
+                <BarChart
+                  data={dataset.points}
+                  margin={{ top: 14, right: 18, left: -4, bottom: 4 }}
+                  onClick={(state) => {
+                    const idx = typeof state?.activeTooltipIndex === 'number' ? state.activeTooltipIndex : -1;
+                    if (idx >= 0 && dataset.points[idx]) {
+                      setSelectedPointId(dataset.points[idx].id);
+                    }
+                  }}
+                >
+                  <CartesianGrid strokeDasharray="3 3" stroke="var(--border-subtle)" vertical={false} />
+                  <XAxis
+                    dataKey="shortLabel"
+                    interval={0}
+                    tickFormatter={(val: string) => val.replace('Deneme ', 'D')}
+                    tick={{ fill: 'var(--text-secondary)', fontSize: 12, fontWeight: 600 }}
+                    axisLine={{ stroke: 'var(--border-subtle)' }}
+                    tickLine={false}
+                  />
+                  <YAxis
+                    domain={[0, dataset.summary.maxQuestions]}
+                    tick={{ fill: 'var(--text-secondary)', fontSize: 12 }}
+                    axisLine={false}
+                    tickLine={false}
+                    width={42}
+                  />
+                  <Tooltip content={<NetChartTooltip showTurkeyBenchmark={showTurkeyBenchmark} />} />
+                  {showInstitution && (
+                    <Bar
+                      dataKey="institutionAvgNet"
+                      name="Kurum Geneli Ort."
+                      fill="var(--accent-primary)"
+                      radius={[6, 6, 0, 0]}
+                      maxBarSize={36}
+                      isAnimationActive={false}
+                    />
+                  )}
+                  {showTurkey && (
+                    <Bar
+                      dataKey="turkeyAvgNet"
+                      name="Türkiye Geneli Ort."
+                      fill="var(--chart-3)"
+                      radius={[6, 6, 0, 0]}
+                      maxBarSize={36}
+                      isAnimationActive={false}
+                    />
+                  )}
+                </BarChart>
+              )}
+            </ResponsiveContainer>
+          </div>
+
+          {/* Interactive Exam Selector Strip — Clicking any deneme focuses its exact readout */}
+          {activePoint && (
+            <div className="space-y-2.5">
+              <div className="flex flex-wrap items-center gap-2">
+                {dataset.points.map((pt) => {
+                  const isFocused = activePoint.id === pt.id;
+                  return (
+                    <button
+                      key={pt.id}
+                      type="button"
+                      data-testid={`net-point-btn-${pt.shortLabel.replace(/\s+/g, '-').toLowerCase()}`}
+                      aria-pressed={isFocused}
+                      onClick={() => setSelectedPointId(pt.id)}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-bold cursor-pointer transition-colors ${
+                        isFocused ? 'btn-3d' : 'btn-3d-secondary'
+                      }`}
+                    >
+                      {pt.shortLabel}
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div
+                className="surface-alt rounded-xl px-4 py-3 flex flex-wrap items-center justify-between gap-3 text-xs"
+                data-testid="net-focused-point-detail"
+              >
+                <div className="min-w-0">
+                  <span className="font-bold">{activePoint.examName}</span>
+                  <span className="mx-2" style={{ color: 'var(--text-secondary)' }} aria-hidden="true">·</span>
+                  <span style={{ color: 'var(--text-secondary)' }}>
+                    {activePoint.date} · {activePoint.participantCount.toLocaleString('tr-TR')} katılımcı
+                  </span>
+                </div>
+                <div className="flex flex-wrap items-center gap-4 font-mono-num font-bold">
+                  {showInstitution && (
+                    <span style={{ color: 'var(--accent-primary)' }}>
+                      Kurum: {activePoint.institutionAvgNet.toFixed(2)} Net
+                      {activePoint.institutionDelta !== 0
+                        ? ` (${activePoint.institutionDelta > 0 ? '+' : ''}${activePoint.institutionDelta.toFixed(2)})`
+                        : ''}
+                    </span>
+                  )}
+                  {showTurkey && (
+                    <span style={{ color: 'var(--chart-3)' }}>
+                      Türkiye: {activePoint.turkeyAvgNet.toFixed(2)} Net
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+        </>
+      )}
     </section>
   );
 }

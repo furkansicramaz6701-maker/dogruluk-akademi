@@ -18,6 +18,7 @@ import {
   UserPlus,
   Search,
   Crop,
+  ShieldCheck,
 } from 'lucide-react';
 import {
   BookletCode,
@@ -34,6 +35,7 @@ import {
   OpenEndedPaperAnalysis,
   OpenEndedQuestion,
   PenaltyDivisor,
+  PrizeExamDefinition,
   StudentBookletAssignment,
   StudentRecord,
 } from '../types/academy';
@@ -48,7 +50,11 @@ import {
 } from '../utils/bookletDistribution';
 import { defaultClassroomForGrade } from '../utils/excelExport';
 import { parseCombinedExternalAnswerKeysText } from '../utils/externalPublisherLibrary';
-import { generateSampleOmrPair, parseAnswerString } from '../utils/examAnalysis';
+import {
+  generateSampleOmrPair,
+  parseAnswerString,
+  parseAnswerStringWithQrPreCheck,
+} from '../utils/examAnalysis';
 import {
   deriveBookletAnswerKeysFromBase,
   downloadOmrExcelTemplate,
@@ -56,6 +62,11 @@ import {
   parseOmrExcelOrCsvBuffer,
 } from '../utils/omrSpreadsheet';
 import { buildStudentRecordForInstitution } from '../utils/studentPanel';
+import {
+  formatPrizeExamGradesLabel,
+  resolvePrizeExamGrades,
+  resolveTargetGradeForPrizeActivation,
+} from '../utils/institutionRankings';
 import {
   analyzeOmrResponseValidation,
   countDistinctErrorRows,
@@ -74,11 +85,18 @@ import {
   resolveTargetKeyBooklet,
   safeParseOmrApiResponse,
 } from '../utils/omrImagePrep';
+import { parseDigitalKarneQuery } from '../utils/digitalKarneQr';
+import {
+  decodeTeacherAnalysisQrToken,
+  DualQrScanResult,
+  extractBothQrCodesFromImageFile,
+} from '../utils/qrKeyIntegration';
 import { ExternalPublisherHub } from './ExternalPublisherHub';
 import { OmrErrorReportModal } from './OmrErrorReportModal';
 import { OmrValidationSummaryCard } from './OmrValidationSummaryCard';
 import { OpenEndedPaperPanel } from './OpenEndedPaperPanel';
 import { OpticalFormPreview } from './OpticalFormPreview';
+import { QrKeyIntegrationPanel } from './QrKeyIntegrationPanel';
 import {
   OpticalRegionEditorModal,
   UploadedKeyImageAsset,
@@ -161,6 +179,9 @@ interface OmrScannerViewProps {
   onDownloadAllOpticalPdf?: () => Promise<void>;
   onDownloadAllOpticalZip?: () => Promise<void>;
   onDownloadRegisteredOpticalPdf?: () => Promise<void>;
+  prizeExams?: PrizeExamDefinition[];
+  activePrizeExamId?: string | null;
+  onSelectActivePrizeExamId?: (id: string | null) => void;
 }
 
 function fileToDataUrl(file: File): Promise<string> {
@@ -226,6 +247,9 @@ export function OmrScannerView({
   onDownloadAllOpticalPdf,
   onDownloadAllOpticalZip,
   onDownloadRegisteredOpticalPdf,
+  prizeExams = [],
+  activePrizeExamId = null,
+  onSelectActivePrizeExamId,
 }: OmrScannerViewProps) {
   const [scannerMode, setScannerMode] = useState<'omr' | 'open-ended'>(initialMode);
   const [loadingMode, setLoadingMode] = useState<'student' | 'key' | 'excel' | null>(null);
@@ -248,6 +272,10 @@ export function OmrScannerView({
   const [regionEditorBooklet, setRegionEditorBooklet] = useState<BookletCode>(cover.bookletCode);
   const [regionEditorLoading, setRegionEditorLoading] = useState<boolean>(false);
   const [regionEditorError, setRegionEditorError] = useState<string | null>(null);
+  const [lastImageQrMeta, setLastImageQrMeta] = useState<{
+    detectedQrUrl?: string;
+    detectedStudentNumber?: string;
+  } | null>(null);
 
   useEffect(() => {
     setScannerMode(initialMode);
@@ -281,30 +309,10 @@ export function OmrScannerView({
         : gradeProfile.subjects.reduce((sum, s) => sum + s.questionCount, 0);
   const studentAnswersTextareaRef = useRef<HTMLTextAreaElement | null>(null);
 
-  const parsedStudent = parseAnswerString(
-    studentAnswersRaw,
-    expectedCount,
-    gradeProfile.optionCount
+  const allInstStudents = useMemo(
+    () => students.filter((s) => s.institutionId === institutionId),
+    [students, institutionId]
   );
-  const parsedKey = parseAnswerString(
-    answerKeyRaw,
-    expectedCount,
-    gradeProfile.optionCount
-  );
-
-  const validationSummary = useMemo(
-    () =>
-      analyzeOmrResponseValidation({
-        studentNumber,
-        studentAnswersRaw,
-        answerKeyRaw,
-        expectedCount,
-        optionCount: gradeProfile.optionCount,
-      }),
-    [studentNumber, studentAnswersRaw, answerKeyRaw, expectedCount, gradeProfile.optionCount]
-  );
-
-  const allInstStudents = students.filter((s) => s.institutionId === institutionId);
   const sameGradeStudentsCount = allInstStudents.filter(
     (s) => s.gradeId === gradeProfile.id
   ).length;
@@ -319,6 +327,62 @@ export function OmrScannerView({
     );
   });
   const allInstStudentsCount = allInstStudents.length;
+
+  const { answers: parsedStudent, preCheck: qrPreCheckResult } = useMemo(
+    () =>
+      parseAnswerStringWithQrPreCheck(
+        studentAnswersRaw,
+        expectedCount,
+        gradeProfile.optionCount,
+        {
+          subjectName: selectedSubjectObj?.name,
+          expectedStudentNumber: studentNumber,
+          expectedStudentName: studentName,
+          expectedInstitutionCode: institutionCode8,
+          students: allInstStudents,
+          detectedQrUrl: lastImageQrMeta?.detectedQrUrl,
+          detectedStudentNumber: lastImageQrMeta?.detectedStudentNumber,
+        }
+      ),
+    [
+      studentAnswersRaw,
+      expectedCount,
+      gradeProfile.optionCount,
+      selectedSubjectObj?.name,
+      studentNumber,
+      studentName,
+      institutionCode8,
+      allInstStudents,
+      lastImageQrMeta,
+    ]
+  );
+
+  const parsedKey = parseAnswerString(
+    answerKeyRaw,
+    expectedCount,
+    gradeProfile.optionCount,
+    { subjectName: selectedSubjectObj?.name }
+  );
+
+  const validationSummary = useMemo(
+    () =>
+      analyzeOmrResponseValidation({
+        studentNumber,
+        studentAnswersRaw,
+        answerKeyRaw,
+        expectedCount,
+        optionCount: gradeProfile.optionCount,
+        subjectName: selectedSubjectObj?.name,
+      }),
+    [
+      studentNumber,
+      studentAnswersRaw,
+      answerKeyRaw,
+      expectedCount,
+      gradeProfile.optionCount,
+      selectedSubjectObj?.name,
+    ]
+  );
 
   const applyParsedSpreadsheet = (buf: ArrayBuffer, fileName: string, targetFocus?: 'student' | 'key') => {
     const parsed = parseOmrExcelOrCsvBuffer(buf, {
@@ -583,30 +647,62 @@ export function OmrScannerView({
 
       setLoadingMode(mode);
       setErrorMsg(null);
+      let dualQrResult: DualQrScanResult | null = null;
+      if (mode === 'student' && isImageUploadFile(file)) {
+        try {
+          dualQrResult = await extractBothQrCodesFromImageFile(file, {
+            preferredInstitutionCode8: institutionCode8,
+            candidateInstCodes: [institutionCode8],
+          });
+        } catch {
+          dualQrResult = null;
+        }
+      }
+
       const prepared = await prepareImageForOmrUpload(file, 1600, 0.86);
       const intendedTargetBooklet =
         mode === 'key' ? explicitBookletCode ?? cover.bookletCode : undefined;
 
-      const resp = await fetch('/api/omr/parse-file', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          fileBase64: prepared.base64,
-          fileMimeType: prepared.mimeType,
-          mode,
-          expectedCount,
-          optionCount: gradeProfile.optionCount,
-          targetBooklet: intendedTargetBooklet,
-          subjectName: selectedSubjectObj?.name || '',
-        }),
-      });
-      const rawText = await resp.text();
-      const parsedApi = safeParseOmrApiResponse(resp.status, rawText);
+      const sendOmrParseRequest = async (imgPrepared: { base64: string; mimeType: string }) => {
+        const resp = await fetch('/api/omr/parse-file', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            fileBase64: imgPrepared.base64,
+            fileMimeType: imgPrepared.mimeType,
+            mode,
+            expectedCount,
+            optionCount: gradeProfile.optionCount,
+            targetBooklet: intendedTargetBooklet,
+            subjectName: selectedSubjectObj?.name || '',
+          }),
+        });
+        const rawText = await resp.text();
+        return safeParseOmrApiResponse(resp.status, rawText);
+      };
+
+      let parsedApi = await sendOmrParseRequest(prepared);
+      if (!parsedApi.ok && isImageUploadFile(file)) {
+        const lighter = await prepareImageForOmrUpload(file, 1080, 0.72);
+        parsedApi = await sendOmrParseRequest(lighter);
+      }
       if (!parsedApi.ok) {
         throw new Error(parsedApi.error || 'Optik dosya okunamadı.');
       }
 
-      const detectedCode = parsedApi.bookletCode ?? null;
+      const decodedAnalysisQr =
+        (dualQrResult?.decodedAnalysis?.valid ? dualQrResult.decodedAnalysis : undefined) ??
+        (parsedApi.detectedAnalysisQr
+          ? decodeTeacherAnalysisQrToken(parsedApi.detectedAnalysisQr, institutionCode8, [
+              institutionCode8,
+            ])
+          : undefined);
+      const qrPayload =
+        decodedAnalysisQr && decodedAnalysisQr.valid && decodedAnalysisQr.payload && !decodedAnalysisQr.institutionMismatch
+          ? decodedAnalysisQr.payload
+          : undefined;
+
+      const detectedCode = qrPayload?.bookletCode ?? parsedApi.bookletCode ?? null;
       const targetBooklet =
         mode === 'key'
           ? resolveTargetKeyBooklet({
@@ -619,24 +715,102 @@ export function OmrScannerView({
         onUpdateCover?.({ bookletCode: targetBooklet });
       }
 
+      const effectiveQrUrl = dualQrResult?.karneQrUrl || parsedApi.detectedQrUrl;
+      const parsedQr = effectiveQrUrl
+        ? parseDigitalKarneQuery(
+            effectiveQrUrl.includes('?')
+              ? effectiveQrUrl.slice(effectiveQrUrl.indexOf('?'))
+              : effectiveQrUrl
+          )
+        : null;
+      const qrStudentNo = parsedQr?.studentNumber8 || parsedApi.detectedStudentNumber;
+      const matchedStudentFromImage = qrStudentNo
+        ? allInstStudents.find((s) => s.studentNumber8 === qrStudentNo)
+        : parsedQr?.studentName
+          ? allInstStudents.find(
+              (s) =>
+                s.fullName.toLocaleLowerCase('tr-TR') ===
+                parsedQr.studentName!.toLocaleLowerCase('tr-TR')
+            )
+          : undefined;
+
+      const detectedSubjName = qrPayload?.subjectName || parsedApi.detectedSubject;
+      const matchedSubjectFromImage = detectedSubjName
+        ? gradeProfile.subjects.find((s) => {
+            const detNorm = detectedSubjName.toLocaleLowerCase('tr-TR').trim();
+            const subNorm = s.name.toLocaleLowerCase('tr-TR').trim();
+            return subNorm === detNorm || subNorm.includes(detNorm) || detNorm.includes(subNorm);
+          })
+        : undefined;
+
       if (mode === 'student') {
+        setLastImageQrMeta({
+          detectedQrUrl: effectiveQrUrl,
+          detectedStudentNumber: parsedQr?.studentNumber8 || parsedApi.detectedStudentNumber,
+        });
+        const effectiveSubject = matchedSubjectFromImage ?? selectedSubjectObj;
+        const rawAnswersCandidate = parsedApi.answersString;
+        const parsedTokensForCount = parseAnswerString(
+          rawAnswersCandidate,
+          Math.max(expectedCount, rawAnswersCandidate.length),
+          gradeProfile.optionCount,
+          { subjectName: effectiveSubject?.name }
+        );
+        const meaningfulCount = parsedTokensForCount.filter(Boolean).length;
+        const shouldAutoScopeSingleSubject =
+          Boolean(matchedSubjectFromImage) &&
+          selectedSubjectId === 'all' &&
+          (Boolean(qrPayload) ||
+            (meaningfulCount >= 5 &&
+              meaningfulCount <= (matchedSubjectFromImage?.questionCount ?? 40) + 2));
+
+        const effectiveExpectedCount = qrPayload?.questionCount
+          ? qrPayload.questionCount
+          : shouldAutoScopeSingleSubject
+            ? meaningfulCount
+            : expectedCount;
+
+        if (shouldAutoScopeSingleSubject && matchedSubjectFromImage && onUpdateExternalPublisher) {
+          onUpdateExternalPublisher({
+            selectedSubjectId: matchedSubjectFromImage.id,
+            questionCount: effectiveExpectedCount,
+            ...(qrPayload
+              ? {
+                  answerKeys: {
+                    ...externalPublisherConfig.answerKeys,
+                    [targetBooklet]: qrPayload.answerKey,
+                  },
+                }
+              : {}),
+          });
+        } else if (qrPayload && onUpdateExternalPublisher) {
+          onUpdateExternalPublisher({
+            ...(qrPayload.questionCount > 0 ? { questionCount: qrPayload.questionCount } : {}),
+            answerKeys: {
+              ...externalPublisherConfig.answerKeys,
+              [targetBooklet]: qrPayload.answerKey,
+            },
+          });
+        }
+
         const nextAns = normalizeDetectedAnswersString(
-          parsedApi.answersString,
-          expectedCount,
+          rawAnswersCandidate,
+          effectiveExpectedCount,
           gradeProfile.optionCount
         );
         const detectedLen = nextAns.length;
+        const hasAnyMarkedBubble = /[A-E]/i.test(nextAns);
         const scanErrors: OmrScanErrorItem[] = [];
         const issue = nextAns.trim()
           ? inspectAnswerStringReadability(nextAns, gradeProfile.optionCount)
           : null;
-        if (detectedLen === 0 || !nextAns.trim()) {
+        if (detectedLen === 0 || !nextAns.trim() || !hasAnyMarkedBubble) {
           scanErrors.push({
             id: `photo-stu-empty`,
             rowNumber: 1,
             sheetName: 'Optik Form Fotoğrafı',
-            studentName: studentName.trim() || undefined,
-            studentNumberRaw: studentNumber.trim() || undefined,
+            studentName: matchedStudentFromImage?.fullName || parsedQr?.studentName || studentName.trim() || undefined,
+            studentNumberRaw: matchedStudentFromImage?.studentNumber8 || qrStudentNo || studentNumber.trim() || undefined,
             rawExcerpt: nextAns.trim() || '(Cevap işareti algılanamadı)',
             category: 'unreadable-answers',
             categoryLabel: OMR_ERROR_CATEGORY_LABELS['unreadable-answers'],
@@ -648,8 +822,8 @@ export function OmrScannerView({
             id: `photo-stu-issue`,
             rowNumber: 1,
             sheetName: 'Optik Form Fotoğrafı',
-            studentName: studentName.trim() || undefined,
-            studentNumberRaw: studentNumber.trim() || undefined,
+            studentName: matchedStudentFromImage?.fullName || parsedQr?.studentName || studentName.trim() || undefined,
+            studentNumberRaw: matchedStudentFromImage?.studentNumber8 || qrStudentNo || studentNumber.trim() || undefined,
             rawExcerpt: nextAns.slice(0, 48),
             category: issue.category,
             categoryLabel: OMR_ERROR_CATEGORY_LABELS[issue.category],
@@ -658,15 +832,28 @@ export function OmrScannerView({
         }
 
         const effectiveKey =
-          (detectedCode && externalPublisherConfig.answerKeys[detectedCode]) || answerKeyRaw;
+          qrPayload?.answerKey ||
+          (targetBooklet && externalPublisherConfig.answerKeys[targetBooklet]) ||
+          answerKeyRaw;
+        const resolvedStuName = matchedStudentFromImage?.fullName || parsedQr?.studentName;
+        const resolvedStuNo = matchedStudentFromImage?.studentNumber8 || qrStudentNo;
+        const resolvedClassroom = matchedStudentFromImage?.classroom || parsedQr?.classroom;
+
         onUpdateOmrState({
-          studentAnswersRaw: nextAns,
-          ...(detectedCode && externalPublisherConfig.answerKeys[detectedCode]
-            ? { answerKeyRaw: externalPublisherConfig.answerKeys[detectedCode] }
-            : {}),
+          ...(nextAns.trim() ? { studentAnswersRaw: nextAns } : {}),
+          ...(resolvedStuName ? { studentName: resolvedStuName } : {}),
+          ...(resolvedStuNo ? { studentNumber: resolvedStuNo } : {}),
+          ...(resolvedClassroom ? { classroom: resolvedClassroom } : {}),
+          ...(effectiveKey ? { answerKeyRaw: effectiveKey } : {}),
         });
 
-        if (scanErrors.length > 0) {
+        const qrNoteParts: string[] = [];
+        if (resolvedStuNo) qrNoteParts.push(`Karne QR/Öğrenci No (${resolvedStuNo})`);
+        if (qrPayload) qrNoteParts.push(`Şifreli Analiz QR çözüldü (${targetBooklet})`);
+        const qrNote = qrNoteParts.length > 0 ? ` · ${qrNoteParts.join(' + ')}` : '';
+        const subjNote = effectiveSubject ? ` · Ders: ${effectiveSubject.name}` : '';
+
+        if (!hasAnyMarkedBubble && !resolvedStuNo) {
           setErrorReport({
             sourceName: file.name,
             scannedAt: new Date().toLocaleTimeString('tr-TR', {
@@ -681,20 +868,42 @@ export function OmrScannerView({
           setErrorModalOpen(true);
           setErrorMsg(`${file.name}: Optik formda okunamayan cevap satırı tespit edildi.`);
         } else {
-          setErrorReport(null);
+          setErrorReport(
+            scanErrors.length > 0
+              ? {
+                  sourceName: file.name,
+                  scannedAt: new Date().toLocaleTimeString('tr-TR', {
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    second: '2-digit',
+                  }),
+                  totalRowsChecked: 1,
+                  validRowsCount: hasAnyMarkedBubble ? 1 : 0,
+                  errors: scanErrors,
+                }
+              : null
+          );
           setErrorModalOpen(false);
-          if (autoAnalyzeOnPhoto && nextAns.trim() && effectiveKey.trim()) {
-            onEvaluateNow({ studentAnswersRaw: nextAns, answerKeyRaw: effectiveKey });
+          if (autoAnalyzeOnPhoto && hasAnyMarkedBubble && effectiveKey.trim()) {
+            onEvaluateNow({
+              studentAnswersRaw: nextAns,
+              answerKeyRaw: effectiveKey,
+              ...(resolvedStuNo ? { studentNumber: resolvedStuNo } : {}),
+            });
             setStatusMessage(
-              `${file.name} görselinden ${detectedLen} soru (${targetBooklet} kitapçığı) okundu ve otomatik analiz edilip karneler güncellendi.`
+              `${file.name} görselinden ${detectedLen} soru (${targetBooklet} kitapçığı${subjNote}${qrNote}) okundu ve otomatik analiz edilip karneler güncellendi.`
+            );
+          } else if (!hasAnyMarkedBubble && resolvedStuNo) {
+            setStatusMessage(
+              `Karekod / öğrenci bilgisi (${resolvedStuNo}${subjNote}) eşleşti ancak işaretli şık görülmedi. Cevapları 1. alandan tamamlayıp analiz edebilirsiniz.`
             );
           } else if (!effectiveKey.trim()) {
             setStatusMessage(
-              `${file.name} görselinden ${detectedLen} soru (${targetBooklet} kitapçığı) okundu. Analizi tamamlamak için 2. bölüme cevap anahtarını girin veya yükleyin.`
+              `${file.name} görselinden ${detectedLen} soru (${targetBooklet} kitapçığı${subjNote}${qrNote}) okundu. Analizi tamamlamak için 2. bölüme cevap anahtarını girin veya yükleyin.`
             );
           } else {
             setStatusMessage(
-              `${file.name} görselinden ${detectedLen} soru tespit edildi (${targetBooklet} kitapçığı).`
+              `${file.name} görselinden ${detectedLen} soru tespit edildi (${targetBooklet} kitapçığı${subjNote}${qrNote}).`
             );
           }
         }
@@ -940,6 +1149,7 @@ export function OmrScannerView({
       optionCount: gradeProfile.optionCount,
       requireStudentAnswers: true,
       validateAnswerKey: true,
+      subjectName: selectedSubjectObj?.name,
     });
     if (report.errors.length > 0) {
       setErrorReport(report);
@@ -1154,6 +1364,91 @@ export function OmrScannerView({
                 </div>
               </div>
 
+              {prizeExams.length > 0 && onSelectActivePrizeExamId && (
+                <div className="pt-2 border-t space-y-2" style={{ borderColor: 'var(--border-subtle)' }}>
+                  <div className="flex flex-wrap items-center justify-between gap-2 min-w-0">
+                    <label className="w-full sm:w-auto min-w-0 max-w-full flex flex-col sm:flex-row sm:items-center gap-1.5 sm:gap-2 text-xs font-bold">
+                      <span className="shrink-0" style={{ color: 'var(--text-secondary)' }}>Ödüllü Deneme Bağlantısı:</span>
+                      <select
+                        data-testid="omr-prize-exam-select"
+                        value={activePrizeExamId ?? ''}
+                        onChange={(e) => {
+                          const nextId = e.target.value || null;
+                          onSelectActivePrizeExamId(nextId);
+                          const chosen = prizeExams.find((p) => p.id === nextId);
+                          if (chosen) {
+                            onUpdateCover?.({ examTitle: chosen.title });
+                            if (chosen.sourceMode === 'farkli-yayin') {
+                              onChangeExamSourceMode?.('farkli-yayin');
+                              if (chosen.publisherName || chosen.title) {
+                                onUpdateExternalPublisher?.({
+                                  examTitle: chosen.title,
+                                  ...(chosen.publisherName ? { publisherName: chosen.publisherName } : {}),
+                                });
+                              }
+                            } else {
+                              onChangeExamSourceMode?.('kurum');
+                            }
+                            const nextGrade = resolveTargetGradeForPrizeActivation(chosen, gradeProfile.id);
+                            if (nextGrade && onChangeGradeProfile) {
+                              onChangeGradeProfile(nextGrade);
+                            }
+                            const gradesLabel = formatPrizeExamGradesLabel(chosen);
+                            setStatusMessage(
+                              `Ödüllü Deneme aktif edildi: ${chosen.title} (${gradesLabel} · Ödül: ${chosen.prizeDescription}). Değerlendirilen sonuçlar otomatik Ödüllü Deneme sıralamasına işlenir.`
+                            );
+                          } else {
+                            setStatusMessage('Ödüllü Deneme bağlantısı kaldırıldı.');
+                          }
+                        }}
+                        className="w-full sm:w-auto max-w-full min-w-0 rounded-lg px-2.5 py-1.5 text-xs font-bold surface-card border"
+                        style={{ borderColor: 'var(--border-subtle)' }}
+                      >
+                        <option value="">Standart Deneme (Ödüllü Deneme Bağlı Değil)</option>
+                        {prizeExams.map((px) => (
+                          <option key={px.id} value={px.id}>
+                            {px.title} ({formatPrizeExamGradesLabel(px)}{px.publisherName ? ` · ${px.publisherName}` : ''} · {px.prizeDescription})
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    {activePrizeExamId && (
+                      <span className="text-[11px] font-bold text-amber-600 dark:text-amber-400">
+                        Ödüllü Sınav Modu Açık
+                      </span>
+                    )}
+                  </div>
+
+                  {(() => {
+                    const activePrize = prizeExams.find((p) => p.id === activePrizeExamId);
+                    const prizeGrades = activePrize ? resolvePrizeExamGrades(activePrize) : [];
+                    if (prizeGrades.length <= 1 || !onChangeGradeProfile) return null;
+                    return (
+                      <div
+                        data-testid="omr-prize-grade-switcher"
+                        className="flex flex-wrap items-center gap-1.5 text-[11px]"
+                      >
+                        <span className="font-bold mr-1" style={{ color: 'var(--text-secondary)' }}>
+                          Ödüllü Deneme Sınıfları:
+                        </span>
+                        {prizeGrades.map((gId) => (
+                          <button
+                            key={gId}
+                            type="button"
+                            onClick={() => onChangeGradeProfile(gId)}
+                            className={`px-2 py-1 rounded-md font-bold cursor-pointer ${
+                              gradeProfile.id === gId ? 'btn-3d' : 'btn-3d-secondary'
+                            }`}
+                          >
+                            {getGradeProfile(gId).shortLabel}
+                          </button>
+                        ))}
+                      </div>
+                    );
+                  })()}
+                </div>
+              )}
+
               {examSourceMode === 'farkli-yayin' && (
                 <ExternalPublisherHub
                   gradeProfile={gradeProfile}
@@ -1204,7 +1499,7 @@ export function OmrScannerView({
             >
               <div className="flex flex-wrap items-center gap-2.5">
                 <label className="flex items-center gap-2 text-xs font-bold">
-                  <span style={{ color: 'var(--text-secondary)' }}>Optik Ders Kapsamı:</span>
+                  <span style={{ color: 'var(--text-secondary)' }}>Ders Seçimi:</span>
                   <select
                     data-testid="omr-subject-scope-select"
                     value={selectedSubjectId}
@@ -1811,6 +2106,51 @@ export function OmrScannerView({
               </label>
             </div>
 
+            {qrPreCheckResult.status !== 'none' && (
+              <div
+                data-testid="omr-qr-precheck-banner"
+                className={`mb-4 rounded-xl px-3.5 py-2.5 text-xs border-t-2 border flex flex-wrap items-center justify-between gap-2 ${
+                  qrPreCheckResult.status === 'matched'
+                    ? 'surface-alt border-emerald-500/40'
+                    : qrPreCheckResult.status === 'mismatch'
+                      ? 'bg-rose-50 text-rose-900 border-rose-300 dark:bg-rose-950/40 dark:text-rose-100 dark:border-rose-700'
+                      : 'surface-alt border-amber-500/40'
+                }`}
+              >
+                <div className="flex items-center gap-2 min-w-0">
+                  {qrPreCheckResult.status === 'matched' ? (
+                    <ShieldCheck className="w-4 h-4 shrink-0 text-emerald-600 dark:text-emerald-400" aria-hidden="true" />
+                  ) : (
+                    <AlertTriangle className="w-4 h-4 shrink-0 text-rose-600 dark:text-rose-400" aria-hidden="true" />
+                  )}
+                  <span className="font-semibold">{qrPreCheckResult.message}</span>
+                </div>
+                {qrPreCheckResult.status === 'mismatch' && qrPreCheckResult.matchedStudentId && (
+                  <button
+                    type="button"
+                    data-testid="omr-qr-switch-student-btn"
+                    onClick={() => {
+                      const found = allInstStudents.find(
+                        (s) => s.id === qrPreCheckResult.matchedStudentId
+                      );
+                      if (!found) return;
+                      onUpdateOmrState({
+                        studentName: found.fullName,
+                        studentNumber: found.studentNumber8,
+                        classroom: found.classroom,
+                      });
+                      setStatusMessage(
+                        `Karekod eşleşmesine göre ${found.fullName} (${found.studentNumber8}) seçildi.`
+                      );
+                    }}
+                    className="btn-3d px-3 py-1 rounded-lg text-[11px] font-bold whitespace-nowrap shrink-0 cursor-pointer"
+                  >
+                    Eşleşen Öğrenciye Geç ({qrPreCheckResult.matchedStudentName})
+                  </button>
+                )}
+              </div>
+            )}
+
             {statusMessage && (
               <div className="mb-4 rounded-lg p-3 text-xs font-semibold flex items-center gap-2 surface-alt">
                 <CheckCircle2 className="w-4 h-4 shrink-0" style={{ color: 'var(--chart-3)' }} aria-hidden="true" />
@@ -1935,6 +2275,81 @@ export function OmrScannerView({
                   </span>
                 )}
               </div>
+            </div>
+
+            <div className="mb-5">
+              <QrKeyIntegrationPanel
+                institutionCode8={institutionCode8}
+                institutionName={institutionName}
+                gradeProfile={gradeProfile}
+                examTitle={cover.examTitle}
+                examSourceMode={examSourceMode}
+                activeBookletCode={cover.bookletCode}
+                bookletPattern={activePattern}
+                expectedCount={expectedCount}
+                selectedSubjectName={selectedSubjectObj?.name}
+                studentAnswersRaw={studentAnswersRaw}
+                answerKeyRaw={answerKeyRaw}
+                externalKeys={externalPublisherConfig.answerKeys}
+                loadingMode={loadingMode}
+                onSelectBookletCode={handleSelectBookletCode}
+                onUploadStudentOpticalFile={(file) => processSingleUploadedFile(file, 'student')}
+                onUploadKeyFile={(file, bookletCode) =>
+                  processSingleUploadedFile(file, 'key', bookletCode)
+                }
+                onApplyDecodedQrKey={({
+                  answerKey,
+                  bookletCode,
+                  subjectName,
+                  questionCount,
+                  runAnalysisNow,
+                }) => {
+                  if (bookletCode !== cover.bookletCode) {
+                    onUpdateCover?.({ bookletCode });
+                  }
+                  const matchedSubj = subjectName
+                    ? gradeProfile.subjects.find(
+                        (s) =>
+                          s.name.toLocaleLowerCase('tr-TR') ===
+                          subjectName.toLocaleLowerCase('tr-TR')
+                      )
+                    : undefined;
+                  onUpdateExternalPublisher?.({
+                    ...(matchedSubj ? { selectedSubjectId: matchedSubj.id } : {}),
+                    ...(questionCount > 0 ? { questionCount } : {}),
+                    answerKeys: {
+                      ...externalPublisherConfig.answerKeys,
+                      [bookletCode]: answerKey,
+                    },
+                  });
+                  onUpdateOmrState({ answerKeyRaw: answerKey });
+                  setErrorMsg(null);
+                  if (runAnalysisNow && studentAnswersRaw.trim()) {
+                    onEvaluateNow({ studentAnswersRaw, answerKeyRaw: answerKey });
+                    setStatusMessage(
+                      `Şifreli Öğretmen Analiz QR çözüldü (${bookletCode} kitapçığı · ${answerKey.length} soru) ve öğrenci cevaplarıyla anında karşılaştırıldı.`
+                    );
+                  } else {
+                    setStatusMessage(
+                      `Şifreli Öğretmen Analiz QR çözüldü: ${bookletCode} kitapçığı (${answerKey.length} soru) aktif cevap anahtarına yüklendi.`
+                    );
+                  }
+                }}
+                onApplyBulkAnswerKeys={(keys, summary) => {
+                  onUpdateExternalPublisher?.({
+                    answerKeys: {
+                      ...externalPublisherConfig.answerKeys,
+                      ...keys,
+                    },
+                  });
+                  const activeLoaded = keys[cover.bookletCode] || keys.A;
+                  if (activeLoaded) {
+                    onUpdateOmrState({ answerKeyRaw: activeLoaded });
+                  }
+                  setErrorMsg(null);
+                  setStatusMessage(summary);
+                }}
+              />
             </div>
 
             {/* Dual Upload & Input Area: Optical Form vs Answer Key */}
@@ -2219,11 +2634,20 @@ export function OmrScannerView({
           {/* Live Evaluation Preview & Optical Bubble Verification Grid */}
           <section className="surface-card rounded-xl p-5">
             <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
-              <div>
+              <div className="space-y-1">
                 <h3 className="text-base font-bold">Canlı Optik Karşılaştırma Özeti</h3>
                 <p className="text-xs" style={{ color: 'var(--text-secondary)' }}>
                   Yeşil: Doğru · Kırmızı: Yanlış · Gri: Boş (İlk 60 soru hızlı kontrol ızgarası)
                 </p>
+                {analysis.columnAlignment && (
+                  <div
+                    data-testid="omr-column-alignment-badge"
+                    className="inline-flex items-center gap-1.5 text-[11px] font-bold pt-0.5 text-emerald-700 dark:text-emerald-300"
+                  >
+                    <ShieldCheck className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                    <span>{analysis.columnAlignment.message}</span>
+                  </div>
+                )}
               </div>
               <div className="flex items-center gap-5 text-sm font-mono-num font-bold">
                 <span className="text-emerald-600 dark:text-emerald-400">
@@ -2277,6 +2701,8 @@ export function OmrScannerView({
                 ? [{ ...selectedSubjectObj, questionCount: expectedCount }]
                 : undefined
             }
+            activeAnswerKey={answerKeyRaw}
+            examSourceMode={examSourceMode}
             exportBusy={exportBusy}
             registeredCount={institutionStudents.length}
             visibleBooklets={visibleBooklets}

@@ -334,8 +334,14 @@ export function buildParentInformationReportData(params: {
   }
 
   const sortedSubjects = [...subjectRows].sort((a, b) => b.accuracyPct - a.accuracyPct);
+  const isSingleSubject = subjectRows.length === 1;
   const strongestSubject = hasLiveAnalysis || isOpenEndedMode ? (sortedSubjects[0]?.subject || 'Türkçe') : '—';
-  const weakestSubject = hasLiveAnalysis || isOpenEndedMode ? (sortedSubjects[sortedSubjects.length - 1]?.subject || 'Matematik') : '—';
+  const weakestSubject =
+    hasLiveAnalysis || isOpenEndedMode
+      ? isSingleSubject
+        ? sortedSubjects[0]?.subject || strongestSubject
+        : sortedSubjects[sortedSubjects.length - 1]?.subject || 'Matematik'
+      : '—';
 
   // Prioritized topics (weakest mastery first)
   let prioritizedTopics: ParentReportTopicRow[] = [];
@@ -406,11 +412,15 @@ export function buildParentInformationReportData(params: {
     .map((t) => t.topic)
     .join(' ve ');
 
+  const isFirstExamRecord = completedCheckpoints.length <= 1;
+
   const homeActionPlan = hasLiveAnalysis || isOpenEndedMode
     ? [
         `${weakestSubject} dersinde ${weakTopicNames || 'temel kazanım'} başlıkları için haftada 3 gün 25 dakikalık konu tekrarı ve 15 çözümlü soru planlayınız.`,
         `Dikkat hatasından kaçan soruların azaltılması için ev çalışmalarında son 5 dakikalık cevap kontrolü alışkanlığı kazandırınız.`,
-        `${strongestSubject} alanındaki yüksek performansın korunması için haftalık yeni nesil soru setleriyle pekiştirme yapınız.`,
+        isSingleSubject
+          ? `${strongestSubject} alanındaki kazanım hakimiyetini pekiştirmek için haftalık karma soru setleriyle tekrar yapınız.`
+          : `${strongestSubject} alanındaki yüksek performansın korunması için haftalık yeni nesil soru setleriyle pekiştirme yapınız.`,
         nextStudySession.scheduled
           ? `Bir sonraki kurum etüdü (${nextStudySession.summaryLine}) öncesinde ilgili eksik kazanımlara kısa göz atılmasını destekleyiniz.`
           : `Kurum rehberlik birimiyle birlikte haftalık etüt ve deneme takip saatini netleştiriniz.`,
@@ -425,8 +435,10 @@ export function buildParentInformationReportData(params: {
   const fallbackNote = isOpenEndedMode
     ? `Sayın Velimiz, ${rawStudentName} (${effectiveProfile.shortLabel} · ${classroom}) için yapılan 10 soruluk açık uçlu yazılı değerlendirmede ${estimatedScore} / ${maxScore} puan (%${successPct}) elde edilmiştir. ${openEndedAnalysis?.overallFeedback || ''}`
     : hasLiveAnalysis
-      ? `Sayın Velimiz, ${rawStudentName} (${effectiveProfile.shortLabel} · ${classroom}) ${examTitle} değerlendirmesinde ${totalQuestions} soruda ${totalNet.toFixed(2)} net ve ${estimatedScore.toFixed(1)} puan (%${successPct} başarı) ile "${developmentStatus}" düzeyindedir. En güçlü performans ${strongestSubject} dersinde görülürken; ${weakestSubject} alanında ${weakTopicNames || 'kazanım tekrarları'} ile hedeflenen ${growthData.summary.targetNet.toFixed(1)} net seviyesine ulaşması öngörülmektedir.`
-      : `Sayın Velimiz, ${rawStudentName} (${effectiveProfile.shortLabel} · ${classroom}) için ${institutionName} bünyesinde henüz sınav değerlendirmesi yapılmamıştır (0.00 Net · 0.0 Puan). Optik okuma yapıldığında güncel veriler bu raporda yer alacaktır.`;
+      ? isSingleSubject
+        ? `Sayın Velimiz, ${rawStudentName} (${effectiveProfile.shortLabel} · ${classroom}) ${isFirstExamRecord ? 'kurumdaki ilk deneme kaydı olan ' : ''}${examTitle} (${strongestSubject} · ${totalQuestions} soru) değerlendirmesinde ${totalCorrect} doğru, ${totalWrong} yanlış, ${totalBlank} boş ile ${totalNet.toFixed(2)} net (%${successPct} başarı) elde etmiştir. Odak kazanım olarak ${weakTopicNames || 'temel konu tekrarı'} planlanmıştır.`
+        : `Sayın Velimiz, ${rawStudentName} (${effectiveProfile.shortLabel} · ${classroom}) ${isFirstExamRecord ? 'kurumdaki ilk deneme kaydı olan ' : ''}${examTitle} değerlendirmesinde ${totalQuestions} soruda ${totalNet.toFixed(2)} net ve ${estimatedScore.toFixed(1)} puan (%${successPct} başarı) ile "${developmentStatus}" düzeyindedir. En güçlü performans ${strongestSubject} dersinde görülürken; ${weakestSubject} alanında ${weakTopicNames || 'kazanım tekrarları'} ile hedeflenen ${growthData.summary.targetNet.toFixed(1)} net seviyesine ulaşması öngörülmektedir.`
+      : `Sayın Velimiz, ${rawStudentName} (${effectiveProfile.shortLabel} · ${classroom}) için ${institutionName} bünyesinde henüz sınav değerlendirmesi yapılmamıştır (0.00 Net · 0.0 Puan). İlk deneme optik okuması yapıldığında güncel veriler bu raporda yer alacaktır.`;
 
   const sanitizedParentNote = sanitizeExamLabelForGrade(
     (parentMessage || '').trim() || fallbackNote,
@@ -435,6 +447,8 @@ export function buildParentInformationReportData(params: {
 
   const safeSlug = slugifyFileSegment(rawStudentName) || 'ogrenci';
   const safeNo = slugifyFileSegment(studentNumber) || 'rapor';
+  const resolvedAcademySize = hasLiveAnalysis ? Math.max(1, analysis.academySize || 1) : 0;
+  const resolvedClassSize = hasLiveAnalysis ? Math.max(1, analysis.classSize || 1) : 0;
 
   return {
     institutionName,
@@ -459,10 +473,10 @@ export function buildParentInformationReportData(params: {
       maxScore,
       successPct,
       academyRank: hasLiveAnalysis ? analysis.academyRank || 1 : 0,
-      academySize: hasLiveAnalysis ? analysis.academySize || 24 : 0,
+      academySize: resolvedAcademySize,
       classRank: hasLiveAnalysis ? analysis.classRank || 1 : 0,
-      classSize: hasLiveAnalysis ? analysis.classSize || 12 : 0,
-      percentile: hasLiveAnalysis ? analysis.percentile || 15 : 0,
+      classSize: resolvedClassSize,
+      percentile: hasLiveAnalysis ? analysis.percentile ?? 50 : 0,
       projectedNet: hasLiveAnalysis ? Number((analysis.projectedNet || growthData.summary.targetNet).toFixed(1)) : 0,
       projectedScore: hasLiveAnalysis ? Number((analysis.projectedScore || growthData.summary.targetScore).toFixed(1)) : 0,
       targetNet: growthData.summary.targetNet,

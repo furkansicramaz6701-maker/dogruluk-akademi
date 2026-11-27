@@ -37,6 +37,7 @@ import {
   TextbookAnalysisResult,
   TextbookExamKind,
 } from '../utils/textbookExamBuilder';
+import { NumericStepperInput } from './NumericStepperInput';
 
 interface TextbookExamPanelProps {
   isOpen: boolean;
@@ -1001,18 +1002,26 @@ export function TextbookExamPanel({
               className="pt-3 border-t grid grid-cols-1 md:grid-cols-12 gap-3 items-end"
               style={{ borderColor: 'var(--border-subtle)' }}
             >
-              <label className="md:col-span-3 block text-xs font-semibold">
-                <span style={{ color: 'var(--text-secondary)' }}>Üretilecek Soru Sayısı</span>
-                <input
-                  type="number"
-                  min={1}
-                  max={40}
-                  value={questionCount}
-                  onChange={(e) => setQuestionCount(Math.min(40, Math.max(1, Number(e.target.value) || 10)))}
-                  data-testid="textbook-question-count-input"
-                  className="mt-1 w-full rounded-lg px-3 py-2 text-xs surface-alt font-mono-num font-bold"
-                />
-              </label>
+              <div className="md:col-span-3 block text-xs font-semibold">
+                <label
+                  htmlFor="textbook-question-count-input"
+                  style={{ color: 'var(--text-secondary)' }}
+                >
+                  Üretilecek Soru Sayısı
+                </label>
+                <div className="mt-1">
+                  <NumericStepperInput
+                    id="textbook-question-count-input"
+                    ariaLabel="Üretilecek Soru Sayısı"
+                    inputTestId="textbook-question-count-input"
+                    value={questionCount}
+                    min={1}
+                    max={40}
+                    surfaceClass="surface-alt"
+                    onChange={(val) => setQuestionCount(val)}
+                  />
+                </div>
+              </div>
 
               <label className="md:col-span-3 block text-xs font-semibold">
                 <span style={{ color: 'var(--text-secondary)' }}>Zorluk Seviyesi</span>

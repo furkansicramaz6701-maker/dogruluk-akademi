@@ -93,6 +93,17 @@ test('buildInstructorCoachingDataset generates 5-exam trends and common knowledg
 
 test('buildBulkRemedialCalendarEvents assigns filtered students into calendar events', () => {
   const grade = getGradeProfile('8');
+  const liveEmpty = buildInstructorCoachingDataset({
+    institution: SAMPLE_INST,
+    gradeProfile: grade,
+    penaltyDivisor: 3,
+    students: [],
+    weeklyEntries: [],
+    weeklyQuestionCount: 50,
+  });
+  assert.equal(liveEmpty.totalStudents, 0);
+  assert.equal(liveEmpty.knowledgeGapGroups.length, 0);
+
   const dataset = buildInstructorCoachingDataset({
     institution: SAMPLE_INST,
     gradeProfile: grade,
@@ -100,6 +111,7 @@ test('buildBulkRemedialCalendarEvents assigns filtered students into calendar ev
     students: [],
     weeklyEntries: [],
     weeklyQuestionCount: 50,
+    includeSampleFallback: true,
   });
 
   const firstGroup = dataset.knowledgeGapGroups[0];

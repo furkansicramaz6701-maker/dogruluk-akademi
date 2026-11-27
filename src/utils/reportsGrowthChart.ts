@@ -174,70 +174,11 @@ export function buildStudentGrowthChartData(params: {
         }));
 
   if (!isLiveData) {
-    const emptyCheckpoints: GrowthCheckpointPoint[] =
-      periodMode === 'donemlik'
-        ? [
-            { id: 'term-1', label: '1. Deneme', shortLabel: 'D1', dateLabel: '—', termLabel: 'Aktif Dönem' },
-            { id: 'term-2', label: '2. Deneme', shortLabel: 'D2', dateLabel: '—', termLabel: 'Aktif Dönem' },
-            { id: 'term-3', label: '3. Deneme', shortLabel: 'D3', dateLabel: '—', termLabel: 'Aktif Dönem' },
-            { id: 'term-4', label: '4. Deneme', shortLabel: 'D4', dateLabel: '—', termLabel: 'Aktif Dönem' },
-            { id: 'term-5', label: '5. Deneme', shortLabel: 'D5', dateLabel: '—', termLabel: 'Aktif Dönem', isCurrent: true },
-            { id: 'term-6', label: 'Dönem Hedefi', shortLabel: 'Hedef', dateLabel: '—', termLabel: 'Dönem Hedefi', isProjected: true },
-          ].map((c) => ({
-            id: c.id,
-            label: c.label,
-            shortLabel: c.shortLabel,
-            examName: `${gradeProfile.shortLabel} · ${c.label}`,
-            dateLabel: c.dateLabel,
-            termLabel: c.termLabel,
-            studentNet: 0,
-            academyAvgNet: 0,
-            targetNet: 0,
-            studentScore: 0,
-            academyAvgScore: 0,
-            targetScore: 0,
-            netDeltaFromPrev: 0,
-            scoreDeltaFromPrev: 0,
-            statusNote: 'Henüz deneme değerlendirilmedi',
-            isCurrent: Boolean(c.isCurrent),
-            isProjected: Boolean(c.isProjected),
-          }))
-        : [
-            { id: 'yr-eyl', label: 'Eylül', shortLabel: 'Eyl', termLabel: '1. Dönem' },
-            { id: 'yr-eki', label: 'Ekim', shortLabel: 'Eki', termLabel: '1. Dönem' },
-            { id: 'yr-kas', label: 'Kasım', shortLabel: 'Kas', termLabel: '1. Dönem', isCurrent: true },
-            { id: 'yr-ara', label: 'Aralık', shortLabel: 'Ara', termLabel: '1. Dönem' },
-            { id: 'yr-oca', label: 'Ocak', shortLabel: 'Oca', termLabel: '1. Dönem' },
-            { id: 'yr-sub', label: 'Şubat', shortLabel: 'Şub', termLabel: '2. Dönem' },
-            { id: 'yr-mar', label: 'Mart', shortLabel: 'Mar', termLabel: '2. Dönem' },
-            { id: 'yr-nis', label: 'Nisan', shortLabel: 'Nis', termLabel: '2. Dönem' },
-            { id: 'yr-may', label: 'Mayıs', shortLabel: 'May', termLabel: '2. Dönem' },
-            { id: 'yr-haz', label: 'Haziran', shortLabel: 'Haz', termLabel: 'Yıl Sonu', isProjected: true },
-          ].map((m) => ({
-            id: m.id,
-            label: m.label,
-            shortLabel: m.shortLabel,
-            examName: `${gradeProfile.shortLabel} · ${m.label}`,
-            dateLabel: '—',
-            termLabel: m.termLabel,
-            studentNet: 0,
-            academyAvgNet: 0,
-            targetNet: 0,
-            studentScore: 0,
-            academyAvgScore: 0,
-            targetScore: 0,
-            netDeltaFromPrev: 0,
-            scoreDeltaFromPrev: 0,
-            statusNote: 'Henüz deneme değerlendirilmedi',
-            isCurrent: Boolean(m.isCurrent),
-            isProjected: Boolean(m.isProjected),
-          }));
-
     return {
       periodMode,
       metricMode,
       isLiveData: false,
-      checkpoints: emptyCheckpoints,
+      checkpoints: [],
       subjectBreakdown: rawSubjects.map((subj) => ({
         subject: subj.subject,
         shortSubject: shortenSubjectName(subj.subject),
@@ -273,12 +214,6 @@ export function buildStudentGrowthChartData(params: {
     };
   }
 
-  const baseHist0Net = completedHistory[0]?.net ?? round2(totalQuestions * 0.48);
-  const baseHist1Net = completedHistory[1]?.net ?? round2(baseHist0Net + totalQuestions * 0.04);
-  const baseHist2Net = completedHistory[2]?.net ?? round2(baseHist1Net + totalQuestions * 0.04);
-  const baseHist3Net = completedHistory[3]?.net ?? round2(baseHist2Net + totalQuestions * 0.035);
-
-  const academyBaseNet = round2(totalQuestions * 0.52);
   const targetNet = round2(
     clamp(Math.max(currentNet + totalQuestions * 0.08, totalQuestions * 0.78), 1, totalQuestions)
   );
@@ -286,133 +221,63 @@ export function buildStudentGrowthChartData(params: {
 
   const checkpoints: GrowthCheckpointPoint[] = [];
 
-  if (periodMode === 'donemlik') {
-    const termSeries: Array<{
-      id: string;
-      label: string;
-      shortLabel: string;
-      examName: string;
-      dateLabel: string;
-      termLabel: string;
-      studentNet: number;
-      academyAvgNet: number;
-      studentScore: number;
-      statusNote: string;
-      isCurrent: boolean;
-      isProjected: boolean;
-    }> = [
-      {
-        id: 'term-1',
-        label: '1. Deneme',
-        shortLabel: 'D1',
-        examName: completedHistory[0]?.examName || `${gradeProfile.shortLabel} 1. Dönem Deneme 1`,
-        dateLabel: completedHistory[0]?.date || '15.09.2026',
-        termLabel: 'Aktif Dönem',
-        studentNet: round2(baseHist0Net),
-        academyAvgNet: round2(completedHistory[0]?.academyAvgNet || academyBaseNet * 0.94),
-        studentScore: completedHistory[0]?.score
-          ? round1(clamp(completedHistory[0].score, profileMinScore(gradeProfile), maxScore))
-          : netToGradeScore(baseHist0Net, totalQuestions, gradeProfile),
-        statusNote: 'Dönem Başlangıç Ölçümü',
-        isCurrent: false,
-        isProjected: false,
-      },
-      {
-        id: 'term-2',
-        label: '2. Deneme',
-        shortLabel: 'D2',
-        examName: completedHistory[1]?.examName || `${gradeProfile.shortLabel} 1. Dönem Deneme 2`,
-        dateLabel: completedHistory[1]?.date || '03.10.2026',
-        termLabel: 'Aktif Dönem',
-        studentNet: round2(baseHist1Net),
-        academyAvgNet: round2(completedHistory[1]?.academyAvgNet || academyBaseNet * 0.98),
-        studentScore: completedHistory[1]?.score
-          ? round1(clamp(completedHistory[1].score, profileMinScore(gradeProfile), maxScore))
-          : netToGradeScore(baseHist1Net, totalQuestions, gradeProfile),
-        statusNote: 'Konu Pekiştirme Aşaması',
-        isCurrent: false,
-        isProjected: false,
-      },
-      {
-        id: 'term-3',
-        label: '3. Deneme',
-        shortLabel: 'D3',
-        examName: completedHistory[2]?.examName || `${gradeProfile.shortLabel} Ara Değerlendirme`,
-        dateLabel: completedHistory[2]?.date || '24.10.2026',
-        termLabel: 'Aktif Dönem',
-        studentNet: round2(baseHist2Net),
-        academyAvgNet: round2(completedHistory[2]?.academyAvgNet || academyBaseNet * 1.02),
-        studentScore: completedHistory[2]?.score
-          ? round1(clamp(completedHistory[2].score, profileMinScore(gradeProfile), maxScore))
-          : netToGradeScore(baseHist2Net, totalQuestions, gradeProfile),
-        statusNote: 'Orta Dönem Yükselişi',
-        isCurrent: false,
-        isProjected: false,
-      },
-      {
-        id: 'term-4',
-        label: '4. Deneme',
-        shortLabel: 'D4',
-        examName: completedHistory[3]?.examName || `${gradeProfile.shortLabel} Kazanım Tarama`,
-        dateLabel: completedHistory[3]?.date || '08.11.2026',
-        termLabel: 'Aktif Dönem',
-        studentNet: round2(baseHist3Net),
-        academyAvgNet: round2(completedHistory[3]?.academyAvgNet || academyBaseNet * 1.05),
-        studentScore: completedHistory[3]?.score
-          ? round1(clamp(completedHistory[3].score, profileMinScore(gradeProfile), maxScore))
-          : netToGradeScore(baseHist3Net, totalQuestions, gradeProfile),
-        statusNote: 'Hız & Çeldirici Kontrolü',
-        isCurrent: false,
-        isProjected: false,
-      },
-      {
-        id: 'term-5',
-        label: isLiveData ? 'Güncel Sınav' : '5. Deneme',
-        shortLabel: isLiveData ? 'Güncel' : 'D5',
-        examName: isLiveData
+  if (completedHistory.length <= 1) {
+    const onlyPt = completedHistory[0];
+    const examLabel = onlyPt?.examName || '1. Deneme (İlk Kayıt)';
+    const acadNet = round2(onlyPt?.academyAvgNet ?? currentNet);
+    checkpoints.push({
+      id: 'term-1',
+      label: '1. Deneme (İlk Kayıt)',
+      shortLabel: '1. İlk Deneme',
+      examName: sanitizeExamLabelForGrade(
+        openEndedAnalysis?.examTitle || analysis.examTitle || examLabel,
+        gradeProfile
+      ),
+      dateLabel: onlyPt?.date || new Date().toLocaleDateString('tr-TR'),
+      termLabel: 'İlk Deneme Kaydı',
+      studentNet: currentNet,
+      academyAvgNet: acadNet,
+      targetNet,
+      studentScore: currentScore,
+      academyAvgScore: netToGradeScore(acadNet, totalQuestions, gradeProfile),
+      targetScore,
+      netDeltaFromPrev: 0,
+      scoreDeltaFromPrev: 0,
+      statusNote: 'Kurumumuzdaki İlk Deneme Kaydı',
+      isCurrent: true,
+      isProjected: false,
+    });
+  } else if (periodMode === 'donemlik') {
+    const realItems = completedHistory.slice(-5);
+    const termSeries = realItems.map((pt, idx) => {
+      const isCurrent = idx === realItems.length - 1;
+      const sNet = isCurrent ? currentNet : round2(clamp(pt.net, 0, totalQuestions));
+      const aNet = round2(clamp(pt.academyAvgNet || sNet, 0, totalQuestions));
+      const sScore = isCurrent
+        ? currentScore
+        : pt.score
+          ? round1(clamp(pt.score, profileMinScore(gradeProfile), maxScore))
+          : netToGradeScore(sNet, totalQuestions, gradeProfile);
+      return {
+        id: `term-${idx + 1}`,
+        label: isCurrent ? `${idx + 1}. Güncel Sınav` : `${idx + 1}. Deneme`,
+        shortLabel: isCurrent ? 'Güncel' : `D${idx + 1}`,
+        examName: isCurrent
           ? sanitizeExamLabelForGrade(
               openEndedAnalysis?.examTitle || analysis.examTitle,
               gradeProfile
             )
-          : `${gradeProfile.shortLabel} Dönem Değerlendirme (Önizleme)`,
-        dateLabel: new Date().toLocaleDateString('tr-TR'),
+          : pt.examName,
+        dateLabel: pt.date || new Date().toLocaleDateString('tr-TR'),
         termLabel: 'Aktif Dönem',
-        studentNet: currentNet,
-        academyAvgNet: round2(clamp(academyBaseNet * 1.08, 0, totalQuestions)),
-        studentScore: currentScore,
-        statusNote: isLiveData ? 'Canlı Değerlendirme Sonucu' : 'Optik Okuma Önizlemesi',
-        isCurrent: true,
+        studentNet: sNet,
+        academyAvgNet: aNet,
+        studentScore: sScore,
+        statusNote: isCurrent ? 'Canlı Değerlendirme Sonucu' : 'Kayıtlı Sınav Sonucu',
+        isCurrent,
         isProjected: false,
-      },
-      {
-        id: 'term-6',
-        label: 'Dönem Hedefi',
-        shortLabel: 'Hedef',
-        examName: `${gradeProfile.shortLabel} Dönem Sonu Hedefi`,
-        dateLabel: 'Ocak 2027',
-        termLabel: 'Dönem Hedefi',
-        studentNet: round2(
-          clamp(
-            Math.max(currentNet + totalQuestions * 0.05, analysis.projectedNet || currentNet + 3),
-            0,
-            totalQuestions
-          )
-        ),
-        academyAvgNet: round2(clamp(academyBaseNet * 1.12, 0, totalQuestions)),
-        studentScore: netToGradeScore(
-          clamp(
-            Math.max(currentNet + totalQuestions * 0.05, analysis.projectedNet || currentNet + 3),
-            0,
-            totalQuestions
-          ),
-          totalQuestions,
-          gradeProfile
-        ),
-        statusNote: 'Etüt & Tekrar Hedef Projeksiyonu',
-        isCurrent: false,
-        isProjected: true,
-      },
-    ];
+      };
+    });
 
     termSeries.forEach((item, idx) => {
       const prev = idx > 0 ? termSeries[idx - 1] : null;
@@ -426,8 +291,11 @@ export function buildStudentGrowthChartData(params: {
       });
     });
   } else {
-    // Full 10-month academic year schedule (Eylül - Haziran)
+    const baseHist0Net = completedHistory[0]?.net ?? currentNet;
+    const baseHist1Net = completedHistory[1]?.net ?? currentNet;
     const spanToCurrent = currentNet - baseHist0Net;
+    const academyBaseNet = round2(completedHistory[0]?.academyAvgNet ?? currentNet);
+    // Annual progression when 2+ real exams exist
     const annualSpecs: Array<{
       id: string;
       label: string;
@@ -441,153 +309,27 @@ export function buildStudentGrowthChartData(params: {
       statusNote: string;
       isCurrent: boolean;
       isProjected: boolean;
-    }> = [
-      {
-        id: 'yr-eyl',
-        label: 'Eylül',
-        shortLabel: 'Eyl',
-        examName: `${gradeProfile.shortLabel} Tanı & Seviye Belirleme`,
-        dateLabel: '15.09.2026',
-        termLabel: '1. Dönem',
-        net: baseHist0Net,
-        acadNet: academyBaseNet * 0.92,
-        score: completedHistory[0]?.score,
-        statusNote: 'Yıl Başlangıcı Hazırbulunuşluk',
-        isCurrent: false,
+    }> = completedHistory.map((pt, idx) => {
+      const isLast = idx === completedHistory.length - 1;
+      return {
+        id: `yr-real-${idx + 1}`,
+        label: isLast ? `${idx + 1}. Güncel` : `${idx + 1}. Sınav`,
+        shortLabel: `D${idx + 1}`,
+        examName: pt.examName,
+        dateLabel: pt.date || new Date().toLocaleDateString('tr-TR'),
+        termLabel: idx < 2 ? '1. Dönem' : 'Aktif Dönem',
+        net: isLast ? currentNet : pt.net,
+        acadNet: pt.academyAvgNet || academyBaseNet,
+        score: isLast ? currentScore : pt.score,
+        statusNote: isLast ? 'Güncel Sınav Değerlendirmesi' : 'Kayıtlı Sınav',
+        isCurrent: isLast,
         isProjected: false,
-      },
-      {
-        id: 'yr-eki',
-        label: 'Ekim',
-        shortLabel: 'Eki',
-        examName: `${gradeProfile.shortLabel} 1. Ünite Tarama`,
-        dateLabel: '18.10.2026',
-        termLabel: '1. Dönem',
-        net: baseHist1Net,
-        acadNet: academyBaseNet * 0.96,
-        score: completedHistory[1]?.score,
-        statusNote: 'Temel Kazanım Oturumu',
-        isCurrent: false,
-        isProjected: false,
-      },
-      {
-        id: 'yr-kas',
-        label: 'Kasım',
-        shortLabel: 'Kas',
-        examName: isLiveData
-          ? sanitizeExamLabelForGrade(
-              openEndedAnalysis?.examTitle || analysis.examTitle,
-              gradeProfile
-            )
-          : `${gradeProfile.shortLabel} 1. Dönem Ara Denemesi`,
-        dateLabel: new Date().toLocaleDateString('tr-TR'),
-        termLabel: '1. Dönem',
-        net: currentNet,
-        acadNet: academyBaseNet * 1.0,
-        score: currentScore,
-        statusNote: isLiveData ? 'Güncel Sınav Değerlendirmesi' : 'Aktif Dönem Ölçümü',
-        isCurrent: true,
-        isProjected: false,
-      },
-      {
-        id: 'yr-ara',
-        label: 'Aralık',
-        shortLabel: 'Ara',
-        examName: `${gradeProfile.shortLabel} Kış Kazanım Denemesi`,
-        dateLabel: '19.12.2026',
-        termLabel: '1. Dönem',
-        net: clamp(currentNet + Math.max(totalQuestions * 0.02, spanToCurrent * 0.2), 0, totalQuestions),
-        acadNet: academyBaseNet * 1.03,
-        statusNote: '1. Dönem Pekiştirme',
-        isCurrent: false,
-        isProjected: true,
-      },
-      {
-        id: 'yr-oca',
-        label: 'Ocak',
-        shortLabel: 'Oca',
-        examName: `${gradeProfile.shortLabel} 1. Dönem Finali`,
-        dateLabel: '16.01.2027',
-        termLabel: '1. Dönem',
-        net: clamp(currentNet + Math.max(totalQuestions * 0.04, spanToCurrent * 0.35), 0, totalQuestions),
-        acadNet: academyBaseNet * 1.06,
-        statusNote: 'Yarıyıl Karne Değerlendirmesi',
-        isCurrent: false,
-        isProjected: true,
-      },
-      {
-        id: 'yr-sub',
-        label: 'Şubat',
-        shortLabel: 'Şub',
-        examName: `${gradeProfile.shortLabel} 2. Dönem Başlangıç`,
-        dateLabel: '20.02.2027',
-        termLabel: '2. Dönem',
-        net: clamp(currentNet + Math.max(totalQuestions * 0.055, spanToCurrent * 0.48), 0, totalQuestions),
-        acadNet: academyBaseNet * 1.08,
-        statusNote: 'Sömestr Kampı Etkisi',
-        isCurrent: false,
-        isProjected: true,
-      },
-      {
-        id: 'yr-mar',
-        label: 'Mart',
-        shortLabel: 'Mar',
-        examName: `${gradeProfile.shortLabel} Türkiye Geneli Prova 1`,
-        dateLabel: '20.03.2027',
-        termLabel: '2. Dönem',
-        net: clamp(currentNet + Math.max(totalQuestions * 0.075, spanToCurrent * 0.62), 0, totalQuestions),
-        acadNet: academyBaseNet * 1.11,
-        statusNote: 'Zaman Yönetimi & Hız Artışı',
-        isCurrent: false,
-        isProjected: true,
-      },
-      {
-        id: 'yr-nis',
-        label: 'Nisan',
-        shortLabel: 'Nis',
-        examName: `${gradeProfile.shortLabel} Ara Tatil Genel Tekrar`,
-        dateLabel: '17.04.2027',
-        termLabel: '2. Dönem',
-        net: clamp(currentNet + Math.max(totalQuestions * 0.095, spanToCurrent * 0.78), 0, totalQuestions),
-        acadNet: academyBaseNet * 1.14,
-        statusNote: 'Eksik Kazanımların Kapanışı',
-        isCurrent: false,
-        isProjected: true,
-      },
-      {
-        id: 'yr-may',
-        label: 'Mayıs',
-        shortLabel: 'May',
-        examName: `${gradeProfile.shortLabel} Türkiye Geneli Prova 2`,
-        dateLabel: '15.05.2027',
-        termLabel: '2. Dönem',
-        net: clamp(currentNet + Math.max(totalQuestions * 0.115, spanToCurrent * 0.92), 0, totalQuestions),
-        acadNet: academyBaseNet * 1.17,
-        statusNote: 'Sınav Provası & Zirve Form',
-        isCurrent: false,
-        isProjected: true,
-      },
-      {
-        id: 'yr-haz',
-        label: 'Haziran',
-        shortLabel: 'Haz',
-        examName: `${gradeProfile.shortLabel} Yıl Sonu Genel Final`,
-        dateLabel: '05.06.2027',
-        termLabel: 'Yıl Sonu',
-        net: clamp(
-          Math.max(
-            targetNet,
-            currentNet + Math.max(totalQuestions * 0.135, spanToCurrent * 1.05)
-          ),
-          0,
-          totalQuestions
-        ),
-        acadNet: academyBaseNet * 1.2,
-        statusNote: 'Yıllık Gelişim Hedef Tamamlama',
-        isCurrent: false,
-        isProjected: true,
-      },
-    ];
+      };
+    });
+    if (annualSpecs.length >= 2) {
+      void baseHist1Net;
+      void spanToCurrent;
+    }
 
     annualSpecs.forEach((spec, idx) => {
       const sNet = round2(clamp(spec.net, 0, totalQuestions));

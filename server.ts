@@ -38,6 +38,18 @@ function extractJsonArray(rawText: string): unknown[] {
   return JSON.parse(candidate);
 }
 
+function extractJsonObject(rawText: string): Record<string, unknown> {
+  const trimmed = rawText.trim();
+  const fenceMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const candidate = fenceMatch ? fenceMatch[1].trim() : trimmed;
+  const start = candidate.indexOf('{');
+  const end = candidate.lastIndexOf('}');
+  if (start !== -1 && end !== -1 && end > start) {
+    return JSON.parse(candidate.slice(start, end + 1)) as Record<string, unknown>;
+  }
+  return JSON.parse(candidate) as Record<string, unknown>;
+}
+
 async function startServer() {
   const app = express();
   app.use(express.json({ limit: '50mb' }));
@@ -631,9 +643,9 @@ ${textContent ? `\nBelge Metni:\n${String(textContent).slice(0, 24000)}` : ''}`,
       const prompt =
         mode === 'key'
           ? isCroppedRegion
-            ? `Bu görsel kullanıcı tarafından Manuel Optik Bölge Editörü ile özellikle kırpılmış cevap anahtarı bölgesidir (${String(regionSummary || 'özel kırpım')}).${subjectContext} Yalnızca bu kırpılmış alandaki soru numaralarını ve doğru şıklarını (${letters}) sırayla çıkar; okunamayan veya boş satır varsa "-" yaz. İlk ${expectedCount} soru için doğru şıkları döndür.${targetBookletContext} Bölge içinde kitapçık türü (A, B, C veya D) görünüyorsa "bookletCode" alanına yaz, görünmüyorsa "${cleanTargetBooklet || ''}" döndür.`
-            : `Bu dosyadaki, ekran görüntüsündeki veya fotoğraftaki cevap anahtarını oku.${subjectContext} İlk ${expectedCount} soru için her sorunun doğru şıkkını (${letters}) sırayla çıkar (okunamayan/boş satır için "-" yaz).${targetBookletContext} Görselde kitapçık türü (A, B, C veya D) yazıyorsa "bookletCode" alanına yaz, görünmüyorsa "${cleanTargetBooklet || ''}" döndür.`
-          : `Bu optik cevap kağıdındaki işaretlenmiş baloncukları oku.${subjectContext} İlk ${expectedCount} soru için öğrencinin işaretlediği şıkkı (${letters}) veya boş bırakılmışsa "-" karakterini sırayla çıkar. Görselde işaretlenen kitapçık türü (A, B, C veya D) görünüyorsa "bookletCode" alanına yaz, görünmüyorsa "" döndür.`;
+            ? `Bu görsel kullanıcı tarafından Manuel Optik Bölge Editörü ile özellikle kırpılmış cevap anahtarı bölgesidir (${String(regionSummary || 'özel kırpım')}).${subjectContext} Yalnızca bu kırpılmış alandaki soru numaralarını ve doğru şıklarını (${letters}) sırayla çıkar; okunamayan veya boş satır varsa "-" yaz. İlk ${expectedCount} soru için doğru şıkları döndür.${targetBookletContext} Görselde yazan ders adını (örn. Matematik, Türkçe) "detectedSubject" alanına, kitapçık türünü (A, B, C veya D) "bookletCode" alanına yaz (görünmüyorsa "${cleanTargetBooklet || ''}").`
+            : `Bu dosyadaki, ekran görüntüsündeki veya fotoğraftaki cevap anahtarını oku.${subjectContext} İlk ${expectedCount} soru için her sorunun doğru şıkkını (${letters}) sırayla çıkar (okunamayan/boş satır için "-" yaz).${targetBookletContext} Görselde belirtilen ders adını (örn. Matematik, Türkçe, Fen Bilimleri) "detectedSubject" alanına yaz; kitapçık türü (A, B, C veya D) yazıyorsa "bookletCode" alanına yaz (görünmüyorsa "${cleanTargetBooklet || ''}").`
+          : `Bu optik cevap kağıdındaki işaretlenmiş baloncukları ve üst bilgi/çift karekod alanını oku.${subjectContext} İlk ${expectedCount} soru için öğrencinin işaretlediği şıkkı (${letters}) veya boş bırakılmışsa "-" karakterini sırayla çıkar. Kağıt başlığındaki ders adını "detectedSubject" alanına, Öğrenci No (8 haneli kod) bilgisini "detectedStudentNumber" alanına, üstteki Karne QR bağlantısını "detectedQrUrl" alanına, altındaki "DAK2." ile başlayan şifreli öğretmen analiz karekodunu varsa "detectedAnalysisQr" alanına ve işaretlenen kitapçık türünü (A, B, C veya D) "bookletCode" alanına yaz.`;
 
       const callGemini = async () =>
         ai.models.generateContent({
@@ -657,6 +669,22 @@ ${textContent ? `\nBelge Metni:\n${String(textContent).slice(0, 24000)}` : ''}`,
                 bookletCode: {
                   type: Type.STRING,
                   description: 'Tespit edilen kitapçık türü: A, B, C, D veya boş',
+                },
+                detectedSubject: {
+                  type: Type.STRING,
+                  description: 'Optik form veya cevap anahtarındaki ders adı (örn. Matematik, Türkçe)',
+                },
+                detectedStudentNumber: {
+                  type: Type.STRING,
+                  description: 'Varsa 8 haneli öğrenci numarası',
+                },
+                detectedQrUrl: {
+                  type: Type.STRING,
+                  description: 'Varsa karne karekod (QR) bağlantısı veya parametreleri',
+                },
+                detectedAnalysisQr: {
+                  type: Type.STRING,
+                  description: 'Varsa DAK2. ile başlayan ikinci şifreli öğretmen analiz karekodu metni',
                 },
                 bookletKeys: {
                   type: Type.OBJECT,
@@ -701,8 +729,7 @@ ${textContent ? `\nBelge Metni:\n${String(textContent).slice(0, 24000)}` : ''}`,
       }
 
       const rawText = (response?.text ?? '{}').trim();
-      const jsonFence = rawText.match(/```(?:json)?\s*([\s\S]*?)```/i);
-      const parsed = JSON.parse(jsonFence ? jsonFence[1].trim() : rawText);
+      const parsed = extractJsonObject(rawText);
       res.json(parsed);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Optik okuma hatası';

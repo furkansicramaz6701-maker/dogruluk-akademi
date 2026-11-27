@@ -44,26 +44,42 @@ export function KarneTrendSparkline({
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="min-w-0">
           <div className="text-xs font-extrabold truncate">
-            Son {spark.points.length || 5} Deneme {metric === 'net' ? 'Net' : 'Puan'} Gelişimi
+            {spark.points.length === 0
+              ? `Deneme ${metric === 'net' ? 'Net' : 'Puan'} Gelişimi`
+              : spark.points.length === 1
+                ? `İlk Deneme Kaydı (${metric === 'net' ? 'Net' : 'Puan'})`
+                : `Son ${spark.points.length} Deneme ${metric === 'net' ? 'Net' : 'Puan'} Gelişimi`}
           </div>
           <div className="text-[11px] flex items-center gap-1.5" style={{ color: 'var(--text-secondary)' }}>
             <span>{studentName || 'Öğrenci'}</span>
-            <span aria-hidden="true">·</span>
-            <span
-              className={`font-mono-num font-bold inline-flex items-center gap-0.5 ${
-                isPositive
-                  ? 'text-emerald-600 dark:text-emerald-400'
-                  : 'text-rose-600 dark:text-rose-400'
-              }`}
-              data-testid="karne-sparkline-delta"
-            >
-              {isPositive ? (
-                <TrendingUp className="w-3 h-3" aria-hidden="true" />
-              ) : (
-                <TrendingDown className="w-3 h-3" aria-hidden="true" />
-              )}
-              <span>{spark.formattedDelta}</span>
-            </span>
+            {spark.points.length === 1 && (
+              <>
+                <span aria-hidden="true">·</span>
+                <span className="font-mono-num font-bold" style={{ color: strokeColor }} data-testid="karne-sparkline-delta">
+                  1. Deneme (İlk Kayıt)
+                </span>
+              </>
+            )}
+            {spark.points.length >= 2 && (
+              <>
+                <span aria-hidden="true">·</span>
+                <span
+                  className={`font-mono-num font-bold inline-flex items-center gap-0.5 ${
+                    isPositive
+                      ? 'text-emerald-600 dark:text-emerald-400'
+                      : 'text-rose-600 dark:text-rose-400'
+                  }`}
+                  data-testid="karne-sparkline-delta"
+                >
+                  {isPositive ? (
+                    <TrendingUp className="w-3 h-3" aria-hidden="true" />
+                  ) : (
+                    <TrendingDown className="w-3 h-3" aria-hidden="true" />
+                  )}
+                  <span>{spark.formattedDelta}</span>
+                </span>
+              </>
+            )}
           </div>
         </div>
 
@@ -103,7 +119,7 @@ export function KarneTrendSparkline({
           className="text-xs py-4 text-center"
           style={{ color: 'var(--text-secondary)' }}
         >
-          Son 5 deneme verisi oluştuğunda gelişim grafiği burada görünür.
+          Henüz deneme yapılmamış — İlk deneme kaydı bekleniyor.
         </div>
       ) : (
         <>

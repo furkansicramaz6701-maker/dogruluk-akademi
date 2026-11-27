@@ -10,6 +10,7 @@ import {
   CoverLayoutStyleId,
   ExamAnalysisResult,
   ExamQuestion,
+  ExamSourceMode,
   GradeProfile,
   Institution,
   LogoPreset,
@@ -22,6 +23,8 @@ import {
   WeeklyComparisonRow,
 } from '../types/academy';
 import { buildStudentDigitalKarneUrl } from './digitalKarneQr';
+import { encodeTeacherAnalysisQrToken } from './qrKeyIntegration';
+import { InstitutionRankingsReport } from './institutionRankings';
 import { resolveOpticalSheetLayoutConfig } from './singleSubjectKarne';
 import {
   BOOKLET_CODES,
@@ -1564,6 +1567,8 @@ export interface OpticalSheetRenderOptions {
   selectedSubjectId?: string;
   subjectsOverride?: SubjectSpec[];
   digitalKarneBaseUrl?: string;
+  activeAnswerKey?: string;
+  examSourceMode?: ExamSourceMode;
 }
 
 /**
@@ -1697,10 +1702,65 @@ export function drawOpticalFormCanvas(
   ctx.textAlign = 'center';
   ctx.fillText('KARNE QR BAĞLANTISI', qrX + qrBoxSize / 2, qrY + qrBoxSize + 12);
 
+  // 1B. Second Real Scannable QR Code (Encrypted Teacher-Only Analysis Key — unreadable by students)
+  const qr2X = 72;
+  const qr2Y = 232;
+  const qr2Size = 96;
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(qr2X, qr2Y, qr2Size, qr2Size);
+  ctx.strokeStyle = '#831843';
+  ctx.lineWidth = 1.8;
+  ctx.strokeRect(qr2X, qr2Y, qr2Size, qr2Size);
+
+  const encryptedKeyPayload = (opts.activeAnswerKey || '').trim() || 'A'.repeat(Math.min(40, totalQ));
+  const analysisQrToken = encodeTeacherAnalysisQrToken({
+    bookletCode: opts.cover.bookletCode,
+    gradeId: opts.gradeProfile?.id || '5',
+    subjectName: layoutConfig.selectedSubjectName,
+    questionCount: totalQ,
+    answerKey: encryptedKeyPayload,
+    examTitle: opts.cover.examTitle || instName,
+    sourceMode: opts.examSourceMode || 'kurum',
+    institutionCode8: instCode,
+  });
+
+  try {
+    const qr2Obj = QRCode.create(analysisQrToken, { errorCorrectionLevel: 'L' });
+    const count2 = qr2Obj.modules.size;
+    const quiet2 = 2;
+    const totalGrid2 = count2 + quiet2 * 2;
+    const innerSize2 = qr2Size - 6;
+    const modulePx2 = innerSize2 / totalGrid2;
+    const startX2 = qr2X + 3 + quiet2 * modulePx2;
+    const startY2 = qr2Y + 3 + quiet2 * modulePx2;
+    ctx.fillStyle = '#4c0519';
+    for (let r = 0; r < count2; r++) {
+      for (let c = 0; c < count2; c++) {
+        if (qr2Obj.modules.get(r, c)) {
+          ctx.fillRect(
+            startX2 + c * modulePx2,
+            startY2 + r * modulePx2,
+            Math.ceil(modulePx2 * 100) / 100,
+            Math.ceil(modulePx2 * 100) / 100
+          );
+        }
+      }
+    }
+  } catch {
+    ctx.fillStyle = '#831843';
+    ctx.font = '700 9px "DM Sans", sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('ANALİZ QR', qr2X + qr2Size / 2, qr2Y + qr2Size / 2);
+  }
+  ctx.fillStyle = '#831843';
+  ctx.font = '700 8.5px "DM Sans", sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('ANALİZ KODU (ŞİFRELİ)', qr2X + qr2Size / 2, qr2Y + qr2Size + 10);
+
   // 2. Student Handwritten Info Box (Next to QR)
-  const infoX = 196;
+  const infoX = 192;
   const infoY = 104;
-  const infoW = 356;
+  const infoW = 368;
   ctx.strokeStyle = PINK;
   ctx.lineWidth = 2;
   ctx.strokeRect(infoX, infoY, infoW, 134);
@@ -1715,10 +1775,19 @@ export function drawOpticalFormCanvas(
     '700',
     '"DM Sans", sans-serif',
     14,
+    9.5
+  );
+  drawFittedSingleLineText(
+    ctx,
+    `Öğrenci No : ${stuNum}`,
+    infoX + 12,
+    infoY + 46,
+    infoW - 24,
+    '700',
+    '"DM Sans", sans-serif',
+    13.5,
     10
   );
-  ctx.font = '700 13.5px "DM Sans", sans-serif';
-  ctx.fillText(`Öğrenci No : ${stuNum}`, infoX + 12, infoY + 46);
   drawFittedSingleLineText(
     ctx,
     `Sınıf/Şube : ${opts.classroom || fallbackClass} · Kitapçık: ${opts.cover.bookletCode} (${bookletNoDigits})`,
@@ -1855,10 +1924,10 @@ export function drawOpticalFormCanvas(
   drawNumericGrid(252, 348, 'KURUM KODU (8)', instCode, 8);
   drawNumericGrid(432, 348, 'KİTAPÇIK NO (6)', bookletNoDigits, 6);
 
-  // 4. Right Top: ADI SOYADI Alphabet Bubble Grid (24 columns so long names + surnames fit)
-  const nameX = 574;
+  // 4. Right Top: ADI SOYADI Alphabet Bubble Grid (26 columns so full Turkish names + surnames fit)
+  const nameX = 570;
   const nameY = 104;
-  const nameW = A4_W - 48 - nameX;
+  const nameW = A4_W - 44 - nameX;
   const nameH = 564;
   ctx.strokeStyle = PINK;
   ctx.lineWidth = 2;
@@ -1866,29 +1935,29 @@ export function drawOpticalFormCanvas(
   ctx.fillStyle = PINK_HEADER;
   ctx.fillRect(nameX, nameY, nameW, 28);
   ctx.fillStyle = '#ffffff';
-  ctx.font = '700 13px "DM Sans", sans-serif';
+  ctx.font = '700 12.5px "DM Sans", sans-serif';
   ctx.textAlign = 'center';
   ctx.fillText('ADI SOYADI (Ad ve soyad arasında bir boşluk bırakınız)', nameX + nameW / 2, nameY + 14);
 
   const alpha = 'ABCÇDEFGĞHIİJKLMNOÖPRSŞTUÜVYZ'.split('');
-  const colsCount = 24;
-  const cellW = (nameW - 16) / colsCount;
+  const colsCount = 26;
+  const cellW = (nameW - 14) / colsCount;
   const cleanName = stuName.slice(0, colsCount);
 
   for (let c = 0; c < colsCount; c++) {
     const ch = cleanName[c] || '';
-    const cx = nameX + 8 + c * cellW + cellW / 2;
+    const cx = nameX + 7 + c * cellW + cellW / 2;
     ctx.strokeStyle = PINK_LIGHT;
-    ctx.strokeRect(nameX + 8 + c * cellW, nameY + 32, cellW - 2, 22);
+    ctx.strokeRect(nameX + 7 + c * cellW, nameY + 32, cellW - 2, 22);
     ctx.fillStyle = '#111827';
-    ctx.font = '700 11.5px "DM Sans", sans-serif';
+    ctx.font = '700 11px "DM Sans", sans-serif';
     ctx.fillText(ch, cx, nameY + 43);
 
     alpha.forEach((letter, li) => {
       const ly = nameY + 67 + li * 17;
       const isMatch = ch === letter;
       ctx.beginPath();
-      ctx.arc(cx, ly, 6.2, 0, Math.PI * 2);
+      ctx.arc(cx, ly, 5.9, 0, Math.PI * 2);
       if (isMatch) {
         ctx.fillStyle = '#111827';
         ctx.fill();
@@ -1899,7 +1968,7 @@ export function drawOpticalFormCanvas(
         ctx.stroke();
         ctx.fillStyle = PINK;
       }
-      ctx.font = '700 7.8px "DM Sans", sans-serif';
+      ctx.font = '700 7.4px "DM Sans", sans-serif';
       ctx.fillText(letter, cx, ly + 0.5);
     });
   }
@@ -1911,13 +1980,13 @@ export function drawOpticalFormCanvas(
   const colGap = numCols === 1 ? 0 : 16;
   const gridLeft = 72;
   const gridTotalW = A4_W - 48 - gridLeft;
-  const maxSingleColW = Math.min(gridTotalW, 560);
+  const maxSingleColW = Math.min(gridTotalW, 600);
   const colWidth =
     numCols === 1 ? maxSingleColW : (gridTotalW - colGap * (numCols - 1)) / numCols;
   const colStartLeft =
     numCols === 1 ? gridLeft + (gridTotalW - colWidth) / 2 : gridLeft;
   const maxRowStep = numCols === 1 ? 42 : numCols === 2 ? 32 : 24;
-  const rowStep = Math.min(maxRowStep, Math.floor((ansBottom - ansTop - 52) / Math.max(1, rowsPerCol)));
+  const rowStep = Math.min(maxRowStep, Math.floor((ansBottom - ansTop - 60) / Math.max(1, rowsPerCol)));
   const bubbleR = numCols === 1 ? 11.5 : numCols === 2 ? 9.8 : 8.5;
 
   let qCursor = 1;
@@ -1945,18 +2014,29 @@ export function drawOpticalFormCanvas(
       10
     );
 
-    const numColX = numCols === 1 ? cx + 88 : cx + 34;
-    const firstBubbleX = numCols === 1 ? cx + 160 : cx + 58;
+    const numColX = numCols === 1 ? cx + 92 : cx + 34;
+    const firstBubbleX = numCols === 1 ? cx + 176 : cx + 58;
     const availableBubbleSpan = colWidth - (firstBubbleX - cx) - 24;
     const optSpacing =
       numCols <= 2
-        ? Math.min(58, Math.max(34, availableBubbleSpan / Math.max(1, letters.length - 0.3)))
+        ? Math.min(62, Math.max(34, availableBubbleSpan / Math.max(1, letters.length - 0.3)))
         : optionCount === 4
           ? 42
           : 34;
 
+    if (numCols <= 2) {
+      ctx.fillStyle = '#831843';
+      ctx.font = '700 10px "DM Sans", sans-serif';
+      ctx.textAlign = 'right';
+      ctx.fillText('NO', numColX, ansTop + 43);
+      ctx.textAlign = 'center';
+      letters.forEach((opt, oi) => {
+        ctx.fillText(opt, firstBubbleX + oi * optSpacing, ansTop + 43);
+      });
+    }
+
     for (let r = 0; r < rowsPerCol && qCursor <= totalQ; r++) {
-      const ry = ansTop + 52 + r * rowStep;
+      const ry = ansTop + (numCols <= 2 ? 60 : 52) + r * rowStep;
       if (r % 2 === 1) {
         ctx.fillStyle = 'rgba(251, 207, 232, 0.22)';
         ctx.fillRect(cx + 2, ry - rowStep / 2 + 1, colWidth - 4, rowStep - 1);
@@ -2039,6 +2119,9 @@ export async function generateMultiBookletOpticalPdf(params: {
   selectedSubjectId?: string;
   subjectsOverride?: SubjectSpec[];
   entries?: MultiOpticalEntry[];
+  activeAnswerKey?: string;
+  answerKeysByBooklet?: Partial<Record<BookletCode, string>>;
+  examSourceMode?: ExamSourceMode;
 }): Promise<Uint8Array> {
   const entries: MultiOpticalEntry[] =
     params.entries && params.entries.length > 0
@@ -2059,6 +2142,8 @@ export async function generateMultiBookletOpticalPdf(params: {
   const optCount = params.optionCount ?? params.gradeProfile?.optionCount ?? 5;
 
   for (const entry of entries) {
+    const resolvedKey =
+      params.answerKeysByBooklet?.[entry.bookletCode] || params.activeAnswerKey;
     drawOpticalFormCanvas(canvas, {
       cover: {
         ...params.cover,
@@ -2074,6 +2159,8 @@ export async function generateMultiBookletOpticalPdf(params: {
       optionCount: optCount,
       selectedSubjectId: params.selectedSubjectId,
       subjectsOverride: params.subjectsOverride,
+      activeAnswerKey: resolvedKey,
+      examSourceMode: params.examSourceMode,
     });
     const jpgBytes = await canvasToEncodedBytes(canvas, 'image/jpeg', 0.9);
     const img = await pdfDoc.embedJpg(jpgBytes);
@@ -2097,6 +2184,9 @@ export async function generateAllOpticalFormsZip(params: {
   selectedSubjectId?: string;
   subjectsOverride?: SubjectSpec[];
   entries?: MultiOpticalEntry[];
+  activeAnswerKey?: string;
+  answerKeysByBooklet?: Partial<Record<BookletCode, string>>;
+  examSourceMode?: ExamSourceMode;
 }): Promise<Blob> {
   const zip = new JSZip();
   const totalQ = Math.max(1, params.totalQuestions ?? 120);
@@ -2115,6 +2205,8 @@ export async function generateAllOpticalFormsZip(params: {
       classroom: params.classroom,
       selectedSubjectId: params.selectedSubjectId,
       subjectsOverride: params.subjectsOverride,
+      activeAnswerKey: params.answerKeysByBooklet?.[code] || params.activeAnswerKey,
+      examSourceMode: params.examSourceMode,
     });
     const fileName = buildOpticalPdfFilename(
       variantCover,
@@ -2533,19 +2625,19 @@ export async function generateStudentReportCardPdfWithPreview(
   ctx1.font = '700 16px "JetBrains Mono", monospace';
   ctx1.fillText(`KURUM KODU: ${instCode} · TARİH: ${cover.examDate}`, 172, 156);
 
-  // 3D Student Identity Card
-  ctx1.fillStyle = 'rgba(15, 23, 42, 0.1)';
-  ctx1.fillRect(64, 212, A4_W - 116, 118);
-  ctx1.fillStyle = '#eff6ff';
+  // Clean Student Identity Card (no thick left bar)
+  ctx1.fillStyle = 'rgba(15, 23, 42, 0.06)';
+  ctx1.fillRect(62, 210, A4_W - 116, 118);
+  ctx1.fillStyle = '#f8fafc';
   ctx1.fillRect(58, 206, A4_W - 116, 118);
   ctx1.fillStyle = '#1d4ed8';
-  ctx1.fillRect(58, 206, 10, 118);
-  ctx1.strokeStyle = '#93c5fd';
-  ctx1.lineWidth = 2;
+  ctx1.fillRect(58, 206, A4_W - 116, 4);
+  ctx1.strokeStyle = '#bfdbfe';
+  ctx1.lineWidth = 1.5;
   ctx1.strokeRect(58, 206, A4_W - 116, 118);
 
   const summaryTextMaxW = options?.qrCodeDataUrl
-    ? analysis.academyRank >= 1 && analysis.academyRank <= 3
+    ? analysis.academyRank >= 1 && analysis.academyRank <= 3 && analysis.academySize > 1
       ? A4_W - 355
       : A4_W - 275
     : A4_W - 250;
@@ -2565,7 +2657,7 @@ export async function generateStudentReportCardPdfWithPreview(
   ctx1.font = '700 16px "DM Sans", sans-serif';
   ctx1.fillText(`Sınav: ${analysis.examTitle}`, 86, 308, summaryTextMaxW);
 
-  if (analysis.academyRank >= 1 && analysis.academyRank <= 3) {
+  if (analysis.academyRank >= 1 && analysis.academyRank <= 3 && analysis.academySize > 1) {
     drawTop3MedalCanvas(
       ctx1,
       options?.qrCodeDataUrl ? A4_W - 210 : A4_W - 116,
@@ -2576,8 +2668,9 @@ export async function generateStudentReportCardPdfWithPreview(
   }
   await drawQrBadgeOnCanvas(ctx1, A4_W - 160, 211, 80, options?.qrCodeDataUrl, 'Dijital Karne');
 
-  // Colorful 3D Extruded KPI Cards
+  // Crisp Top-Hairline KPI Cards
   const kpiW = (A4_W - 116 - 48) / 4;
+  const isSingleInstitutionRecord = analysis.academySize <= 1;
   const kpis = [
     {
       label: 'TOPLAM NET',
@@ -2597,15 +2690,21 @@ export async function generateStudentReportCardPdfWithPreview(
     },
     {
       label: 'AKADEMİ SIRASI',
-      value: `${analysis.academyRank} / ${analysis.academySize}`,
-      sub: `Şube: ${analysis.classRank}. / ${analysis.classSize}`,
+      value: isSingleInstitutionRecord
+        ? 'İlk Kayıt'
+        : `${analysis.academyRank} / ${analysis.academySize}`,
+      sub: isSingleInstitutionRecord
+        ? '1. Deneme · Kurum Başlangıç'
+        : `Şube: ${analysis.classRank}. / ${analysis.classSize}`,
       bg: '#eef2ff',
       accent: '#4338ca',
       shadow: '#c7d2fe',
     },
     {
       label: 'YÜZDELİK DİLİM',
-      value: `%${(100 - analysis.percentile).toFixed(1)}`,
+      value: isSingleInstitutionRecord
+        ? 'İlk Ölçüm'
+        : `%${(100 - analysis.percentile).toFixed(1)}`,
       sub: `Hedef Net: ${analysis.projectedNet.toFixed(1)}`,
       bg: '#fffbeb',
       accent: '#d97706',
@@ -4274,19 +4373,19 @@ export async function generateParentInformationReportPdf(
     A4_W - 230
   );
 
-  // Parent greeting & student summary box
-  ctx1.fillStyle = 'rgba(15, 23, 42, 0.08)';
-  ctx1.fillRect(64, 210, A4_W - 116, 130);
+  // Parent greeting & student summary box (clean top hairline, no thick left bar)
+  ctx1.fillStyle = 'rgba(15, 23, 42, 0.06)';
+  ctx1.fillRect(62, 208, A4_W - 116, 130);
   ctx1.fillStyle = '#f0fdf4';
   ctx1.fillRect(58, 204, A4_W - 116, 130);
   ctx1.fillStyle = '#059669';
-  ctx1.fillRect(58, 204, 10, 130);
+  ctx1.fillRect(58, 204, A4_W - 116, 4);
   ctx1.strokeStyle = '#86efac';
-  ctx1.lineWidth = 2;
+  ctx1.lineWidth = 1.5;
   ctx1.strokeRect(58, 204, A4_W - 116, 130);
 
   const parentSummaryMaxW = qrCodeDataUrl
-    ? report.metrics.academyRank >= 1 && report.metrics.academyRank <= 3 && hasLiveAnalysis
+    ? report.metrics.academyRank >= 1 && report.metrics.academyRank <= 3 && hasLiveAnalysis && report.metrics.academySize > 1
       ? A4_W - 360
       : A4_W - 280
     : A4_W - 260;
@@ -4312,7 +4411,7 @@ export async function generateParentInformationReportPdf(
   ctx1.font = '700 15.5px "DM Sans", sans-serif';
   ctx1.fillText(`Değerlendirilen Sınav: ${report.examTitle}`, 86, 324, parentSummaryMaxW);
 
-  if (report.metrics.academyRank >= 1 && report.metrics.academyRank <= 3 && hasLiveAnalysis) {
+  if (report.metrics.academyRank >= 1 && report.metrics.academyRank <= 3 && hasLiveAnalysis && report.metrics.academySize > 1) {
     drawTop3MedalCanvas(
       ctx1,
       qrCodeDataUrl ? A4_W - 216 : A4_W - 116,
@@ -4325,13 +4424,16 @@ export async function generateParentInformationReportPdf(
 
   // 4 Key KPI Cards
   const kpiW = (A4_W - 116 - 48) / 4;
+  const isFirstParentExam = report.trendSeries.filter((t) => !t.isProjected).length <= 1;
   const netSign = report.metrics.netDelta >= 0 ? '+' : '';
   const scoreSign = report.metrics.scoreDelta >= 0 ? '+' : '';
   const kpis = [
     {
       label: 'TOPLAM NET',
       value: report.metrics.totalNet.toFixed(2),
-      sub: `${report.metrics.totalCorrect}D · ${report.metrics.totalWrong}Y · ${report.metrics.totalBlank}B (${netSign}${report.metrics.netDelta.toFixed(2)})`,
+      sub: isFirstParentExam
+        ? `${report.metrics.totalCorrect}D · ${report.metrics.totalWrong}Y · ${report.metrics.totalBlank}B · İlk Deneme`
+        : `${report.metrics.totalCorrect}D · ${report.metrics.totalWrong}Y · ${report.metrics.totalBlank}B (${netSign}${report.metrics.netDelta.toFixed(2)})`,
       bg: '#eff6ff',
       accent: '#1d4ed8',
       shadow: '#bfdbfe',
@@ -4339,7 +4441,9 @@ export async function generateParentInformationReportPdf(
     {
       label: 'TAHMİNİ PUAN',
       value: `${report.metrics.estimatedScore.toFixed(1)}`,
-      sub: `Azami ${report.metrics.maxScore} Puan (${scoreSign}${report.metrics.scoreDelta.toFixed(1)}p)`,
+      sub: isFirstParentExam
+        ? `Azami ${report.metrics.maxScore} Puan · İlk Kayıt`
+        : `Azami ${report.metrics.maxScore} Puan (${scoreSign}${report.metrics.scoreDelta.toFixed(1)}p)`,
       bg: '#ecfdf5',
       accent: '#059669',
       shadow: '#a7f3d0',
@@ -4348,9 +4452,11 @@ export async function generateParentInformationReportPdf(
       label: 'BAŞARI & SIRALAMA',
       value: `%${report.metrics.successPct}`,
       sub:
-        report.metrics.academySize > 0
+        report.metrics.academySize > 1
           ? `Kurum: ${report.metrics.academyRank}/${report.metrics.academySize} · Şube: ${report.metrics.classRank}/${report.metrics.classSize}`
-          : 'Kurum: Deneme bekleniyor',
+          : report.metrics.academySize === 1
+            ? 'Kurum İlk Deneme Kaydı'
+            : 'Kurum: Deneme bekleniyor',
       bg: '#eef2ff',
       accent: '#4338ca',
       shadow: '#c7d2fe',
@@ -4359,7 +4465,7 @@ export async function generateParentInformationReportPdf(
       label: 'SONRAKİ HEDEF',
       value: `${report.metrics.targetNet.toFixed(1)} Net`,
       sub:
-        report.metrics.academySize > 0
+        report.metrics.academySize > 1
           ? `Hedef Puan: ${report.metrics.targetScore.toFixed(1)} · Üst %${Math.max(1, 100 - report.metrics.percentile).toFixed(0)}`
           : `Hedef Puan: ${report.metrics.targetScore.toFixed(1)}`,
       bg: '#fffbeb',
@@ -4957,5 +5063,325 @@ export async function generateParentInformationReportPdf(
     pageDataUrls,
   };
 }
+
+/**
+ * Generates a structured multi-section Global Institution Ranking PDF report
+ * designed for sharing with school administrators:
+ * Page 1: Executive KPI summary, Institution Overview, Grade-Level Comparison Bars, Classroom Breakdown
+ * Page 2+: Full Comparative Student Leaderboard
+ */
+export async function generateGlobalInstitutionRankingPdf(params: {
+  report: InstitutionRankingsReport;
+  institutionName: string;
+  institutionCode8: string;
+  periodLabel: string;
+  sourceLabel: string;
+  signatureName: string;
+  logoStyleId?: CoverConfig['logoStyleId'];
+}): Promise<Uint8Array> {
+  const { report, institutionName, institutionCode8, periodLabel, sourceLabel, signatureName } = params;
+  const preset = getLogoPreset(params.logoStyleId);
+  const pdfDoc = await PDFDocument.create();
+
+  const createA4Canvas = () => {
+    const c = document.createElement('canvas');
+    c.width = A4_W;
+    c.height = A4_H;
+    const ctx = c.getContext('2d')!;
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, A4_W, A4_H);
+    return { c, ctx };
+  };
+
+  const drawHeader = (ctx: CanvasRenderingContext2D, title: string, subtitle: string, pageNum: number, totalPages: number) => {
+    ctx.fillStyle = preset.primaryColor;
+    ctx.fillRect(36, 36, A4_W - 72, 108);
+    ctx.fillStyle = preset.goldColor;
+    ctx.fillRect(36, 138, A4_W - 72, 6);
+
+    ctx.fillStyle = '#ffffff';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    drawFittedSingleLineText(ctx, title, 58, 74, A4_W - 360, '800', '"Plus Jakarta Sans", sans-serif', 24, 15);
+    ctx.fillStyle = '#e2e8f0';
+    ctx.font = '600 13.5px "DM Sans", sans-serif';
+    ctx.fillText(subtitle, 58, 108);
+
+    ctx.textAlign = 'right';
+    ctx.fillStyle = '#ffffff';
+    ctx.font = '700 13px "JetBrains Mono", monospace';
+    ctx.fillText(`KURUM: ${institutionCode8}`, A4_W - 58, 72);
+    ctx.font = '600 12px "DM Sans", sans-serif';
+    ctx.fillText(`${new Date().toLocaleDateString('tr-TR')} · Sayfa ${pageNum}/${totalPages}`, A4_W - 58, 106);
+  };
+
+  const drawFooter = (ctx: CanvasRenderingContext2D) => {
+    ctx.fillStyle = '#0f172a';
+    ctx.fillRect(36, A4_H - 76, A4_W - 72, 42);
+    ctx.fillStyle = '#ffffff';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.font = '700 12px "DM Sans", sans-serif';
+    ctx.fillText(
+      `${institutionName.toUpperCase()} · KÜRESEL KURUM & SINIF BAŞARI SIRALAMASI YÖNETİCİ RAPORU`,
+      56,
+      A4_H - 55
+    );
+    ctx.textAlign = 'right';
+    ctx.fillText(`İmza: ${signatureName}`, A4_W - 56, A4_H - 55);
+  };
+
+  const rowsPerLeaderboardPage = 24;
+  const studentChunks: typeof report.overallRanking[] = [];
+  for (let i = 0; i < report.overallRanking.length; i += rowsPerLeaderboardPage) {
+    studentChunks.push(report.overallRanking.slice(i, i + rowsPerLeaderboardPage));
+  }
+  const totalPages = Math.max(2, 1 + Math.max(1, studentChunks.length));
+
+  // PAGE 1: Executive Summary + Institution Summaries + Grade Comparison Bars + Classroom Breakdown
+  const p1 = createA4Canvas();
+  drawHeader(
+    p1.ctx,
+    'KÜRESEL KURUM & SINIF BAŞARI SIRALAMASI',
+    `${institutionName} · Dönem: ${periodLabel} · Kapsam: ${sourceLabel}`,
+    1,
+    totalPages
+  );
+
+  // KPI Strip (4 boxes)
+  const kpis = [
+    { label: 'TOPLAM ÖLÇÜM', val: String(report.totalEntries) },
+    { label: 'ORTALAMA NET', val: report.avgNet.toFixed(2) },
+    { label: 'ORTALAMA PUAN', val: report.avgScore.toFixed(1) },
+    { label: 'GENEL BAŞARI', val: `%${report.avgSuccessPct}` },
+  ];
+  const kpiW = (A4_W - 72 - 36) / 4;
+  kpis.forEach((k, idx) => {
+    const kx = 36 + idx * (kpiW + 12);
+    p1.ctx.fillStyle = '#f8fafc';
+    p1.ctx.fillRect(kx, 164, kpiW, 82);
+    p1.ctx.strokeStyle = '#cbd5e1';
+    p1.ctx.lineWidth = 1.5;
+    p1.ctx.strokeRect(kx, 164, kpiW, 82);
+
+    p1.ctx.fillStyle = '#475569';
+    p1.ctx.textAlign = 'left';
+    p1.ctx.font = '700 11px "DM Sans", sans-serif';
+    p1.ctx.fillText(k.label, kx + 14, 186);
+
+    p1.ctx.fillStyle = preset.primaryColor;
+    p1.ctx.font = '800 26px "JetBrains Mono", monospace';
+    p1.ctx.fillText(k.val, kx + 14, 222);
+  });
+
+  // Section A: Grade-Level Comparison Side-by-Side Bars
+  let curY = 276;
+  p1.ctx.fillStyle = '#0f172a';
+  p1.ctx.font = '800 15px "Plus Jakarta Sans", sans-serif';
+  p1.ctx.textAlign = 'left';
+  p1.ctx.fillText('1. SINIF DÜZEYLERİ KARŞILAŞTIRMA ÖZETİ (NET & BAŞARI %)', 36, curY);
+  curY += 22;
+
+  const gradeRows = report.stackedGradeRankings.slice(0, 6);
+  const maxAvgNet = Math.max(1, ...gradeRows.map((g) => g.avgNet));
+  gradeRows.forEach((g) => {
+    p1.ctx.fillStyle = '#f8fafc';
+    p1.ctx.fillRect(36, curY, A4_W - 72, 40);
+    p1.ctx.strokeStyle = '#e2e8f0';
+    p1.ctx.strokeRect(36, curY, A4_W - 72, 40);
+
+    p1.ctx.fillStyle = '#0f172a';
+    p1.ctx.font = '700 13px "DM Sans", sans-serif';
+    p1.ctx.textAlign = 'left';
+    p1.ctx.fillText(`${g.gradeLabel} (${g.studentCount} Kayıt · ${g.classroomCount} Şube)`, 50, curY + 20);
+
+    const barX = 400;
+    const barW = 360;
+    p1.ctx.fillStyle = '#e2e8f0';
+    p1.ctx.fillRect(barX, curY + 12, barW, 16);
+    p1.ctx.fillStyle = preset.primaryColor;
+    p1.ctx.fillRect(barX, curY + 12, Math.max(8, (g.avgNet / maxAvgNet) * barW), 16);
+
+    p1.ctx.fillStyle = '#0f172a';
+    p1.ctx.font = '700 12.5px "JetBrains Mono", monospace';
+    p1.ctx.textAlign = 'right';
+    p1.ctx.fillText(
+      `Ort: ${g.avgNet.toFixed(2)} Net · ${g.avgScore.toFixed(1)} P · %${g.avgSuccessPct}`,
+      A4_W - 50,
+      curY + 20
+    );
+    curY += 46;
+  });
+
+  // Section B: Institution Summary Table
+  curY += 16;
+  p1.ctx.fillStyle = '#0f172a';
+  p1.ctx.font = '800 15px "Plus Jakarta Sans", sans-serif';
+  p1.ctx.textAlign = 'left';
+  p1.ctx.fillText('2. KURUM BAZLI GENEL PERFORMANS ÖZETİ', 36, curY);
+  curY += 18;
+
+  p1.ctx.fillStyle = preset.primaryColor;
+  p1.ctx.fillRect(36, curY, A4_W - 72, 32);
+  p1.ctx.fillStyle = '#ffffff';
+  p1.ctx.font = '700 11.5px "DM Sans", sans-serif';
+  p1.ctx.fillText('KURUM ADI', 50, curY + 16);
+  p1.ctx.fillText('KOD', 370, curY + 16);
+  p1.ctx.fillText('ÖLÇÜM', 490, curY + 16);
+  p1.ctx.fillText('ORT. NET', 600, curY + 16);
+  p1.ctx.fillText('ORT. PUAN', 720, curY + 16);
+  p1.ctx.fillText('BAŞARI %', 840, curY + 16);
+  p1.ctx.fillText('LİDER ÖĞRENCİ', 945, curY + 16);
+  curY += 32;
+
+  report.institutionSummaries.slice(0, 5).forEach((inst, idx) => {
+    p1.ctx.fillStyle = idx % 2 === 0 ? '#ffffff' : '#f8fafc';
+    p1.ctx.fillRect(36, curY, A4_W - 72, 34);
+    p1.ctx.strokeStyle = '#e2e8f0';
+    p1.ctx.strokeRect(36, curY, A4_W - 72, 34);
+
+    p1.ctx.fillStyle = '#0f172a';
+    p1.ctx.font = '700 12px "DM Sans", sans-serif';
+    p1.ctx.fillText(inst.institutionName.slice(0, 32), 50, curY + 17);
+    p1.ctx.font = '600 12px "JetBrains Mono", monospace';
+    p1.ctx.fillText(inst.institutionCode8, 370, curY + 17);
+    p1.ctx.fillText(String(inst.evaluationCount), 490, curY + 17);
+    p1.ctx.fillText(inst.avgNet.toFixed(2), 600, curY + 17);
+    p1.ctx.fillText(inst.avgScore.toFixed(1), 720, curY + 17);
+    p1.ctx.fillText(`%${inst.avgSuccessPct}`, 840, curY + 17);
+    p1.ctx.font = '600 11.5px "DM Sans", sans-serif';
+    p1.ctx.fillText(inst.topStudentName.slice(0, 22), 945, curY + 17);
+    curY += 34;
+  });
+
+  // Section C: Classroom Performance Breakdown
+  curY += 22;
+  p1.ctx.fillStyle = '#0f172a';
+  p1.ctx.font = '800 15px "Plus Jakarta Sans", sans-serif';
+  p1.ctx.textAlign = 'left';
+  p1.ctx.fillText('3. SINIF / ŞUBE BAZLI KARŞILAŞTIRMALI SIRALAMA', 36, curY);
+  curY += 18;
+
+  p1.ctx.fillStyle = '#1e293b';
+  p1.ctx.fillRect(36, curY, A4_W - 72, 32);
+  p1.ctx.fillStyle = '#ffffff';
+  p1.ctx.font = '700 11.5px "DM Sans", sans-serif';
+  p1.ctx.fillText('SIRA', 50, curY + 16);
+  p1.ctx.fillText('ŞUBE', 110, curY + 16);
+  p1.ctx.fillText('DÜZEY', 220, curY + 16);
+  p1.ctx.fillText('KURUM', 350, curY + 16);
+  p1.ctx.fillText('ÖĞRENCİ', 600, curY + 16);
+  p1.ctx.fillText('ORT. NET', 700, curY + 16);
+  p1.ctx.fillText('ORT. PUAN', 820, curY + 16);
+  p1.ctx.fillText('BAŞARI %', 950, curY + 16);
+  curY += 32;
+
+  report.classroomRankings.slice(0, 14).forEach((cls, idx) => {
+    if (curY > A4_H - 125) return;
+    p1.ctx.fillStyle = idx % 2 === 0 ? '#ffffff' : '#f8fafc';
+    p1.ctx.fillRect(36, curY, A4_W - 72, 32);
+    p1.ctx.strokeStyle = '#e2e8f0';
+    p1.ctx.strokeRect(36, curY, A4_W - 72, 32);
+
+    p1.ctx.fillStyle = '#0f172a';
+    p1.ctx.font = '700 12px "JetBrains Mono", monospace';
+    p1.ctx.fillText(`#${idx + 1}`, 50, curY + 16);
+    p1.ctx.font = '800 12.5px "DM Sans", sans-serif';
+    p1.ctx.fillText(cls.classroom, 110, curY + 16);
+    p1.ctx.font = '600 12px "DM Sans", sans-serif';
+    p1.ctx.fillText(cls.gradeLabel, 220, curY + 16);
+    p1.ctx.fillText(cls.institutionName.slice(0, 26), 350, curY + 16);
+    p1.ctx.font = '600 12px "JetBrains Mono", monospace';
+    p1.ctx.fillText(String(cls.studentCount), 600, curY + 16);
+    p1.ctx.fillText(cls.avgNet.toFixed(2), 700, curY + 16);
+    p1.ctx.fillText(cls.avgScore.toFixed(1), 820, curY + 16);
+    p1.ctx.fillText(`%${cls.avgSuccessPct}`, 950, curY + 16);
+    curY += 32;
+  });
+
+  drawFooter(p1.ctx);
+  const pageCanvases: HTMLCanvasElement[] = [p1.c];
+
+  // PAGE 2+: Full Student Leaderboard
+  const effectiveChunks = studentChunks.length > 0 ? studentChunks : [[]];
+  effectiveChunks.forEach((chunk, chunkIdx) => {
+    const p = createA4Canvas();
+    drawHeader(
+      p.ctx,
+      'KÜRESEL ÖĞRENCİ LİDERLİK TABLOSU',
+      `${institutionName} · Tüm Sınıf Düzeyleri & Kurum Karşılaştırması (${periodLabel})`,
+      chunkIdx + 2,
+      totalPages
+    );
+
+    let y = 172;
+    p.ctx.fillStyle = preset.primaryColor;
+    p.ctx.fillRect(36, y, A4_W - 72, 36);
+    p.ctx.fillStyle = '#ffffff';
+    p.ctx.textAlign = 'left';
+    p.ctx.font = '700 11.5px "DM Sans", sans-serif';
+    p.ctx.fillText('SIRA', 48, y + 18);
+    p.ctx.fillText('ÖĞRENCİ ADI SOYADI', 108, y + 18);
+    p.ctx.fillText('DÜZEY / ŞUBE', 380, y + 18);
+    p.ctx.fillText('KURUM', 540, y + 18);
+    p.ctx.fillText('DENEME / KAYNAK', 720, y + 18);
+    p.ctx.fillText('NET', 945, y + 18);
+    p.ctx.fillText('PUAN', 1025, y + 18);
+    p.ctx.fillText('BAŞARI', 1110, y + 18);
+    y += 36;
+
+    if (chunk.length === 0) {
+      p.ctx.fillStyle = '#64748b';
+      p.ctx.font = '600 14px "DM Sans", sans-serif';
+      p.ctx.fillText('Seçilen filtre için henüz değerlendirilmiş deneme kaydı bulunmuyor.', 56, y + 48);
+    } else {
+      chunk.forEach((row, idx) => {
+        p.ctx.fillStyle = idx % 2 === 0 ? '#ffffff' : '#f8fafc';
+        p.ctx.fillRect(36, y, A4_W - 72, 48);
+        p.ctx.strokeStyle = '#e2e8f0';
+        p.ctx.strokeRect(36, y, A4_W - 72, 48);
+
+        p.ctx.fillStyle = row.overallRank <= 3 ? preset.primaryColor : '#0f172a';
+        p.ctx.font = '800 13px "JetBrains Mono", monospace';
+        p.ctx.fillText(`#${row.overallRank}`, 48, y + 24);
+
+        p.ctx.fillStyle = '#0f172a';
+        p.ctx.font = '700 12.5px "DM Sans", sans-serif';
+        p.ctx.fillText(row.studentName.slice(0, 26), 108, y + 24);
+
+        p.ctx.fillStyle = '#334155';
+        p.ctx.font = '600 12px "DM Sans", sans-serif';
+        p.ctx.fillText(`${row.gradeLabel} · ${row.normalizedClassroom}`, 380, y + 24);
+        p.ctx.fillText(row.institutionName.slice(0, 20), 540, y + 24);
+        p.ctx.fillText(`${row.examTitle.slice(0, 22)}`, 720, y + 17);
+        p.ctx.fillStyle = '#64748b';
+        p.ctx.font = '600 10.5px "DM Sans", sans-serif';
+        p.ctx.fillText(row.sourceLabel.slice(0, 24), 720, y + 34);
+
+        p.ctx.fillStyle = '#0f172a';
+        p.ctx.font = '800 12.5px "JetBrains Mono", monospace';
+        p.ctx.fillText(row.totalNet.toFixed(2), 945, y + 24);
+        p.ctx.fillText(row.estimatedScore.toFixed(1), 1025, y + 24);
+        p.ctx.fillStyle = '#047857';
+        p.ctx.fillText(`%${row.successPct}`, 1110, y + 24);
+        y += 48;
+      });
+    }
+
+    drawFooter(p.ctx);
+    pageCanvases.push(p.c);
+  });
+
+  for (const canvasEl of pageCanvases) {
+    const jpgBytes = await canvasToEncodedBytes(canvasEl, 'image/jpeg', 0.92);
+    const img = await pdfDoc.embedJpg(jpgBytes);
+    const page = pdfDoc.addPage([595.28, 841.89]);
+    page.drawImage(img, { x: 0, y: 0, width: 595.28, height: 841.89 });
+    await yieldToMainThread();
+  }
+
+  return pdfDoc.save();
+}
+
 
 

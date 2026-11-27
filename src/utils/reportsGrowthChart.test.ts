@@ -31,7 +31,8 @@ test('buildStudentGrowthChartData generates 6 checkpoints in donemlik mode and 1
     metricMode: 'net',
   });
 
-  assert.equal(termData.checkpoints.length, 6);
+  assert.equal(termData.checkpoints.length, 1);
+  assert.equal(termData.checkpoints[0].label, '1. Deneme (İlk Kayıt)');
   assert.equal(termData.isLiveData, true);
   assert.equal(termData.subjectBreakdown.length, grade5.subjects.length);
   for (const pt of termData.checkpoints) {
@@ -39,17 +40,33 @@ test('buildStudentGrowthChartData generates 6 checkpoints in donemlik mode and 1
     assert.ok(pt.studentNet >= 0 && pt.studentNet <= totalQ5);
   }
 
+  const multiAnalysis = evaluateOmrExam({
+    gradeId: '5',
+    penaltyDivisor: 3,
+    studentName: 'Zeynep Kaya',
+    studentNumber: '512',
+    classroom: '5-A',
+    examTitle: '5. Sınıf Kurumsal Deneme 4',
+    questions: questions5,
+    answerKey,
+    studentAnswers,
+    historicalExams: [
+      { examName: '5. Sınıf Deneme 1', date: '01.10.2026', net: 42, score: 330, academyAvgNet: 40 },
+      { examName: '5. Sınıf Deneme 2', date: '15.10.2026', net: 46, score: 350, academyAvgNet: 42 },
+      { examName: '5. Sınıf Deneme 3', date: '01.11.2026', net: 49, score: 365, academyAvgNet: 44 },
+    ],
+  });
+
   const annualData = buildStudentGrowthChartData({
-    analysis,
+    analysis: multiAnalysis,
     gradeProfile: grade5,
     hasLiveAnalysis: true,
     periodMode: 'yillik',
     metricMode: 'score',
   });
 
-  assert.equal(annualData.checkpoints.length, 10);
-  assert.equal(annualData.checkpoints[0].label, 'Eylül');
-  assert.equal(annualData.checkpoints[9].label, 'Haziran');
+  assert.equal(annualData.checkpoints.length, 4);
+  assert.equal(annualData.checkpoints[0].examName, '5. Sınıf Deneme 1');
   assert.ok(annualData.summary.peakScore >= annualData.summary.latestScore);
 });
 

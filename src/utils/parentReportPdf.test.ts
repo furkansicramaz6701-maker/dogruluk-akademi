@@ -54,7 +54,8 @@ test('buildParentInformationReportData builds grade-safe live parent report with
   assert.equal(/\b(TYT|AYT|YKS)\b/i.test(report.examTitle), false);
   assert.equal(/\b(TYT|AYT|YKS)\b/i.test(report.parentNote), false);
   assert.ok(report.subjectRows.length >= 4);
-  assert.equal(report.trendSeries.length, 6);
+  assert.equal(report.trendSeries.length, 1);
+  assert.equal(report.trendSeries[0].label, '1. Deneme (İlk Kayıt)');
   assert.ok(report.prioritizedTopics.length > 0);
   assert.equal(report.nextStudySession.scheduled, true);
   assert.ok(report.nextStudySession.summaryLine.includes('22.11.2026'));
@@ -163,7 +164,7 @@ test('buildParentInformationReportData returns graceful preview report before OM
   assert.equal(report.metrics.estimatedScore, 0);
   assert.equal(report.metrics.successPct, 0);
   assert.ok(report.subjectRows.length > 0);
-  assert.equal(report.trendSeries.length, 6);
+  assert.equal(report.trendSeries.length, 0);
   assert.equal(report.nextStudySession.scheduled, false);
   assert.ok(report.safeFilename.startsWith('Veli-Bilgilendirme-Raporu-'));
   assert.ok(report.safeFilename.endsWith('.pdf'));

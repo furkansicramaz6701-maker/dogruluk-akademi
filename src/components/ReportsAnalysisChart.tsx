@@ -198,8 +198,10 @@ export function ReportsAnalysisChart({
               {studentDisplayName} · {gradeProfile.shortLabel}
               {institutionName ? ` · ${institutionName}` : ''} ·{' '}
               {dataset.isLiveData
-                ? 'Canlı Sınav & Kazanım Analizi'
-                : 'Henüz sınav değerlendirilmedi (Tüm veriler 0 · Optik okuma ile güncellenir)'}
+                ? dataset.checkpoints.length === 1
+                  ? '1. Deneme (İlk Kayıt) · Canlı Sınav & Kazanım Analizi'
+                  : 'Canlı Sınav & Kazanım Analizi'
+                : 'Henüz deneme yapılmamış — İlk deneme kaydı bekleniyor'}
             </p>
           </div>
         </div>
@@ -351,9 +353,11 @@ export function ReportsAnalysisChart({
             <div className="inline-flex items-center gap-1.5 font-bold">
               <CalendarRange className="w-4 h-4" style={{ color: 'var(--accent-primary)' }} aria-hidden="true" />
               <span>
-                {periodMode === 'donemlik'
-                  ? 'Dönemlik Sınav Seyri (6 Adım)'
-                  : 'Yıllık Akademik Takvim Seyri (Eylül – Haziran)'}
+                {dataset.checkpoints.length === 1
+                  ? '1. Deneme (İlk Kayıt)'
+                  : periodMode === 'donemlik'
+                    ? `Dönemlik Sınav Seyri (${Math.max(1, dataset.checkpoints.length)} Adım)`
+                    : 'Yıllık Akademik Takvim Seyri (Eylül – Haziran)'}
               </span>
             </div>
             <div className="flex flex-wrap items-center gap-3 font-semibold">
@@ -372,123 +376,151 @@ export function ReportsAnalysisChart({
             </div>
           </div>
 
-          <div
-            className="w-full h-[265px] min-w-0"
-            data-testid="reports-growth-recharts-container"
-          >
-            <ResponsiveContainer width="100%" height="100%">
-              <ComposedChart
-                data={dataset.checkpoints}
-                margin={{ top: 12, right: 14, left: -4, bottom: 4 }}
-                onClick={(state) => {
-                  const idx =
-                    typeof state?.activeTooltipIndex === 'number' ? state.activeTooltipIndex : -1;
-                  if (idx >= 0 && dataset.checkpoints[idx]) {
-                    setSelectedCheckpointId(dataset.checkpoints[idx].id);
-                  }
-                }}
-              >
-                <defs>
-                  <linearGradient id="reportsGrowthFill" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="var(--accent-primary)" stopOpacity={0.28} />
-                    <stop offset="95%" stopColor="var(--accent-primary)" stopOpacity={0.02} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke="var(--border-subtle)" vertical={false} />
-                <XAxis
-                  dataKey="shortLabel"
-                  interval={0}
-                  tick={{ fill: 'var(--text-secondary)', fontSize: 11, fontWeight: 600 }}
-                  axisLine={{ stroke: 'var(--border-subtle)' }}
-                  tickLine={false}
-                />
-                <YAxis
-                  domain={
-                    metricMode === 'net'
-                      ? [0, dataset.summary.totalQuestions]
-                      : [dataset.isLiveData ? gradeProfile.baseScore : 0, dataset.summary.maxScore]
-                  }
-                  tick={{ fill: 'var(--text-secondary)', fontSize: 11 }}
-                  axisLine={false}
-                  tickLine={false}
-                  width={42}
-                />
-                <Tooltip content={<GrowthChartTooltip metricMode={metricMode} />} />
-                <ReferenceLine
-                  y={targetRefValue}
-                  stroke="var(--chart-4)"
-                  strokeDasharray="3 3"
-                  strokeOpacity={0.75}
-                />
-                <Area
-                  type="monotone"
-                  dataKey={studentKey}
-                  name={studentDisplayName}
-                  stroke="var(--accent-primary)"
-                  strokeWidth={3}
-                  fill="url(#reportsGrowthFill)"
-                  isAnimationActive={false}
-                  dot={{ r: 4, strokeWidth: 2, fill: 'var(--accent-primary)' }}
-                  activeDot={{ r: 6, strokeWidth: 2, stroke: '#ffffff' }}
-                />
-                <Line
-                  type="monotone"
-                  dataKey={academyKey}
-                  name="Kurum Ortalaması"
-                  stroke="var(--chart-3)"
-                  strokeWidth={2}
-                  strokeDasharray="5 4"
-                  isAnimationActive={false}
-                  dot={{ r: 3, fill: 'var(--chart-3)' }}
-                />
-              </ComposedChart>
-            </ResponsiveContainer>
-          </div>
-
-          {/* Checkpoint Selector Strip + Focused Point Details */}
-          <div className="space-y-2">
-            <div className="flex flex-wrap items-center gap-1.5">
-              {dataset.checkpoints.map((pt) => {
-                const isSelected = activePoint.id === pt.id;
-                return (
-                  <button
-                    key={pt.id}
-                    type="button"
-                    data-testid={`reports-growth-point-${pt.id}`}
-                    aria-pressed={isSelected}
-                    onClick={() => setSelectedCheckpointId(pt.id)}
-                    className={`px-2.5 py-1 rounded-md text-[11px] font-bold whitespace-nowrap cursor-pointer transition-colors ${
-                      isSelected ? 'btn-3d' : 'btn-3d-secondary'
-                    }`}
-                  >
-                    {pt.label}
-                  </button>
-                );
-              })}
-            </div>
-
+          {!dataset.isLiveData || dataset.checkpoints.length === 0 ? (
             <div
-              className="surface-alt rounded-xl px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-2 text-xs border"
+              data-testid="reports-growth-empty-state"
+              className="surface-alt rounded-xl p-6 text-center space-y-2 border"
               style={{ borderColor: 'var(--border-subtle)' }}
-              data-testid="reports-growth-focused-detail"
             >
-              <div className="min-w-0">
-                <span className="font-bold">{activePoint.examName}</span>
-                <span className="mx-1.5" style={{ color: 'var(--text-secondary)' }} aria-hidden="true">·</span>
-                <span style={{ color: 'var(--text-secondary)' }}>
-                  {activePoint.termLabel} ({activePoint.dateLabel}) · {activePoint.statusNote}
-                </span>
+              <div className="text-sm font-bold">
+                Henüz deneme yapılmamış — İlk deneme kaydı bekleniyor
               </div>
-              <div className="font-mono-num font-bold flex items-center gap-3 shrink-0">
-                <span style={{ color: 'var(--accent-primary)' }}>
-                  {activePoint.studentNet.toFixed(2)} Net
-                </span>
-                <span style={{ color: 'var(--chart-3)' }}>
-                  {activePoint.studentScore.toFixed(1)} Puan
-                </span>
-              </div>
+              <p className="text-xs max-w-md mx-auto" style={{ color: 'var(--text-secondary)' }}>
+                Optik Okuma modülünden ilk deneme değerlendirildiğinde öğrenci gelişim çizgisi yalnızca gerçek kayıtlarla burada oluşturulur.
+              </p>
+              {onOpenOmr && (
+                <button
+                  type="button"
+                  onClick={onOpenOmr}
+                  className="btn-3d-secondary px-3.5 py-1.5 rounded-lg text-xs font-bold cursor-pointer"
+                >
+                  Optik Okumaya Git
+                </button>
+              )}
             </div>
-          </div>
+          ) : (
+            <>
+              <div
+                className="w-full h-[265px] min-w-0"
+                data-testid="reports-growth-recharts-container"
+              >
+                <ResponsiveContainer width="100%" height="100%">
+                  <ComposedChart
+                    data={dataset.checkpoints}
+                    margin={{ top: 12, right: 14, left: -4, bottom: 4 }}
+                    onClick={(state) => {
+                      const idx =
+                        typeof state?.activeTooltipIndex === 'number' ? state.activeTooltipIndex : -1;
+                      if (idx >= 0 && dataset.checkpoints[idx]) {
+                        setSelectedCheckpointId(dataset.checkpoints[idx].id);
+                      }
+                    }}
+                  >
+                    <defs>
+                      <linearGradient id="reportsGrowthFill" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%" stopColor="var(--accent-primary)" stopOpacity={0.28} />
+                        <stop offset="95%" stopColor="var(--accent-primary)" stopOpacity={0.02} />
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid strokeDasharray="3 3" stroke="var(--border-subtle)" vertical={false} />
+                    <XAxis
+                      dataKey="shortLabel"
+                      interval={0}
+                      tick={{ fill: 'var(--text-secondary)', fontSize: 11, fontWeight: 600 }}
+                      axisLine={{ stroke: 'var(--border-subtle)' }}
+                      tickLine={false}
+                    />
+                    <YAxis
+                      domain={
+                        metricMode === 'net'
+                          ? [0, dataset.summary.totalQuestions]
+                          : [dataset.isLiveData ? gradeProfile.baseScore : 0, dataset.summary.maxScore]
+                      }
+                      tick={{ fill: 'var(--text-secondary)', fontSize: 11 }}
+                      axisLine={false}
+                      tickLine={false}
+                      width={42}
+                    />
+                    <Tooltip content={<GrowthChartTooltip metricMode={metricMode} />} />
+                    <ReferenceLine
+                      y={targetRefValue}
+                      stroke="var(--chart-4)"
+                      strokeDasharray="3 3"
+                      strokeOpacity={0.75}
+                    />
+                    <Area
+                      type="monotone"
+                      dataKey={studentKey}
+                      name={studentDisplayName}
+                      stroke="var(--accent-primary)"
+                      strokeWidth={3}
+                      fill="url(#reportsGrowthFill)"
+                      isAnimationActive={false}
+                      dot={{ r: 4, strokeWidth: 2, fill: 'var(--accent-primary)' }}
+                      activeDot={{ r: 6, strokeWidth: 2, stroke: '#ffffff' }}
+                    />
+                    <Line
+                      type="monotone"
+                      dataKey={academyKey}
+                      name="Kurum Ortalaması"
+                      stroke="var(--chart-3)"
+                      strokeWidth={2}
+                      strokeDasharray="5 4"
+                      isAnimationActive={false}
+                      dot={{ r: 3, fill: 'var(--chart-3)' }}
+                    />
+                  </ComposedChart>
+                </ResponsiveContainer>
+              </div>
+
+              {/* Checkpoint Selector Strip + Focused Point Details */}
+              {activePoint && (
+                <div className="space-y-2">
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {dataset.checkpoints.map((pt) => {
+                      const isSelected = activePoint.id === pt.id;
+                      return (
+                        <button
+                          key={pt.id}
+                          type="button"
+                          data-testid={`reports-growth-point-${pt.id}`}
+                          aria-pressed={isSelected}
+                          onClick={() => setSelectedCheckpointId(pt.id)}
+                          className={`px-2.5 py-1 rounded-md text-[11px] font-bold whitespace-nowrap cursor-pointer transition-colors ${
+                            isSelected ? 'btn-3d' : 'btn-3d-secondary'
+                          }`}
+                        >
+                          {pt.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  <div
+                    className="surface-alt rounded-xl px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-2 text-xs border"
+                    style={{ borderColor: 'var(--border-subtle)' }}
+                    data-testid="reports-growth-focused-detail"
+                  >
+                    <div className="min-w-0">
+                      <span className="font-bold">{activePoint.examName}</span>
+                      <span className="mx-1.5" style={{ color: 'var(--text-secondary)' }} aria-hidden="true">·</span>
+                      <span style={{ color: 'var(--text-secondary)' }}>
+                        {activePoint.termLabel} ({activePoint.dateLabel}) · {activePoint.statusNote}
+                      </span>
+                    </div>
+                    <div className="font-mono-num font-bold flex items-center gap-3 shrink-0">
+                      <span style={{ color: 'var(--accent-primary)' }}>
+                        {activePoint.studentNet.toFixed(2)} Net
+                      </span>
+                      <span style={{ color: 'var(--chart-3)' }}>
+                        {activePoint.studentScore.toFixed(1)} Puan
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
         </div>
 
         {/* Right: Detailed Subject Performance Breakdown */}

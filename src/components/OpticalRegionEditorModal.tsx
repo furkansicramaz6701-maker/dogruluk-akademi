@@ -16,6 +16,7 @@ import {
   X,
 } from 'lucide-react';
 import { BookletCode } from '../types/academy';
+import { NumericStepperInput } from './NumericStepperInput';
 import { triggerDownload } from '../utils/downloadHelpers';
 import {
   applyCropHandleDrag,
@@ -807,66 +808,70 @@ export function OpticalRegionEditorModal({
                 <div className="surface-alt rounded-xl p-3 border space-y-2.5" style={{ borderColor: 'var(--border-subtle)' }}>
                   <div className="text-xs font-extrabold">Hassas Koordinatlar (%)</div>
                   <div className="grid grid-cols-2 gap-2">
-                    <label className="text-[11px] font-semibold">
+                    <div className="text-[11px] font-semibold space-y-1">
                       <span style={{ color: 'var(--text-secondary)' }}>Sol (X %)</span>
-                      <input
-                        type="number"
+                      <NumericStepperInput
+                        compact
                         min={0}
                         max={95}
                         step={1}
-                        data-testid="region-input-x"
+                        ariaLabel="Sol X yüzdesi"
+                        inputTestId="region-input-x"
+                        surfaceClass="surface-card"
                         value={Math.round(cropRect.xPct)}
-                        onChange={(e) =>
-                          setCropRect((r) => clampCropRect({ ...r, xPct: Number(e.target.value) }))
+                        onChange={(val) =>
+                          setCropRect((r) => clampCropRect({ ...r, xPct: val }))
                         }
-                        className="mt-0.5 w-full rounded-lg px-2 py-1 text-xs font-mono-num font-bold surface-card"
                       />
-                    </label>
-                    <label className="text-[11px] font-semibold">
+                    </div>
+                    <div className="text-[11px] font-semibold space-y-1">
                       <span style={{ color: 'var(--text-secondary)' }}>Üst (Y %)</span>
-                      <input
-                        type="number"
+                      <NumericStepperInput
+                        compact
                         min={0}
                         max={95}
                         step={1}
-                        data-testid="region-input-y"
+                        ariaLabel="Üst Y yüzdesi"
+                        inputTestId="region-input-y"
+                        surfaceClass="surface-card"
                         value={Math.round(cropRect.yPct)}
-                        onChange={(e) =>
-                          setCropRect((r) => clampCropRect({ ...r, yPct: Number(e.target.value) }))
+                        onChange={(val) =>
+                          setCropRect((r) => clampCropRect({ ...r, yPct: val }))
                         }
-                        className="mt-0.5 w-full rounded-lg px-2 py-1 text-xs font-mono-num font-bold surface-card"
                       />
-                    </label>
-                    <label className="text-[11px] font-semibold">
+                    </div>
+                    <div className="text-[11px] font-semibold space-y-1">
                       <span style={{ color: 'var(--text-secondary)' }}>Genişlik %</span>
-                      <input
-                        type="number"
+                      <NumericStepperInput
+                        compact
                         min={5}
                         max={100}
                         step={1}
-                        data-testid="region-input-w"
+                        ariaLabel="Genişlik yüzdesi"
+                        inputTestId="region-input-w"
+                        surfaceClass="surface-card"
                         value={Math.round(cropRect.widthPct)}
-                        onChange={(e) =>
-                          setCropRect((r) => clampCropRect({ ...r, widthPct: Number(e.target.value) }))
+                        onChange={(val) =>
+                          setCropRect((r) => clampCropRect({ ...r, widthPct: val }))
                         }
-                        className="mt-0.5 w-full rounded-lg px-2 py-1 text-xs font-mono-num font-bold surface-card"
                       />
-                    </label>
-                    <label className="text-[11px] font-semibold">
+                    </div>
+                    <div className="text-[11px] font-semibold space-y-1">
                       <span style={{ color: 'var(--text-secondary)' }}>Yükseklik %</span>
-                      <input
-                        type="number"
+                      <NumericStepperInput
+                        compact
                         min={5}
                         max={100}
                         step={1}
-                        data-testid="region-input-h"
+                        ariaLabel="Yükseklik yüzdesi"
+                        inputTestId="region-input-h"
+                        surfaceClass="surface-card"
                         value={Math.round(cropRect.heightPct)}
-                        onChange={(e) =>
-                          setCropRect((r) => clampCropRect({ ...r, heightPct: Number(e.target.value) }))
+                        onChange={(val) =>
+                          setCropRect((r) => clampCropRect({ ...r, heightPct: val }))
                         }
-                        className="mt-0.5 w-full rounded-lg px-2 py-1 text-xs font-mono-num font-bold surface-card"
                       />
-                    </label>
+                    </div>
                   </div>
 
                   <label className="flex items-center gap-2 text-xs font-semibold pt-1 cursor-pointer">

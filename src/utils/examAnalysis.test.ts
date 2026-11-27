@@ -4,7 +4,9 @@ import {
   buildAutoExamQuestions,
   evaluateOmrExam,
   generateSampleOmrPair,
+  inspectQrAndStudentMatch,
   parseAnswerString,
+  parseAnswerStringWithQrPreCheck,
 } from './examAnalysis';
 import {
   generate8DigitInstitutionCode,
@@ -133,3 +135,132 @@ test('8-digit institution code and student number generate deterministically wit
   assert.match(collisionAvoided, /^\d{8}$/);
   assert.notEqual(collisionAvoided, stuCode);
 });
+
+test('parseAnswerString isolates subject sections, strips QR tags, and handles 1) A delimiters without shifting', () => {
+  const multiSubject =
+    'QR:https://dogruluk-akademi.vercel.app/?tab=reports&stu=48192034 Türkçe: 1) A 2) B 3) C Matematik: 1) D 2) A 3) B 4) C';
+  const mathParsed = parseAnswerString(multiSubject, 4, 4, { subjectName: 'Matematik' });
+  assert.deepEqual(mathParsed, ['D', 'A', 'B', 'C']);
+
+  const compactWithHeader = 'Matematik\nABCDABCD';
+  assert.deepEqual(parseAnswerString(compactWithHeader, 8, 4), [
+    'A',
+    'B',
+    'C',
+    'D',
+    'A',
+    'B',
+    'C',
+    'D',
+  ]);
+});
+
+test('evaluateOmrExam locks Booklet A to column A key without column shift even when B key differs or extra chars exist', () => {
+  const questions = buildAutoExamQuestions('7', 'dengeli', 12, 'Matematik');
+  const keyA = 'ABCDABCDABCD';
+  const keyB = 'DDDDCCCCBBBB';
+
+  const result = evaluateOmrExam({
+    studentName: 'Alihan Sarı',
+    studentNumber: '48192034',
+    classroom: '7-A',
+    examTitle: '7. Sınıf Matematik 12 Soru',
+    gradeId: '7',
+    penaltyDivisor: 3,
+    studentAnswers: parseAnswerString('ABCDABCDABCD', 12, 4),
+    answerKey: parseAnswerString(keyB, 12, 4), // even if fallback raw differed, A booklet locks to column A
+    questions,
+    bookletCode: 'A',
+    bookletAnswerKeys: { A: keyA, B: keyB },
+    enforceQuestionBounds: true,
+  });
+
+  assert.equal(result.totalQuestions, 12);
+  assert.equal(result.totalCorrect, 12);
+  assert.equal(result.totalNet, 12);
+  assert.ok(result.columnAlignment);
+  assert.equal(result.columnAlignment.bookletCode, 'A');
+  assert.equal(result.columnAlignment.matchedKeyColumn, 'A');
+  assert.equal(result.columnAlignment.hasColumnShift, false);
+});
+
+test('parseAnswerStringWithQrPreCheck detects QR student match, mismatch, and extracts subject-scoped answers', () => {
+  const students = [
+    {
+      id: 'stu-1',
+      fullName: 'Alihan Sarı',
+      studentNumber8: '48192034',
+      institutionId: 'inst-1',
+      institutionCode8: '81767119',
+      institutionName: 'Doğruluk Akademi',
+      classroom: '7-A',
+      gradeId: '7' as const,
+      createdAt: '2026-10-01',
+    },
+    {
+      id: 'stu-2',
+      fullName: 'Zeynep Kaya',
+      studentNumber8: '48192099',
+      institutionId: 'inst-1',
+      institutionCode8: '81767119',
+      institutionName: 'Doğruluk Akademi',
+      classroom: '7-A',
+      gradeId: '7' as const,
+      createdAt: '2026-10-01',
+    },
+  ];
+
+  const qrRaw =
+    'QR:https://dogruluk-akademi.vercel.app/?tab=reports&stu=48192034&inst=81767119 Türkçe: 1-A 2-B Matematik: 1-C 2-D 3-A 4-B';
+
+  const matched = parseAnswerStringWithQrPreCheck(qrRaw, 4, 4, {
+    subjectName: 'Matematik',
+    students,
+    expectedInstitutionCode: '81767119',
+    expectedStudentNumber: '48192034',
+    expectedStudentName: 'Alihan Sarı',
+  });
+  assert.equal(matched.preCheck.status, 'matched');
+  assert.equal(matched.preCheck.studentMismatch, false);
+  assert.equal(matched.preCheck.matchedStudentNumber, '48192034');
+  assert.equal(matched.preCheck.extractedSubjectName, 'Matematik');
+  assert.deepEqual(matched.answers, ['C', 'D', 'A', 'B']);
+
+  const mismatched = inspectQrAndStudentMatch(qrRaw, {
+    subjectName: 'Matematik',
+    students,
+    expectedInstitutionCode: '81767119',
+    expectedStudentNumber: '48192099',
+    expectedStudentName: 'Zeynep Kaya',
+  });
+  assert.equal(mismatched.status, 'mismatch');
+  assert.equal(mismatched.studentMismatch, true);
+  assert.equal(mismatched.matchedStudentId, 'stu-1');
+  assert.equal(mismatched.matchedStudentName, 'Alihan Sarı');
+  assert.equal(mismatched.extractedSubjectName, 'Matematik');
+});
+
+test('evaluateOmrExam produces 1. Deneme (İlk Kayıt) and zero fake cohort sizes for solo live evaluation', () => {
+  const qs = buildAutoExamQuestions('7', 'dengeli', 12, 'Matematik');
+  const key = qs.map((q) => q.correctOption);
+  const stu: (string | null)[] = [...key.slice(0, 10), 'B', null];
+  const res = evaluateOmrExam({
+    studentName: 'Alihan Sarı',
+    studentNumber: '48192034',
+    classroom: '7-A',
+    examTitle: 'Matematik 12 Soruluk İlk Tarama',
+    gradeId: '7',
+    penaltyDivisor: 3,
+    studentAnswers: stu,
+    answerKey: key,
+    questions: qs,
+  });
+
+  assert.equal(res.historicalTrend.length, 1);
+  assert.equal(res.historicalTrend[0].examName, '1. Deneme (İlk Kayıt)');
+  assert.equal(res.classSize, 1);
+  assert.equal(res.academySize, 1);
+  assert.equal(res.classRank, 1);
+  assert.equal(res.academyRank, 1);
+});
+

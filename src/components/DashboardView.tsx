@@ -37,6 +37,8 @@ import {
   InstitutionPermissions,
   LogoStyleId,
   PenaltyDivisor,
+  PersistedExamRecord,
+  PrizeExamDefinition,
   RecommendationCategory,
   SmartRecommendation,
   StudentRecord,
@@ -54,8 +56,10 @@ import {
   filterGradeProfilesByInstitution,
 } from '../utils/institutionCodes';
 import { Cube3DShowcase } from './Cube3DShowcase';
+import { GlobalInstitutionRankingBoard } from './GlobalInstitutionRankingBoard';
 import { InstitutionAuthPanel } from './InstitutionAuthPanel';
 import { InstitutionStudentManager } from './InstitutionStudentManager';
+import { InstitutionSuccessChart } from './InstitutionSuccessChart';
 import { InstructorCoachingDashboard } from './InstructorCoachingDashboard';
 import { Logo3D } from './Logo3D';
 import { NetProgressionChart } from './NetProgressionChart';
@@ -109,7 +113,11 @@ interface DashboardViewProps {
   onDownloadZip: () => void;
   onDownloadSourceZip: () => void;
   weeklyEntries?: WeeklyStudentScore[];
+  weeklyEntriesByInst?: Record<string, WeeklyStudentScore[]>;
   weeklyQuestionCount?: WeeklyQuestionPreset;
+  examHistory?: PersistedExamRecord[];
+  examHistoryByInst?: Record<string, PersistedExamRecord[]>;
+  prizeExamsByInst?: Record<string, PrizeExamDefinition[]>;
   calendarEvents?: EducationCalendarEvent[];
   onBulkScheduleRemedials?: (events: EducationCalendarEvent[]) => void;
   isPrivateAdminMode?: boolean;
@@ -164,7 +172,11 @@ export function DashboardView({
   onDownloadZip,
   onDownloadSourceZip,
   weeklyEntries,
+  weeklyEntriesByInst,
   weeklyQuestionCount = 50,
+  examHistory = [],
+  examHistoryByInst,
+  prizeExamsByInst,
   calendarEvents = [],
   onBulkScheduleRemedials,
   isPrivateAdminMode = false,
@@ -301,8 +313,8 @@ export function DashboardView({
         <section
           data-testid="dogruluk-private-admin-banner"
           aria-label="Doğruluk Akademi Özel Yönetici Paneli"
-          className="surface-card rounded-xl p-4 sm:p-5 border-l-4 flex flex-wrap items-center justify-between gap-3"
-          style={{ borderLeftColor: 'var(--accent-primary)' }}
+          className="surface-card rounded-xl p-4 sm:p-5 border border-t-2 flex flex-wrap items-center justify-between gap-3"
+          style={{ borderColor: 'var(--border-subtle)', borderTopColor: 'var(--accent-primary)' }}
         >
           <div className="space-y-0.5 min-w-0">
             <div className="text-xs font-extrabold uppercase tracking-wider" style={{ color: 'var(--accent-primary)' }}>
@@ -592,7 +604,42 @@ export function DashboardView({
         activeStudentName={analysis.studentName}
         activeStudentNet={analysis.totalNet}
         activeExamTitle={analysis.examTitle}
+        examHistory={examHistory}
         showTurkeyBenchmark={false}
+      />
+
+      {/* Kurumlar Arası Başarı Dağılımı (İnteraktif Recharts Bar Grafiği) */}
+      <InstitutionSuccessChart
+        institutions={institutions}
+        activeInstitution={activeInstitution}
+        examHistoryByInst={
+          examHistoryByInst ?? { [activeInstitution.id]: examHistory }
+        }
+        weeklyEntriesByInst={
+          weeklyEntriesByInst ??
+          (weeklyEntries ? { [activeInstitution.id]: weeklyEntries } : {})
+        }
+        students={students}
+        gradeProfile={gradeProfile}
+        penaltyDivisor={penaltyDivisor}
+        analysis={analysis}
+        hasLiveAnalysis={hasLiveAnalysis}
+        questionCount={questionCount}
+        onSelectInstitution={onSelectInstitution}
+        onNavigateToOmr={() => onNavigate('omr')}
+      />
+
+      {/* Küresel Kurum & Sınıf Düzeyi Başarı Sıralaması (5. Sınıf vs 7. Sınıf, Şube Dağılımı, Yönetici PDF) */}
+      <GlobalInstitutionRankingBoard
+        institutions={institutions}
+        activeInstitution={activeInstitution}
+        examHistoryByInst={
+          examHistoryByInst ?? { [activeInstitution.id]: examHistory }
+        }
+        prizeExamsByInst={prizeExamsByInst}
+        cover={cover}
+        isPrivateAdminMode={isPrivateAdminMode}
+        onNavigateToOmr={() => onNavigate('omr')}
       />
 
       {/* Haftalık Performans Karşılaştırması (KTS-1 vs KTS-2 Trendline) */}
@@ -603,6 +650,7 @@ export function DashboardView({
         students={students}
         weeklyEntries={weeklyEntries}
         weeklyQuestionCount={weeklyQuestionCount}
+        examHistory={examHistory}
         onOpenWeeklyList={() => onNavigate('weekly')}
       />
 

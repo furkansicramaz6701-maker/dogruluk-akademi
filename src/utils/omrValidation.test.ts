@@ -124,3 +124,35 @@ test('analyzeOmrResponseValidation detects Empty Bubbles, Multiple Marks, and cl
   assert.equal(withCompactBracketMulti.explicitEmptyCount, 1);
 });
 
+test('analyzeOmrResponseValidation & validateManualOmrInputs isolate selected subjectName and strip QR metadata', () => {
+  const multiSubjectQr =
+    'QR:https://dogruluk-akademi.vercel.app/?tab=reports&stu=31058545&inst=31570113 Türkçe: 1-D 2-D Matematik: 1-A 2-B 3-C 4-D 5-A 6-B 7-C 8-D 9-A 10-B 11-A 12-D';
+  const summary = analyzeOmrResponseValidation({
+    studentNumber: '31058545',
+    studentAnswersRaw: multiSubjectQr,
+    answerKeyRaw: 'ABCDABCDABCD',
+    expectedCount: 12,
+    optionCount: 4,
+    subjectName: 'Matematik',
+  });
+
+  assert.equal(summary.severity, 'ok');
+  assert.equal(summary.validCount, 12);
+  assert.equal(summary.scannedCount, 12);
+  assert.equal(summary.emptyBubbleCount, 0);
+
+  const manualReport = validateManualOmrInputs({
+    sourceName: 'Manuel Optik Girişi',
+    studentName: 'Zeynep Kaya',
+    studentNumber: '31058545',
+    studentAnswersRaw: multiSubjectQr,
+    answerKeyRaw: 'ABCDABCDABCD',
+    optionCount: 4,
+    requireStudentAnswers: true,
+    validateAnswerKey: true,
+    subjectName: 'Matematik',
+  });
+  assert.equal(manualReport.errors.length, 0);
+});
+
+

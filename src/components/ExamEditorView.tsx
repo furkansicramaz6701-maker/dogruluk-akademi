@@ -46,6 +46,7 @@ import {
   fillMissingExplanations,
 } from '../utils/recommendations';
 import { AiQuestionRefinementPanel } from './AiQuestionRefinementPanel';
+import { NumericStepperInput } from './NumericStepperInput';
 import { QuestionVisualPreview } from './QuestionVisualPreview';
 
 interface ExamEditorViewProps {
@@ -431,6 +432,51 @@ export function ExamEditorView({
     notify(`Soru ${added.number} oluşturuldu ve düzenlemeye açıldı.`);
   };
 
+  const handleSetQuestionCount = (nextTargetCount: number) => {
+    const clamped = Math.max(1, Math.min(200, Math.round(nextTargetCount)));
+    if (clamped === questions.length) return;
+    if (clamped < questions.length) {
+      const sliced = renumber(questions.slice(0, clamped));
+      onUpdateQuestions(sliced);
+      if (selectedIndex >= sliced.length) {
+        setSelectedIndex(Math.max(0, sliced.length - 1));
+      }
+      notify(`Deneme soru sayısı ${clamped} olarak güncellendi.`);
+      return;
+    }
+    const nextList = [...questions];
+    const poolSubjects = gradeProfile.subjects.length > 0 ? gradeProfile.subjects : [{
+      id: 'genel',
+      name: 'Genel',
+      questionCount: clamped,
+      weight: 1,
+      topics: ['Genel Tekrar'],
+    }];
+    while (nextList.length < clamped) {
+      const idx = nextList.length;
+      const subj = poolSubjects[idx % poolSubjects.length];
+      const opts: Record<string, string> = {};
+      letters.forEach((l) => {
+        opts[l] = `${l} seçeneği metnini buraya yazın`;
+      });
+      nextList.push({
+        id: `q-step-${Date.now()}-${idx + 1}`,
+        number: idx + 1,
+        subject: subj.name,
+        topic: subj.topics[idx % Math.max(1, subj.topics.length)] || 'Genel Tekrar',
+        gainCode: `${gradeProfile.id}.${subj.id.toUpperCase()}.S${idx + 1}`,
+        difficulty: idx % 3 === 0 ? 'Kolay' : idx % 3 === 1 ? 'Orta' : 'Zor',
+        stem: `${subj.name} (${subj.topics[0] || 'Genel'}) için ${idx + 1}. soru metnini düzenleyebilirsiniz.`,
+        options: opts,
+        correctOption: letters[idx % letters.length] || 'A',
+        explanation: 'Doğru yanıt gerekçesi ve kısa çözüm adımını buraya ekleyebilirsiniz.',
+        source: 'Müfredat Havuzu',
+      });
+    }
+    onUpdateQuestions(renumber(nextList));
+    notify(`Deneme soru sayısı ${clamped} olarak güncellendi.`);
+  };
+
   const handleApplyAuditFix = (
     fixType: 'balance-options' | 'balance-difficulty' | 'fill-explanations'
   ) => {
@@ -487,6 +533,25 @@ export function ExamEditorView({
                 ))}
               </select>
             </label>
+
+            <div className="flex items-center gap-1.5">
+              <span className="text-xs font-semibold whitespace-nowrap" style={{ color: 'var(--text-secondary)' }}>
+                Soru:
+              </span>
+              <NumericStepperInput
+                id="exam-editor-qcount-input"
+                ariaLabel="Deneme Soru Sayısı"
+                inputTestId="exam-editor-qcount-input"
+                decTestId="exam-editor-qcount-dec"
+                incTestId="exam-editor-qcount-inc"
+                min={1}
+                max={200}
+                step={1}
+                value={questions.length}
+                onChange={handleSetQuestionCount}
+                className="w-[126px]"
+              />
+            </div>
 
             <button
               type="button"
@@ -1027,16 +1092,19 @@ export function ExamEditorView({
                               aria-label={`Sütun ${bi + 1} etiketi`}
                               className="flex-1 min-w-0 rounded px-2 py-1 text-xs surface-alt"
                             />
-                            <input
-                              type="number"
+                            <NumericStepperInput
+                              compact
+                              min={0}
+                              max={10000}
+                              step={1}
                               value={bar.value}
-                              onChange={(e) => {
+                              onChange={(val) => {
                                 const nextBars = [...(activeQ.visual?.bars ?? [])];
-                                nextBars[bi] = { ...bar, value: Number(e.target.value) || 0 };
+                                nextBars[bi] = { ...bar, value: val };
                                 updateActiveVisual({ bars: nextBars });
                               }}
-                              aria-label={`Sütun ${bi + 1} değeri`}
-                              className="w-16 rounded px-2 py-1 text-xs font-mono-num surface-alt"
+                              ariaLabel={`Sütun ${bi + 1} değeri`}
+                              className="w-[100px] shrink-0"
                             />
                           </div>
                         ))}

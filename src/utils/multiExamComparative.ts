@@ -54,27 +54,53 @@ export function buildMultiExamComparativeDataset(params: {
   analysis: ExamAnalysisResult;
   hasLiveAnalysis: boolean;
   openEndedAnalysis?: OpenEndedPaperAnalysis | null;
+  isSamplePreview?: boolean;
 }): MultiExamComparativeDataset {
-  const { analysis, hasLiveAnalysis, openEndedAnalysis } = params;
+  const { analysis, hasLiveAnalysis, openEndedAnalysis, isSamplePreview = false } = params;
   const totalQ = Math.max(1, analysis.totalQuestions);
+  const subjectMetrics = analysis.subjectMetrics ?? [];
+  const subjectOptions = subjectMetrics.map((s) => s.subject);
 
-  // Normalize historicalTrend into 5 entries ending at the latest exam
-  const rawHistory = [...(analysis.historicalTrend ?? [])];
-  while (rawHistory.length < 5) {
-    const first = rawHistory[0] ?? {
-      examName: 'Deneme 1',
-      date: 'Önceki',
-      net: Math.max(0, round2(analysis.totalNet * 0.8)),
-      score: Math.max(100, round1(analysis.estimatedScore * 0.88)),
-      academyAvgNet: Math.max(0, round2(analysis.totalNet * 0.72)),
+  if (!hasLiveAnalysis && !openEndedAnalysis && !isSamplePreview) {
+    return {
+      studentName: analysis.studentName || 'Öğrenci',
+      examPoints: [],
+      subjectOptions,
     };
-    const factor = 0.88 - (4 - rawHistory.length) * 0.04;
-    rawHistory.unshift({
-      examName: `Deneme ${rawHistory.length + 1}`,
-      date: 'Önceki',
-      net: round2(Math.max(0, first.net * factor)),
-      score: round1(Math.max(100, first.score * 0.94)),
-      academyAvgNet: round2(Math.max(0, first.academyAvgNet * factor)),
+  }
+
+  const rawHistory = [...(analysis.historicalTrend ?? [])];
+  if (isSamplePreview) {
+    while (rawHistory.length < 5) {
+      const first = rawHistory[0] ?? {
+        examName: 'Deneme 1',
+        date: 'Önceki',
+        net: Math.max(0, round2(analysis.totalNet * 0.8)),
+        score: Math.max(100, round1(analysis.estimatedScore * 0.88)),
+        academyAvgNet: Math.max(0, round2(analysis.totalNet * 0.72)),
+      };
+      const factor = 0.88 - (4 - rawHistory.length) * 0.04;
+      rawHistory.unshift({
+        examName: `Deneme ${rawHistory.length + 1}`,
+        date: 'Önceki',
+        net: round2(Math.max(0, first.net * factor)),
+        score: round1(Math.max(100, first.score * 0.94)),
+        academyAvgNet: round2(Math.max(0, first.academyAvgNet * factor)),
+      });
+    }
+  } else if (rawHistory.length === 0) {
+    rawHistory.push({
+      examName: '1. Deneme (İlk Kayıt)',
+      date: new Date().toLocaleDateString('tr-TR'),
+      net: hasLiveAnalysis
+        ? analysis.totalNet
+        : round2(((openEndedAnalysis?.successPct ?? 0) / 100) * totalQ),
+      score: hasLiveAnalysis
+        ? analysis.estimatedScore
+        : openEndedAnalysis?.totalScore ?? 0,
+      academyAvgNet: hasLiveAnalysis
+        ? analysis.totalNet
+        : round2(((openEndedAnalysis?.successPct ?? 0) / 100) * totalQ),
     });
   }
 
@@ -90,10 +116,7 @@ export function buildMultiExamComparativeDataset(params: {
       ? round2(
           analysis.subjectMetrics.reduce((sum, s) => sum + s.classAvgNet, 0)
         )
-      : last5[last5.length - 1]?.academyAvgNet ?? round2(currentTotalNet * 0.85);
-
-  const subjectMetrics = analysis.subjectMetrics ?? [];
-  const subjectOptions = subjectMetrics.map((s) => s.subject);
+      : last5[last5.length - 1]?.academyAvgNet ?? round2(currentTotalNet);
 
   const examPoints: MultiExamPoint[] = last5.map((hist, idx) => {
     const isLast = idx === last5.length - 1;
@@ -128,7 +151,6 @@ export function buildMultiExamComparativeDataset(params: {
         return;
       }
 
-      // Apply subtle deterministic per-subject variance across earlier exams while matching final point exactly
       const phaseOffset = (((idx + 1) * (sIdx + 2)) % 5 - 2) * 0.035;
       const sNet = round2(
         clamp(subj.net * (overallStudentScale + phaseOffset), 0, subjTotal)
@@ -151,8 +173,18 @@ export function buildMultiExamComparativeDataset(params: {
       };
     });
 
-    const examLabel = isLast ? `${hist.examName} (Son)` : hist.examName;
-    const shortLabel = isLast ? `5. Son Sınav` : `${idx + 1}. Sınav`;
+    const examLabel =
+      last5.length === 1
+        ? '1. Deneme (İlk Kayıt)'
+        : isLast
+          ? `${hist.examName} (Son)`
+          : hist.examName;
+    const shortLabel =
+      last5.length === 1
+        ? '1. İlk Deneme'
+        : isLast
+          ? `${last5.length}. Son Sınav`
+          : `${idx + 1}. Sınav`;
 
     return {
       examIndex: idx,

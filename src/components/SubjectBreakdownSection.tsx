@@ -118,7 +118,7 @@ export function SubjectBreakdownSection({
     );
   };
 
-  if (!hasLiveAnalysis) {
+  if (!hasLiveAnalysis || breakdown.items.length === 0) {
     return (
       <section
         aria-label="Detaylı Ders Dağılımı"
@@ -134,7 +134,7 @@ export function SubjectBreakdownSection({
                 Detaylı Ders Dağılımı (Öğrenci vs Sınıf Ortalaması)
               </h3>
               <p className="text-xs mt-0.5" style={{ color: 'var(--text-secondary)' }}>
-                Optik değerlendirme tamamlandığında her dersin net ve başarı yüzdesi sınıf ortalamasıyla karşılaştırılır.
+                Henüz deneme yapılmamış — Optik değerlendirme tamamlandığında ders bazlı net ve başarı yüzdesi burada görüntülenir.
               </p>
             </div>
           </div>
@@ -151,6 +151,8 @@ export function SubjectBreakdownSection({
       </section>
     );
   }
+
+  const isSingleSubject = breakdown.items.length === 1;
 
   return (
     <section
@@ -170,10 +172,14 @@ export function SubjectBreakdownSection({
           </div>
           <div className="min-w-0">
             <h3 id="subject-breakdown-heading" className="text-base font-extrabold">
-              Detaylı Ders Dağılımı — Öğrenci vs Sınıf Ortalaması
+              {isSingleSubject
+                ? `Tek Ders Performans Özeti (${breakdown.items[0].subject})`
+                : 'Detaylı Ders Dağılımı — Öğrenci vs Sınıf Ortalaması'}
             </h3>
             <p className="text-xs mt-0.5" style={{ color: 'var(--text-secondary)' }}>
-              Sınıf ortalamasının altında kalan zayıf dersleri net farkıyla belirleyin ve doğrudan telafi etüdü planlayın.
+              {isSingleSubject
+                ? 'Seçili derse ait net ve sınıf ortalaması karşılaştırması aşağıda sunulmuştur; gerekirse telafi etüdü planlayabilirsiniz.'
+                : 'Sınıf ortalamasının altında kalan zayıf dersleri net farkıyla belirleyin ve doğrudan telafi etüdü planlayın.'}
             </p>
           </div>
         </div>
@@ -235,7 +241,11 @@ export function SubjectBreakdownSection({
               </>
             ) : (
               <>
-                <span className="font-extrabold">Tüm Dersler Sınıf Ortalaması Üstünde: </span>
+                <span className="font-extrabold">
+                  {isSingleSubject
+                    ? 'Seçili Ders Sınıf Ortalaması Üstünde: '
+                    : 'Tüm Dersler Sınıf Ortalaması Üstünde: '}
+                </span>
                 <span style={{ color: 'var(--text-secondary)' }}>
                   Öğrenci toplamda sınıf ortalamasına göre +
                   {(breakdown.overallStudentNet - breakdown.overallClassAvgNet).toFixed(2)} net önde.

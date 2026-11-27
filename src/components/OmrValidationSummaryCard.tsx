@@ -24,27 +24,31 @@ export function OmrValidationSummaryCard({
     summary.severity === 'error'
       ? {
           badgeText: 'Düzeltme Gerekli',
-          badgeClass: 'bg-rose-600 text-white',
+          dotClass: 'bg-rose-500',
+          textClass: 'text-rose-700 dark:text-rose-400',
           icon: AlertCircle,
           iconColor: 'text-rose-600 dark:text-rose-400',
         }
       : summary.severity === 'warning'
         ? {
             badgeText: 'Boş İşaret Uyarısı',
-            badgeClass: 'bg-amber-600 text-white',
+            dotClass: 'bg-amber-500',
+            textClass: 'text-amber-700 dark:text-amber-400',
             icon: AlertTriangle,
             iconColor: 'text-amber-600 dark:text-amber-400',
           }
         : summary.severity === 'ok'
           ? {
               badgeText: 'Kaydetmeye Hazır',
-              badgeClass: 'bg-emerald-600 text-white',
+              dotClass: 'bg-emerald-500',
+              textClass: 'text-emerald-700 dark:text-emerald-400',
               icon: CheckCircle2,
               iconColor: 'text-emerald-600 dark:text-emerald-400',
             }
           : {
               badgeText: 'Veri Bekleniyor',
-              badgeClass: 'surface-card text-[var(--text-secondary)]',
+              dotClass: 'bg-slate-400',
+              textClass: 'text-[var(--text-secondary)]',
               icon: ShieldCheck,
               iconColor: 'text-[var(--accent-primary)]',
             };
@@ -66,14 +70,15 @@ export function OmrValidationSummaryCard({
             aria-hidden="true"
           />
           <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2.5">
               <h4 className="text-xs font-extrabold uppercase tracking-wider">
                 Doğrulama Özeti (Validation Summary)
               </h4>
               <span
                 data-testid="omr-validation-status-badge"
-                className={`px-2 py-0.5 rounded-md text-[11px] font-bold whitespace-nowrap ${statusPalette.badgeClass}`}
+                className={`inline-flex items-center gap-1.5 text-[11px] font-bold whitespace-nowrap ${statusPalette.textClass}`}
               >
+                <span className={`w-2 h-2 rounded-full ${statusPalette.dotClass}`} aria-hidden="true" />
                 {statusPalette.badgeText}
               </span>
             </div>

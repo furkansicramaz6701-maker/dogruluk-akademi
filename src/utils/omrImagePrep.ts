@@ -9,6 +9,10 @@ export interface SafeOmrParseResult {
   detectedCount: number;
   bookletCode?: BookletCode;
   bookletKeys: Partial<Record<BookletCode, string>>;
+  detectedSubject?: string;
+  detectedStudentNumber?: string;
+  detectedQrUrl?: string;
+  detectedAnalysisQr?: string;
   notes?: string;
   error?: string;
 }
@@ -192,6 +196,11 @@ export function safeParseOmrApiResponse(status: number, rawText: string): SafeOm
       ? parsed.detectedCount
       : answersString.length;
 
+  const rawStudentNo =
+    typeof parsed.detectedStudentNumber === 'string'
+      ? parsed.detectedStudentNumber.replace(/\D/g, '').slice(0, 8)
+      : '';
+
   return {
     ok: true,
     status,
@@ -201,6 +210,19 @@ export function safeParseOmrApiResponse(status: number, rawText: string): SafeOm
       typeof parsed.bookletCode === 'string' ? parsed.bookletCode : undefined
     ),
     bookletKeys,
+    detectedSubject:
+      typeof parsed.detectedSubject === 'string' && parsed.detectedSubject.trim()
+        ? parsed.detectedSubject.trim()
+        : undefined,
+    detectedStudentNumber: rawStudentNo.length >= 4 ? rawStudentNo : undefined,
+    detectedQrUrl:
+      typeof parsed.detectedQrUrl === 'string' && parsed.detectedQrUrl.trim()
+        ? parsed.detectedQrUrl.trim()
+        : undefined,
+    detectedAnalysisQr:
+      typeof parsed.detectedAnalysisQr === 'string' && parsed.detectedAnalysisQr.trim()
+        ? parsed.detectedAnalysisQr.trim()
+        : undefined,
     notes: typeof parsed.notes === 'string' ? parsed.notes : undefined,
   };
 }

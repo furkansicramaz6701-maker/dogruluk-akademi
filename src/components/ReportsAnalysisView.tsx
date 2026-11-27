@@ -41,6 +41,7 @@ import {
   GradeProfile,
   OpenEndedPaperAnalysis,
   ParentMessageTemplateMode,
+  PersistedExamRecord,
   ReportCardType,
   TopicGapMetric,
   WeeklyStudentScore,
@@ -59,6 +60,7 @@ import {
   triggerDownload,
 } from '../utils/pdfAndZip';
 import { buildOpenEndedParentMessage } from '../utils/openEndedExam';
+import { isSingleSubjectAnalysis } from '../utils/singleSubjectKarne';
 import {
   DEFAULT_CUSTOM_PARENT_TEMPLATES,
   REPORT_CARD_MESSAGE_TEMPLATES,
@@ -80,6 +82,7 @@ import { KarneTrendSparkline } from './KarneTrendSparkline';
 import { MultiExamComparativeChart } from './MultiExamComparativeChart';
 import { PdfPreviewDocType, PdfPreviewModal } from './PdfPreviewModal';
 import { ReportsAnalysisChart } from './ReportsAnalysisChart';
+import { SingleSubjectKarneSection } from './SingleSubjectKarneSection';
 import { SubjectBreakdownSection } from './SubjectBreakdownSection';
 
 interface ReportsAnalysisViewProps {
@@ -94,6 +97,7 @@ interface ReportsAnalysisViewProps {
   calendarEvents?: EducationCalendarEvent[];
   weeklyEntries?: WeeklyStudentScore[];
   weeklyQuestionCount?: number;
+  examHistory?: PersistedExamRecord[];
   openEndedAnalysis?: OpenEndedPaperAnalysis | null;
   exportBusy?: boolean;
   onUpdateCoachSummary: (summary: string) => void;
@@ -136,6 +140,7 @@ export function ReportsAnalysisView({
   calendarEvents = [],
   weeklyEntries = [],
   weeklyQuestionCount = 20,
+  examHistory = [],
   openEndedAnalysis = null,
   exportBusy = false,
   onUpdateCoachSummary,
@@ -948,11 +953,11 @@ Haftalık Aksiyon Planı:
               <span className="text-sm font-extrabold">
                 10 Soruluk Açık Uçlu Kağıt Analizi Sonucu
               </span>
-              <span className="text-xs font-mono-num font-bold px-2 py-0.5 rounded-lg bg-emerald-600 text-white">
-                {openEndedAnalysis.totalScore} / {openEndedAnalysis.maxTotalScore} (%{openEndedAnalysis.successPct})
+              <span className="text-xs font-mono-num font-bold text-emerald-700 dark:text-emerald-300">
+                · {openEndedAnalysis.totalScore} / {openEndedAnalysis.maxTotalScore} (%{openEndedAnalysis.successPct})
               </span>
               <span className="text-xs font-bold" style={{ color: 'var(--accent-primary)' }}>
-                {openEndedAnalysis.developmentStatus}
+                · {openEndedAnalysis.developmentStatus}
               </span>
             </div>
             <p className="text-xs leading-relaxed" style={{ color: 'var(--text-secondary)' }}>
@@ -1376,13 +1381,13 @@ Haftalık Aksiyon Planı:
                   ? analysis.historicalTrend
                   : openEndedAnalysis
                   ? [
-                      ...analysis.historicalTrend.slice(0, 4),
+                      ...(examHistory.length > 0 ? analysis.historicalTrend.slice(0, 4) : []),
                       {
-                        examName: 'Son Deneme (Açık Uçlu)',
+                        examName: '1. Deneme (Açık Uçlu İlk Kayıt)',
                         date: new Date().toLocaleDateString('tr-TR'),
                         net: Number((openEndedAnalysis.totalScore / 10).toFixed(2)),
                         score: openEndedAnalysis.totalScore,
-                        academyAvgNet: analysis.historicalTrend[3]?.academyAvgNet ?? 0,
+                        academyAvgNet: Number((openEndedAnalysis.totalScore / 10).toFixed(2)),
                       },
                     ]
                   : []
@@ -1436,6 +1441,7 @@ Haftalık Aksiyon Planı:
         analysis={analysis}
         hasLiveAnalysis={hasLiveAnalysis}
         openEndedAnalysis={openEndedAnalysis}
+        isSamplePreview={Boolean(cover.isSampleDemo)}
         onOpenOmr={onOpenOmr}
       />
 
@@ -1462,6 +1468,14 @@ Haftalık Aksiyon Planı:
 
       {!hasLiveAnalysis ? null : (
       <>
+
+      {isSingleSubjectAnalysis(analysis) && (
+        <SingleSubjectKarneSection
+          analysis={analysis}
+          gradeProfile={gradeProfile}
+          onScheduleTopicStudy={onScheduleRemedial}
+        />
+      )}
 
       {/* 3 FARKLI DETAYLI ANALİZ KARTI (Ders Bazlı Başarı, Konu Analizi, Zaman Yönetimi) */}
       <section aria-label="3 Farklı Detaylı Analiz Kartı" className="grid grid-cols-1 lg:grid-cols-3 gap-5">
@@ -1499,10 +1513,21 @@ Haftalık Aksiyon Planı:
           </div>
 
           <div className="surface-alt rounded-lg p-3 text-xs flex justify-between items-center">
-            <span style={{ color: 'var(--text-secondary)' }}>En Güçlü / Öncelikli:</span>
-            <span className="font-bold truncate max-w-[170px]">
-              {strongestSubject?.subject} / {weakestSubject?.subject}
-            </span>
+            {analysis.subjectMetrics.length <= 1 ? (
+              <>
+                <span style={{ color: 'var(--text-secondary)' }}>Odak Ders Kapsamı:</span>
+                <span className="font-bold truncate max-w-[190px]">
+                  {analysis.subjectMetrics[0]?.subject ?? 'Tek Ders'} ({analysis.totalQuestions} Soru)
+                </span>
+              </>
+            ) : (
+              <>
+                <span style={{ color: 'var(--text-secondary)' }}>En Güçlü / Öncelikli:</span>
+                <span className="font-bold truncate max-w-[170px]">
+                  {strongestSubject?.subject} / {weakestSubject?.subject}
+                </span>
+              </>
+            )}
           </div>
         </article>
 

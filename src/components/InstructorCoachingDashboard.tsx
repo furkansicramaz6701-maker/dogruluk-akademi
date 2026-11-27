@@ -40,6 +40,7 @@ interface InstructorCoachingDashboardProps {
   onBulkScheduleRemedials: (events: EducationCalendarEvent[]) => void;
   onOpenCalendar: () => void;
   onOpenWeeklyList: () => void;
+  isSamplePreview?: boolean;
 }
 
 export function InstructorCoachingDashboard({
@@ -55,6 +56,7 @@ export function InstructorCoachingDashboard({
   onBulkScheduleRemedials,
   onOpenCalendar,
   onOpenWeeklyList,
+  isSamplePreview = false,
 }: InstructorCoachingDashboardProps) {
   const [metricMode, setMetricMode] = useState<'net' | 'score'>('net');
   const [bandFilter, setBandFilter] = useState<'all' | CohortPerformanceBand>('all');
@@ -85,6 +87,7 @@ export function InstructorCoachingDashboard({
         weeklyQuestionCount,
         activeAnalysis: analysis,
         hasLiveAnalysis,
+        includeSampleFallback: isSamplePreview,
       }),
     [
       activeInstitution,
@@ -95,6 +98,7 @@ export function InstructorCoachingDashboard({
       weeklyQuestionCount,
       analysis,
       hasLiveAnalysis,
+      isSamplePreview,
     ]
   );
 
@@ -144,7 +148,7 @@ export function InstructorCoachingDashboard({
   // Render D3 multi-student performance trend chart
   useEffect(() => {
     const svgEl = svgRef.current;
-    if (!svgEl) return;
+    if (!svgEl || dataset.totalStudents === 0 || dataset.cohortCurve.length === 0) return;
 
     const width = 640;
     const height = 276;
@@ -413,7 +417,11 @@ export function InstructorCoachingDashboard({
               Eğitmen Koçluk Paneli & Toplu Telafi Planlayıcı ({activeInstitution.name})
             </h2>
             <p className="text-xs mt-0.5" style={{ color: 'var(--text-secondary)' }}>
-              Tüm öğrencilerin 5 sınavlık performans eğilimleri D3 grafik motoruyla izlenir; ortak konu eksikleri tek tıkla grup telafi etütüne dönüştürülür.
+              {dataset.totalStudents === 0
+                ? 'Kurumda henüz deneme kaydı bulunmadığından koçluk eğilimi ve grup telafi listesi sıfır durumdadır.'
+                : dataset.examLabels.length === 1
+                  ? 'İlk deneme kaydı doğrultusunda öğrenci dağılımı D3 üzerinde izlenir; konu eksikleri tek tıkla telafi etütüne dönüştürülür.'
+                  : 'Tüm öğrencilerin performans eğilimleri D3 grafik motoruyla izlenir; ortak konu eksikleri tek tıkla grup telafi etütüne dönüştürülür.'}
             </p>
           </div>
         </div>
@@ -491,6 +499,21 @@ export function InstructorCoachingDashboard({
         </div>
       </div>
 
+      {dataset.totalStudents === 0 ? (
+        <div
+          data-testid="instructor-coaching-empty-state"
+          className="surface-alt rounded-xl p-6 text-center space-y-2 border"
+          style={{ borderColor: 'var(--border-subtle)' }}
+        >
+          <div className="text-sm font-bold">
+            Henüz deneme yapılmamış — İlk deneme kaydı bekleniyor
+          </div>
+          <p className="text-xs max-w-xl mx-auto" style={{ color: 'var(--text-secondary)' }}>
+            {activeInstitution.name} kurumunda optik değerlendirme veya haftalık deneme girişi yapıldığında D3 kohort eğilimi ve toplu telafi önerileri otomatik oluşturulur.
+          </p>
+        </div>
+      ) : (
+        <>
       {/* Main 12-col Split: Left D3 Multi-Student Chart, Right Bulk Remedial Scheduler */}
       <div className="grid grid-cols-1 xl:grid-cols-12 gap-5 items-start">
         {/* Left: D3 Cohort Trend Chart */}
@@ -500,7 +523,9 @@ export function InstructorCoachingDashboard({
         >
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="text-xs font-bold">
-              5 Sınavlık Öğrenci & Performans Bandı Eğilimi (D3)
+              {dataset.examLabels.length === 1
+                ? '1. Deneme (İlk Kayıt) Öğrenci & Kohort Dağılımı (D3)'
+                : `${dataset.examLabels.length} Sınavlık Öğrenci & Performans Bandı Eğilimi (D3)`}
             </div>
             <div className="flex flex-wrap items-center gap-1">
               {(
@@ -782,6 +807,8 @@ export function InstructorCoachingDashboard({
           )}
         </div>
       </div>
+        </>
+      )}
     </section>
   );
 }

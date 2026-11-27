@@ -25,9 +25,18 @@ test('buildMultiExamComparativeDataset anchors Exam 5 to active subject metrics'
     examTitle: 'LGS Deneme 5',
   });
 
+  const liveSingle = buildMultiExamComparativeDataset({
+    analysis,
+    hasLiveAnalysis: true,
+    isSamplePreview: false,
+  });
+  assert.equal(liveSingle.examPoints.length, 1);
+  assert.equal(liveSingle.examPoints[0].examLabel, '1. Deneme (İlk Kayıt)');
+
   const dataset = buildMultiExamComparativeDataset({
     analysis,
     hasLiveAnalysis: true,
+    isSamplePreview: true,
   });
 
   assert.equal(dataset.examPoints.length, 5);

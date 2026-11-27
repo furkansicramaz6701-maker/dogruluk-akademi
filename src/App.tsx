@@ -53,6 +53,8 @@ import {
   PdfWatermarkPlacement,
   PdfWatermarkPreset,
   PenaltyDivisor,
+  PersistedExamRecord,
+  PrizeExamDefinition,
   SmartRecommendation,
   StudentBookletAssignment,
   StudentRecord,
@@ -83,6 +85,11 @@ import {
 } from './utils/examAnalysis';
 import { searchWorkspaceEntities } from './utils/globalSearch';
 import { parseDigitalKarneQuery } from './utils/digitalKarneQr';
+import {
+  resolveTargetGradeForPrizeActivation,
+  syncExamRecordToWeeklyEntries,
+} from './utils/institutionRankings';
+import { buildScopedExamQuestions } from './utils/singleSubjectKarne';
 import {
   DEFAULT_INSTITUTIONS,
   DEFAULT_STUDENTS,
@@ -375,6 +382,27 @@ export default function App() {
   });
   const [weeklyQuestionCount, setWeeklyQuestionCount] = useState<WeeklyQuestionPreset>(50);
 
+  const [examHistoryByInst, setExamHistoryByInst] = useState<
+    Record<string, PersistedExamRecord[]>
+  >(() => {
+    const saved = readStorageJson<Record<string, PersistedExamRecord[]>>(
+      'da_exam_history_v1',
+      {}
+    );
+    return saved && typeof saved === 'object' && !Array.isArray(saved) ? saved : {};
+  });
+
+  const [prizeExamsByInst, setPrizeExamsByInst] = useState<
+    Record<string, PrizeExamDefinition[]>
+  >(() => {
+    const saved = readStorageJson<Record<string, PrizeExamDefinition[]>>(
+      'da_prize_exams_v1',
+      {}
+    );
+    return saved && typeof saved === 'object' && !Array.isArray(saved) ? saved : {};
+  });
+  const [activePrizeExamId, setActivePrizeExamId] = useState<string | null>(null);
+
   const [cascadeEnabled, setCascadeEnabled] = useState<boolean>(true);
   const [exportBusy, setExportBusy] = useState(false);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
@@ -433,6 +461,8 @@ export default function App() {
       window.localStorage.setItem('da_students_v1', JSON.stringify(students));
       window.localStorage.setItem('da_calendar_events_v1', JSON.stringify(calendarEvents));
       window.localStorage.setItem('da_weekly_entries_v1', JSON.stringify(weeklyEntriesByInst));
+      window.localStorage.setItem('da_exam_history_v1', JSON.stringify(examHistoryByInst));
+      window.localStorage.setItem('da_prize_exams_v1', JSON.stringify(prizeExamsByInst));
       window.localStorage.setItem('da_watermark_presets_v1', JSON.stringify(watermarkPresets));
       window.localStorage.setItem(
         EXTERNAL_PUBLISHER_PRESETS_STORAGE_KEY,
@@ -449,6 +479,8 @@ export default function App() {
     students,
     calendarEvents,
     weeklyEntriesByInst,
+    examHistoryByInst,
+    prizeExamsByInst,
     watermarkPresets,
     publisherPresets,
     posterGoogleFormUrl,
@@ -580,46 +612,113 @@ export default function App() {
     }
   }, []);
 
-  // Narrow OMR / Karne questions when a single subject is chosen in Farklı Yayın Denemesi mode
-  const omrActiveQuestions = useMemo(() => {
+  const activeOmrSubjectSpec = useMemo(() => {
     const subjId = externalPublisherConfig.selectedSubjectId;
-    if (examSourceMode !== 'farkli-yayin' || !subjId || subjId === 'all') {
-      return questions;
-    }
-    const targetSubj = gradeProfile.subjects.find((s) => s.id === subjId);
-    if (!targetSubj) return questions;
-    const filtered = questions.filter((q) => q.subject === targetSubj.name);
-    const limit =
-      externalPublisherConfig.questionCount && externalPublisherConfig.questionCount > 0
-        ? externalPublisherConfig.questionCount
-        : targetSubj.questionCount;
-    const baseSlice = (filtered.length > 0 ? filtered : questions).slice(0, limit);
-    return baseSlice.map((q, idx) => ({
-      ...q,
-      number: idx + 1,
-    }));
+    if (!subjId || subjId === 'all') return undefined;
+    return gradeProfile.subjects.find(
+      (s) => s.id.toLowerCase() === subjId.toLowerCase() || s.name.toLowerCase() === subjId.toLowerCase()
+    );
+  }, [externalPublisherConfig.selectedSubjectId, gradeProfile.subjects]);
+
+  // Narrow OMR / Karne questions when a single subject or custom question count is selected
+  const omrActiveQuestions = useMemo(() => {
+    return buildScopedExamQuestions({
+      questions,
+      gradeProfile,
+      subjectScopeId: externalPublisherConfig.selectedSubjectId,
+      questionCount: externalPublisherConfig.questionCount,
+    });
   }, [
     questions,
-    examSourceMode,
+    gradeProfile,
     externalPublisherConfig.selectedSubjectId,
     externalPublisherConfig.questionCount,
-    gradeProfile.subjects,
   ]);
 
-  // Evaluate OMR deterministically from current state
+  const activeInstExamHistory = useMemo(
+    () => examHistoryByInst[activeInstitution.id] ?? [],
+    [examHistoryByInst, activeInstitution.id]
+  );
+
+  const activeInstPrizeExams = useMemo(
+    () => prizeExamsByInst[activeInstitution.id] ?? [],
+    [prizeExamsByInst, activeInstitution.id]
+  );
+
+  const activePrizeExam = useMemo(
+    () => activeInstPrizeExams.find((p) => p.id === activePrizeExamId) ?? null,
+    [activeInstPrizeExams, activePrizeExamId]
+  );
+
+  // Evaluate OMR deterministically from current state with strict A->A / B->B column alignment
   const [evalTick, setEvalTick] = useState(0);
   const analysis = useMemo(() => {
     void evalTick;
     const studentArr = parseAnswerString(
       studentAnswersRaw,
       omrActiveQuestions.length,
-      gradeProfile.optionCount
+      gradeProfile.optionCount,
+      { subjectName: activeOmrSubjectSpec?.name }
     );
     const keyArr = parseAnswerString(
       answerKeyRaw,
       omrActiveQuestions.length,
-      gradeProfile.optionCount
+      gradeProfile.optionCount,
+      { subjectName: activeOmrSubjectSpec?.name }
     );
+    const effectiveBookletKeys =
+      examSourceMode === 'farkli-yayin'
+        ? {
+            ...externalPublisherConfig.answerKeys,
+            ...(answerKeyRaw.trim() ? { [cover.bookletCode]: answerKeyRaw } : {}),
+          }
+        : undefined;
+
+    const normNo = studentNumber.trim();
+    const normName = studentName.trim().toLowerCase();
+    const matchingRecords = activeInstExamHistory.filter((rec) => {
+      if (normNo && rec.studentNumber8 === normNo) return true;
+      if (normName && rec.studentName.trim().toLowerCase() === normName) return true;
+      return false;
+    });
+    const studentHistoricalExams = matchingRecords
+      .slice()
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+      .map((rec, idx) => ({
+        examName:
+          matchingRecords.length === 1
+            ? '1. Deneme (İlk Kayıt)'
+            : rec.examTitle || `${idx + 1}. Deneme`,
+        net: rec.totalNet,
+        score: rec.estimatedScore,
+        academyAvgNet: rec.totalNet,
+        date: rec.examDate,
+      }));
+
+    // Real cohort size & average from persisted records in active institution & grade
+    const sameGradeRecords = activeInstExamHistory.filter((rec) => rec.gradeId === gradeId);
+    const cohortLatestByStudent = new Map<string, PersistedExamRecord>();
+    sameGradeRecords.forEach((rec) => {
+      const key = rec.studentNumber8 || rec.studentName.trim().toLowerCase() || rec.studentId;
+      cohortLatestByStudent.set(key, rec);
+    });
+    const cohortList = Array.from(cohortLatestByStudent.values());
+    const cohortSize = cover.isSampleDemo ? undefined : Math.max(1, cohortList.length);
+    const sameClassList = cohortList.filter(
+      (r) => r.classroom.trim().toLowerCase() === classroom.trim().toLowerCase()
+    );
+    const classSize = cover.isSampleDemo
+      ? undefined
+      : Math.max(1, sameClassList.length || cohortList.length);
+    const cohortAvgNet =
+      !cover.isSampleDemo && cohortList.length > 0
+        ? Number(
+            (
+              cohortList.reduce((acc, r) => acc + r.totalNet, 0) / cohortList.length
+            ).toFixed(2)
+          )
+        : undefined;
+
     const res = evaluateOmrExam({
       studentName,
       studentNumber,
@@ -630,6 +729,14 @@ export default function App() {
       studentAnswers: studentArr,
       answerKey: keyArr,
       questions: omrActiveQuestions,
+      bookletCode: cover.bookletCode,
+      bookletAnswerKeys: effectiveBookletKeys,
+      enforceQuestionBounds: true,
+      historicalExams: studentHistoricalExams.length > 0 ? studentHistoricalExams : undefined,
+      cohortSize,
+      classSize,
+      cohortAvgNet,
+      isSampleDemo: Boolean(cover.isSampleDemo),
     });
     if (aiCoachSummary) {
       res.aiCoachSummary = aiCoachSummary;
@@ -640,14 +747,20 @@ export default function App() {
     studentAnswersRaw,
     answerKeyRaw,
     omrActiveQuestions,
+    activeOmrSubjectSpec?.name,
     gradeProfile.optionCount,
+    examSourceMode,
+    externalPublisherConfig.answerKeys,
+    cover.bookletCode,
+    cover.examTitle,
+    cover.isSampleDemo,
     studentName,
     studentNumber,
     classroom,
-    cover.examTitle,
     gradeId,
     penaltyDivisor,
     aiCoachSummary,
+    activeInstExamHistory,
   ]);
 
   const showToast = (msg: string) => {
@@ -818,6 +931,12 @@ export default function App() {
     setInstitutions(res.institutions);
     setStudents((prev) => prev.filter((s) => s.institutionId !== institutionId));
     setCalendarEvents((prev) => prev.filter((ev) => ev.institutionId !== institutionId));
+    setExamHistoryByInst((prev) => {
+      if (!(institutionId in prev)) return prev;
+      const next = { ...prev };
+      delete next[institutionId];
+      return next;
+    });
 
     const nextActive = res.nextActiveInstitution;
     if (institutionId === activeInstitutionId) {
@@ -1317,10 +1436,14 @@ export default function App() {
           : cover.examTitle;
       const bytes = await generateMultiBookletOpticalPdf({
         cover: { ...cover, examTitle: effectiveTitle },
-        totalQuestions: Math.max(questions.length, 120),
+        totalQuestions: omrActiveQuestions.length,
         optionCount: gradeProfile.optionCount,
         gradeProfile,
         institutionCode8: activeInstitution.code8,
+        selectedSubjectId: externalPublisherConfig.selectedSubjectId,
+        subjectsOverride: activeOmrSubjectSpec
+          ? [{ ...activeOmrSubjectSpec, questionCount: omrActiveQuestions.length }]
+          : undefined,
         entries,
       });
       const blob = uint8ArrayToPdfBlob(bytes);
@@ -1422,6 +1545,13 @@ export default function App() {
     setHasLiveAnalysis(false);
     setAnswerKeyRaw(synced.activeAnswerKey);
     setAiCoachSummary(undefined);
+    setExternalPublisherConfig((prev) => ({
+      ...prev,
+      gradeId: nextGradeId,
+      optionCount: nextProfile.optionCount,
+      selectedSubjectId: 'all',
+      questionCount: undefined,
+    }));
     setCover((prev) => ({
       ...prev,
       examTitle: nextProfile.examName,
@@ -1475,14 +1605,23 @@ export default function App() {
       });
       setAnswerKeyRaw(preservedExtKey);
     } else {
+      setExternalPublisherConfig((prev) => ({
+        ...prev,
+        gradeId: nextGradeId,
+        optionCount: nextProfile.optionCount,
+        selectedSubjectId: 'all',
+        questionCount: undefined,
+      }));
       setAnswerKeyRaw(synced.activeAnswerKey);
     }
 
     setCover((prev) => ({
       ...prev,
-      examTitle:
-        examSourceMode === 'farkli-yayin' &&
-        (externalPublisherConfig.examTitle?.trim() || externalPublisherConfig.publisherName?.trim())
+      examTitle: activePrizeExam
+        ? activePrizeExam.title
+        : examSourceMode === 'farkli-yayin' &&
+            (externalPublisherConfig.examTitle?.trim() ||
+              externalPublisherConfig.publisherName?.trim())
           ? externalPublisherConfig.examTitle?.trim() ||
             externalPublisherConfig.publisherName?.trim() ||
             nextProfile.examName
@@ -1774,9 +1913,18 @@ export default function App() {
           autoSyncAnswerKey: true,
         });
       }
+      const activeKeyForSheet = resolveActiveAnswerKeyByMode({
+        examSourceMode,
+        bookletCode: chosenCode,
+        baseQuestions: baseExamQuestions,
+        orderSeed: bookletOrderSeed,
+        externalKeys: externalPublisherConfig.answerKeys,
+        optionCount: gradeProfile.optionCount,
+        fallbackKey: answerKeyRaw,
+      });
       const bytes = await generateOpticalSheetPdf(
         effectiveCover,
-        Math.max(questions.length, 120),
+        omrActiveQuestions.length,
         gradeProfile.optionCount,
         {
           gradeProfile,
@@ -1784,6 +1932,12 @@ export default function App() {
           studentNumber8: effStudentNo,
           institutionCode8: activeInstitution.code8,
           classroom: effClassroom,
+          selectedSubjectId: externalPublisherConfig.selectedSubjectId,
+          subjectsOverride: activeOmrSubjectSpec
+            ? [{ ...activeOmrSubjectSpec, questionCount: omrActiveQuestions.length }]
+            : undefined,
+          activeAnswerKey: activeKeyForSheet,
+          examSourceMode,
         }
       );
       const blob = uint8ArrayToPdfBlob(bytes);
@@ -1803,18 +1957,41 @@ export default function App() {
     }
   };
 
+  const buildOpticalAnswerKeysByBooklet = (): Partial<Record<BookletCode, string>> =>
+    BOOKLET_CODES.reduce(
+      (acc, code) => ({
+        ...acc,
+        [code]: resolveActiveAnswerKeyByMode({
+          examSourceMode,
+          bookletCode: code,
+          baseQuestions: baseExamQuestions,
+          orderSeed: bookletOrderSeed,
+          externalKeys: externalPublisherConfig.answerKeys,
+          optionCount: gradeProfile.optionCount,
+          fallbackKey: answerKeyRaw,
+        }),
+      }),
+      {} as Partial<Record<BookletCode, string>>
+    );
+
   const handleDownloadAllOpticalPdf = async () => {
     setExportBusy(true);
     try {
       const bytes = await generateMultiBookletOpticalPdf({
         cover,
-        totalQuestions: Math.max(questions.length, 120),
+        totalQuestions: omrActiveQuestions.length,
         optionCount: gradeProfile.optionCount,
         gradeProfile,
         institutionCode8: activeInstitution.code8,
         studentName,
         studentNumber8: studentNumber,
         classroom,
+        selectedSubjectId: externalPublisherConfig.selectedSubjectId,
+        subjectsOverride: activeOmrSubjectSpec
+          ? [{ ...activeOmrSubjectSpec, questionCount: omrActiveQuestions.length }]
+          : undefined,
+        answerKeysByBooklet: buildOpticalAnswerKeysByBooklet(),
+        examSourceMode,
       });
       const blob = uint8ArrayToPdfBlob(bytes);
       triggerDownload(
@@ -1850,10 +2027,16 @@ export default function App() {
       }));
       const bytes = await generateMultiBookletOpticalPdf({
         cover,
-        totalQuestions: Math.max(questions.length, 120),
+        totalQuestions: omrActiveQuestions.length,
         optionCount: gradeProfile.optionCount,
         gradeProfile,
         institutionCode8: activeInstitution.code8,
+        selectedSubjectId: externalPublisherConfig.selectedSubjectId,
+        subjectsOverride: activeOmrSubjectSpec
+          ? [{ ...activeOmrSubjectSpec, questionCount: omrActiveQuestions.length }]
+          : undefined,
+        answerKeysByBooklet: buildOpticalAnswerKeysByBooklet(),
+        examSourceMode,
         entries,
       });
       const blob = uint8ArrayToPdfBlob(bytes);
@@ -1877,13 +2060,19 @@ export default function App() {
     try {
       const zipBlob = await generateAllOpticalFormsZip({
         cover,
-        totalQuestions: Math.max(questions.length, 120),
+        totalQuestions: omrActiveQuestions.length,
         optionCount: gradeProfile.optionCount,
         gradeProfile,
         institutionCode8: activeInstitution.code8,
         studentName,
         studentNumber8: studentNumber,
         classroom,
+        selectedSubjectId: externalPublisherConfig.selectedSubjectId,
+        subjectsOverride: activeOmrSubjectSpec
+          ? [{ ...activeOmrSubjectSpec, questionCount: omrActiveQuestions.length }]
+          : undefined,
+        answerKeysByBooklet: buildOpticalAnswerKeysByBooklet(),
+        examSourceMode,
       });
       triggerDownload(
         zipBlob,
@@ -2902,7 +3091,11 @@ export default function App() {
               onDownloadZip={handleDownloadZip}
               onDownloadSourceZip={handleDownloadSourceZip}
               weeklyEntries={weeklyEntriesByInst[activeInstitution.id]}
+              weeklyEntriesByInst={weeklyEntriesByInst}
               weeklyQuestionCount={weeklyQuestionCount}
+              examHistory={activeInstExamHistory}
+              examHistoryByInst={examHistoryByInst}
+              prizeExamsByInst={prizeExamsByInst}
               calendarEvents={calendarEvents}
               onBulkScheduleRemedials={handleBulkAddCalendarEvents}
               isPrivateAdminMode={loginMode === 'admin'}
@@ -2933,6 +3126,9 @@ export default function App() {
               publisherPresets={publisherPresets}
               activePublisherPresetId={activePublisherPresetId}
               exportBusy={exportBusy}
+              prizeExams={activeInstPrizeExams}
+              activePrizeExamId={activePrizeExamId}
+              onSelectActivePrizeExamId={setActivePrizeExamId}
               onChangeGradeProfile={handleChangeOmrGradeProfile}
               onAddStudent={handleAddStudent}
               onChangeStudentBooklet={handleChangeStudentBooklet}
@@ -3014,6 +3210,124 @@ export default function App() {
                 }
                 setEvalTick((t) => t + 1);
                 setHasLiveAnalysis(true);
+
+                // Compute authoritative single evaluation record and persist in institution exam history
+                const stuArr = parseAnswerString(
+                  effectiveStudentAnswers,
+                  omrActiveQuestions.length,
+                  gradeProfile.optionCount,
+                  { subjectName: activeOmrSubjectSpec?.name }
+                );
+                const keyArr = parseAnswerString(
+                  effectiveAnswerKey,
+                  omrActiveQuestions.length,
+                  gradeProfile.optionCount,
+                  { subjectName: activeOmrSubjectSpec?.name }
+                );
+                const effectiveBookletKeys =
+                  examSourceMode === 'farkli-yayin'
+                    ? {
+                        ...externalPublisherConfig.answerKeys,
+                        ...(effectiveAnswerKey.trim() ? { [cover.bookletCode]: effectiveAnswerKey } : {}),
+                      }
+                    : undefined;
+                const evaluatedNow = evaluateOmrExam({
+                  studentName,
+                  studentNumber: effectiveStudentNo,
+                  classroom,
+                  examTitle: cover.examTitle,
+                  gradeId,
+                  penaltyDivisor,
+                  studentAnswers: stuArr,
+                  answerKey: keyArr,
+                  questions: omrActiveQuestions,
+                  bookletCode: cover.bookletCode,
+                  bookletAnswerKeys: effectiveBookletKeys,
+                  enforceQuestionBounds: true,
+                  isSampleDemo: Boolean(cover.isSampleDemo),
+                });
+
+                const matchedStudent = students.find(
+                  (s) =>
+                    s.institutionId === activeInstitution.id &&
+                    ((effectiveStudentNo && s.studentNumber8 === effectiveStudentNo) ||
+                      (studentName.trim() &&
+                        s.fullName.trim().toLowerCase() === studentName.trim().toLowerCase()))
+                );
+
+                const newRecord: PersistedExamRecord = {
+                  id: `exam-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+                  institutionId: activeInstitution.id,
+                  studentId: matchedStudent?.id || effectiveStudentNo || studentName.trim() || 'active',
+                  studentName: matchedStudent?.fullName || studentName.trim() || 'Kayıtlı Öğrenci',
+                  studentNumber8: matchedStudent?.studentNumber8 || effectiveStudentNo || '',
+                  classroom: matchedStudent?.classroom || classroom,
+                  gradeId,
+                  examTitle: cover.examTitle || `${gradeProfile.shortLabel} Deneme`,
+                  examDate: cover.examDate || new Date().toLocaleDateString('tr-TR'),
+                  createdAt: new Date().toISOString(),
+                  bookletCode: cover.bookletCode,
+                  subjectScopeId: externalPublisherConfig.selectedSubjectId || 'all',
+                  subjectScopeName: activeOmrSubjectSpec?.name,
+                  examSource: activePrizeExam ? 'odullu' : examSourceMode,
+                  publisherName:
+                    examSourceMode === 'farkli-yayin'
+                      ? externalPublisherConfig.publisherName?.trim() || undefined
+                      : activePrizeExam?.publisherName,
+                  prizeExamId: activePrizeExam?.id,
+                  prizeTitle: activePrizeExam?.title,
+                  totalQuestions: evaluatedNow.totalQuestions,
+                  totalCorrect: evaluatedNow.totalCorrect,
+                  totalWrong: evaluatedNow.totalWrong,
+                  totalBlank: evaluatedNow.totalBlank,
+                  totalNet: evaluatedNow.totalNet,
+                  estimatedScore: evaluatedNow.estimatedScore,
+                  maxScore: evaluatedNow.maxScore,
+                  subjectMetrics: evaluatedNow.subjectMetrics.map((m) => ({
+                    subject: m.subject,
+                    total: m.total,
+                    correct: m.correct,
+                    wrong: m.wrong,
+                    blank: m.blank,
+                    net: m.net,
+                    accuracyPct: m.accuracyPct,
+                  })),
+                };
+
+                const existingForInst = examHistoryByInst[activeInstitution.id] ?? [];
+                const isFirstExamForInst = existingForInst.length === 0;
+                if (!cover.isSampleDemo) {
+                  setExamHistoryByInst((prev) => {
+                    const currentList = prev[activeInstitution.id] ?? [];
+                    const dupIndex = currentList.findIndex(
+                      (r) =>
+                        r.studentId === newRecord.studentId &&
+                        r.examTitle === newRecord.examTitle &&
+                        r.examDate === newRecord.examDate &&
+                        r.totalQuestions === newRecord.totalQuestions &&
+                        r.subjectScopeId === newRecord.subjectScopeId &&
+                        (r.prizeExamId || '') === (newRecord.prizeExamId || '')
+                    );
+                    const nextList =
+                      dupIndex >= 0
+                        ? currentList.map((r, i) => (i === dupIndex ? newRecord : r))
+                        : [...currentList, newRecord];
+                    return {
+                      ...prev,
+                      [activeInstitution.id]: nextList,
+                    };
+                  });
+
+                  setWeeklyEntriesByInst((prev) => ({
+                    ...prev,
+                    [activeInstitution.id]: syncExamRecordToWeeklyEntries(
+                      prev[activeInstitution.id] ?? [],
+                      newRecord,
+                      weeklyQuestionCount
+                    ),
+                  }));
+                }
+
                 if (effectiveStudentNo) {
                   setStudents((prev) =>
                     prev.map((s) =>
@@ -3029,7 +3343,11 @@ export default function App() {
                     )
                   );
                 }
-                showToast('Optik form cevap anahtarıyla karşılaştırıldı ve tüm karneler güncellendi.');
+                showToast(
+                  isFirstExamForInst
+                    ? 'İlk deneme kaydı başarıyla işlendi ve kurum karneleri güncellendi.'
+                    : 'Optik form cevap anahtarıyla karşılaştırıldı ve tüm karneler güncellendi.'
+                );
               }}
               onGoToReports={() => setActiveTab('reports')}
               onDownloadOpticalPdf={handleDownloadOpticalPdf}
@@ -3158,6 +3476,7 @@ export default function App() {
             <WeeklyComparisonView
               key={activeInstitution.id}
               activeInstitution={activeInstitution}
+              institutions={institutions}
               gradeProfile={gradeProfile}
               penaltyDivisor={penaltyDivisor}
               onChangePenaltyDivisor={handleChangePenaltyDivisor}
@@ -3179,6 +3498,74 @@ export default function App() {
               }
               externalQuestionCount={weeklyQuestionCount}
               onExternalQuestionCountChange={setWeeklyQuestionCount}
+              examHistory={activeInstExamHistory}
+              examHistoryByInst={examHistoryByInst}
+              weeklyEntriesByInst={weeklyEntriesByInst}
+              prizeExams={activeInstPrizeExams}
+              prizeExamsByInst={prizeExamsByInst}
+              activePrizeExamId={activePrizeExamId}
+              isPrivateAdminMode={loginMode === 'admin'}
+              onSelectInstitution={handleSelectInstitution}
+              onCreatePrizeExam={(exam) => {
+                setPrizeExamsByInst((prev) => ({
+                  ...prev,
+                  [activeInstitution.id]: [exam, ...(prev[activeInstitution.id] ?? [])],
+                }));
+                setActivePrizeExamId(exam.id);
+                setCover((prev) => ({ ...prev, examTitle: exam.title }));
+                if (exam.sourceMode === 'farkli-yayin') {
+                  setExamSourceMode('farkli-yayin');
+                  setExternalPublisherConfig((prev) => ({
+                    ...prev,
+                    examTitle: exam.title,
+                    ...(exam.publisherName ? { publisherName: exam.publisherName } : {}),
+                  }));
+                } else {
+                  setExamSourceMode('kurum');
+                }
+                const targetGrade = resolveTargetGradeForPrizeActivation(exam, gradeId);
+                if (targetGrade) {
+                  syncGradeForStudent(targetGrade, { preserveAnswers: true });
+                }
+                showToast(`Ödüllü Deneme oluşturuldu: ${exam.title} (Ödül: ${exam.prizeDescription})`);
+              }}
+              onDeletePrizeExam={(id) => {
+                setPrizeExamsByInst((prev) => ({
+                  ...prev,
+                  [activeInstitution.id]: (prev[activeInstitution.id] ?? []).filter(
+                    (p) => p.id !== id
+                  ),
+                }));
+                if (activePrizeExamId === id) {
+                  setActivePrizeExamId(null);
+                }
+                showToast('Ödüllü Deneme kaydı silindi.');
+              }}
+              onActivatePrizeExamForOmr={(id) => {
+                setActivePrizeExamId(id);
+                const chosen = activeInstPrizeExams.find((p) => p.id === id);
+                if (chosen) {
+                  setCover((prev) => ({ ...prev, examTitle: chosen.title }));
+                  if (chosen.sourceMode === 'farkli-yayin') {
+                    setExamSourceMode('farkli-yayin');
+                    setExternalPublisherConfig((prev) => ({
+                      ...prev,
+                      examTitle: chosen.title,
+                      ...(chosen.publisherName ? { publisherName: chosen.publisherName } : {}),
+                    }));
+                  } else {
+                    setExamSourceMode('kurum');
+                  }
+                  const targetGrade = resolveTargetGradeForPrizeActivation(chosen, gradeId);
+                  if (targetGrade) {
+                    syncGradeForStudent(targetGrade, { preserveAnswers: true });
+                  }
+                  showToast(
+                    `Ödüllü Deneme Optik Okuma moduna bağlandı: ${chosen.title}`
+                  );
+                }
+              }}
+              onOpenOmr={() => handleTabNavigation('omr', 'omr')}
             />
           )}
 
@@ -3195,6 +3582,7 @@ export default function App() {
               calendarEvents={calendarEvents}
               weeklyEntries={weeklyEntriesByInst[activeInstitution.id] ?? []}
               weeklyQuestionCount={weeklyQuestionCount}
+              examHistory={activeInstExamHistory}
               openEndedAnalysis={openEndedAnalysis}
               exportBusy={exportBusy}
               onUpdateCoachSummary={(summary) => {

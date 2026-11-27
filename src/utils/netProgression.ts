@@ -2,6 +2,7 @@ import {
   GradeLevelId,
   GradeProfile,
   PenaltyDivisor,
+  PersistedExamRecord,
   StudentRecord,
 } from '../types/academy';
 import { parseAnswerString } from './examAnalysis';
@@ -101,6 +102,7 @@ export function buildGradeNetProgression(input: {
   students: StudentRecord[];
   includeTurkeyBenchmark?: boolean;
   isSamplePreview?: boolean;
+  examHistory?: PersistedExamRecord[];
   liveAnalysis?: {
     hasLiveAnalysis: boolean;
     studentName: string;
@@ -117,6 +119,149 @@ export function buildGradeNetProgression(input: {
   const categoryFactor = getCategoryDifficultyFactor(input.gradeProfile);
   const penaltyAdj = getPenaltyRatioAdjustment(input.penaltyDivisor);
   const instSeed = computeSeedOffset(input.institutionCode8, input.gradeProfile.id);
+
+  // When explicit examHistory is supplied in live institution mode (and not sample preview),
+  // strictly derive progression ONLY from genuine persisted institution exam records.
+  if (input.examHistory !== undefined && !input.isSamplePreview) {
+    const instRecords = input.examHistory.filter(
+      (r) => r.institutionId === input.institutionId && r.gradeId === input.gradeProfile.id
+    );
+    const activeRecords =
+      instRecords.length > 0
+        ? instRecords
+        : input.examHistory.filter((r) => r.institutionId === input.institutionId);
+
+    if (activeRecords.length === 0 && !input.liveAnalysis?.hasLiveAnalysis) {
+      return {
+        points: [],
+        summary: {
+          latestInstitutionNet: 0,
+          latestTurkeyNet: 0,
+          institutionGrowth: 0,
+          turkeyGrowth: 0,
+          institutionVsTurkeyDiff: 0,
+          maxQuestions,
+          evaluatedStudentCount: 0,
+        },
+      };
+    }
+
+    // Group chronological records by examTitle + examDate so multiple students in the same exam form a cohort avg
+    const grouped = new Map<
+      string,
+      {
+        examName: string;
+        date: string;
+        totalQuestions: number;
+        nets: number[];
+        students: Set<string>;
+        latestCreatedAt: string;
+      }
+    >();
+    const ordered = [...activeRecords].sort((a, b) =>
+      a.createdAt.localeCompare(b.createdAt)
+    );
+    ordered.forEach((rec) => {
+      const key = `${rec.examTitle}::${rec.examDate}`;
+      const existing = grouped.get(key) ?? {
+        examName: rec.examTitle,
+        date: rec.examDate,
+        totalQuestions: rec.totalQuestions,
+        nets: [] as number[],
+        students: new Set<string>(),
+        latestCreatedAt: rec.createdAt,
+      };
+      existing.nets.push(rec.totalNet);
+      existing.students.add(rec.studentId);
+      existing.totalQuestions = Math.max(existing.totalQuestions, rec.totalQuestions);
+      grouped.set(key, existing);
+    });
+
+    const sessions = Array.from(grouped.values()).slice(-6);
+    if (sessions.length === 0 && input.liveAnalysis?.hasLiveAnalysis) {
+      sessions.push({
+        examName: input.liveAnalysis.examTitle || 'İlk Deneme Kaydı',
+        date: new Date().toLocaleDateString('tr-TR'),
+        totalQuestions: maxQuestions,
+        nets: [input.liveAnalysis.totalNet],
+        students: new Set([input.liveAnalysis.studentName || 'active']),
+        latestCreatedAt: new Date().toISOString(),
+      });
+    }
+
+    const rawLivePoints = sessions.map((s, idx) => {
+      const instAvg = Number(
+        (s.nets.reduce((acc, n) => acc + n, 0) / Math.max(1, s.nets.length)).toFixed(2)
+      );
+      const qCount = Math.max(1, s.totalQuestions || maxQuestions);
+      const turkeyAvg = includeTurkey
+        ? Number((qCount * Math.min(0.85, Math.max(0.28, 0.5 * categoryFactor + penaltyAdj * 0.85))).toFixed(2))
+        : 0;
+      const isLast = idx === sessions.length - 1;
+      const activeStudentNet =
+        isLast && input.liveAnalysis?.hasLiveAnalysis
+          ? Number(input.liveAnalysis.totalNet.toFixed(2))
+          : undefined;
+
+      return {
+        id: `live-prog-${input.gradeProfile.id}-${idx + 1}`,
+        examName: s.examName,
+        shortLabel: sessions.length === 1 ? '1. İlk Deneme' : `${idx + 1}. Deneme`,
+        date: s.date,
+        totalQuestions: qCount,
+        institutionAvgNet: instAvg,
+        turkeyAvgNet: turkeyAvg,
+        activeStudentNet,
+        participantCount: s.students.size,
+        isLivePoint: true,
+      };
+    });
+
+    const livePoints: NetProgressionPoint[] = rawLivePoints.map((pt, idx) => {
+      const prev = idx > 0 ? rawLivePoints[idx - 1] : pt;
+      return {
+        ...pt,
+        institutionDelta:
+          idx === 0 ? 0 : Number((pt.institutionAvgNet - prev.institutionAvgNet).toFixed(2)),
+        turkeyDelta:
+          idx === 0 || !includeTurkey
+            ? 0
+            : Number((pt.turkeyAvgNet - prev.turkeyAvgNet).toFixed(2)),
+        vsTurkeyDiff: includeTurkey
+          ? Number((pt.institutionAvgNet - pt.turkeyAvgNet).toFixed(2))
+          : 0,
+      };
+    });
+
+    const firstPt = livePoints[0];
+    const lastPt = livePoints[livePoints.length - 1];
+    const evaluatedStudentCount = new Set(activeRecords.map((r) => r.studentId)).size;
+
+    return {
+      points: livePoints,
+      summary: {
+        latestInstitutionNet: lastPt?.institutionAvgNet ?? 0,
+        latestTurkeyNet: includeTurkey ? lastPt?.turkeyAvgNet ?? 0 : 0,
+        institutionGrowth:
+          livePoints.length > 1
+            ? Number((lastPt.institutionAvgNet - firstPt.institutionAvgNet).toFixed(2))
+            : 0,
+        turkeyGrowth:
+          livePoints.length > 1 && includeTurkey
+            ? Number((lastPt.turkeyAvgNet - firstPt.turkeyAvgNet).toFixed(2))
+            : 0,
+        institutionVsTurkeyDiff:
+          includeTurkey && lastPt
+            ? Number((lastPt.institutionAvgNet - lastPt.turkeyAvgNet).toFixed(2))
+            : 0,
+        maxQuestions: lastPt?.totalQuestions || maxQuestions,
+        evaluatedStudentCount: Math.max(
+          evaluatedStudentCount,
+          input.liveAnalysis?.hasLiveAnalysis ? 1 : 0
+        ),
+      },
+    };
+  }
 
   const gradeEvaluatedStudents = input.students.filter(
     (stu) =>

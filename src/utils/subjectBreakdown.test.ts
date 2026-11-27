@@ -20,6 +20,21 @@ test('buildDetailedSubjectComparison compares student net vs class average and s
     return q.correctOption === 'A' ? 'B' : 'A';
   });
 
+  const soloAnalysis = evaluateOmrExam({
+    studentName: 'Kaan Yıldız',
+    studentNumber: '20268801',
+    classroom: '8-B',
+    examTitle: 'LGS Deneme Test',
+    gradeId: '8',
+    penaltyDivisor: profile.penaltyDivisor,
+    studentAnswers,
+    answerKey,
+    questions,
+  });
+  const soloBreakdown = buildDetailedSubjectComparison(soloAnalysis);
+  assert.equal(soloBreakdown.items.every((i) => i.netDelta === 0), true);
+  assert.ok(soloBreakdown.weakSubjects.length >= 1);
+
   const analysis = evaluateOmrExam({
     studentName: 'Kaan Yıldız',
     studentNumber: '20268801',
@@ -30,6 +45,7 @@ test('buildDetailedSubjectComparison compares student net vs class average and s
     studentAnswers,
     answerKey,
     questions,
+    cohortSize: 25,
   });
 
   const breakdown = buildDetailedSubjectComparison(analysis);
